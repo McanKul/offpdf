@@ -37,10 +37,10 @@ jobs:
 
       - name: Bundle qpdf for Windows
         shell: pwsh
-        run: ./scripts/prepare-qpdf-windows.ps1 -Version "${{ inputs.qpdf_version }}"
+        run: ./scripts/prepare-qpdf-windows.ps1 -Version "${{ github.event.inputs.qpdf_version }}"
 
-      - name: Build Windows bundle
-        run: npm run tauri:build
+      - name: Build Windows NSIS installer
+        run: npm run tauri:build -- --bundles nsis
 
       - name: List bundle outputs
         shell: pwsh
@@ -52,5 +52,4 @@ jobs:
           name: offpdf-windows-${{ github.sha }}
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
