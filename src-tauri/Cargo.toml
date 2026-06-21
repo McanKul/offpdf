@@ -1,0 +1,51 @@
+[package]
+name = "offpdf"
+version = "0.1.0"
+description = "Free, open-source, offline-first desktop PDF utility."
+authors = ["OffPDF contributors"]
+edition = "2021"
+rust-version = "1.77.2"
+
+# The library is what Tauri (and the mobile entrypoints) link against.
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Cross-platform available-disk-space query.
+fs2 = "0.4"
+
+# Read/write PDF page boxes (used for cropping).
+lopdf = "0.34"
+
+# Decode common image formats so uploaded images can be wrapped into a PDF.
+image = { version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+    "gif",
+    "bmp",
+    "webp",
+    "tiff",
+] }
+
+[features]
+# By default Tauri uses custom protocols. Keep network features off.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

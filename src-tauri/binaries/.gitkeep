@@ -1,0 +1,10 @@
+# Place the per-platform `qpdf` binary here to bundle it with the app.
+#
+# Expected layout (see src-tauri/src/pdf_engine/qpdf.rs for resolution order):
+#   binaries/qpdf            (macOS / Linux)
+#   binaries/qpdf.exe        (Windows)
+#   binaries/<dlls...>       (Windows runtime DLLs qpdf needs, if any)
+#
+# These are intentionally NOT committed (see .gitignore). At runtime the app
+# first looks for a bundled binary in this folder (copied into app resources),
+# then falls back to `qpdf` on the system PATH. See README "PDF engine".
