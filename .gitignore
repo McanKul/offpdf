@@ -14,6 +14,8 @@ src-tauri/gen
 # Bundled third-party binaries (provided per-platform, see README)
 src-tauri/binaries/*
 !src-tauri/binaries/.gitkeep
+src-tauri/share/*
+!src-tauri/share/.gitkeep
 
 # Editor / OS
 .DS_Store

@@ -7,6 +7,10 @@ on:
         description: Optional qpdf version, for example 12.3.2. Empty uses latest.
         required: false
         type: string
+      poppler_version:
+        description: Optional poppler-windows tag, for example 26.02.0-0. Empty uses latest.
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -38,6 +42,10 @@ jobs:
       - name: Bundle qpdf for Windows
         shell: pwsh
         run: ./scripts/prepare-qpdf-windows.ps1 -Version "${{ github.event.inputs.qpdf_version }}"
+
+      - name: Bundle poppler for Windows
+        shell: pwsh
+        run: ./scripts/prepare-poppler-windows.ps1 -Version "${{ github.event.inputs.poppler_version }}"
 
       - name: Build Windows NSIS installer
         run: npm run tauri:build -- --bundles nsis

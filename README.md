@@ -123,11 +123,13 @@ npm run tauri:build
 Maintainers can create unsigned Windows test installers from GitHub Actions:
 
 1. Open the **Windows Build** workflow.
-2. Run it manually with the default qpdf version, or pass a pinned qpdf version.
+2. Run it manually with the default engine versions, or pass pinned qpdf/poppler versions.
 3. Download the `offpdf-windows-*` artifact.
 
-The workflow downloads the official qpdf Windows `msvc64` zip, copies `qpdf.exe`
-and its DLLs into `src-tauri/binaries/`, and then runs `npm run tauri:build`.
+The workflow downloads the official qpdf Windows `msvc64` zip and the
+poppler-windows release zip. It copies `qpdf.exe`, `pdftoppm.exe`,
+`pdftotext.exe`, their DLLs, and poppler data into Tauri resources, then runs
+`npm run tauri:build`.
 Those binaries are bundled into the installer but are not committed to git.
 The NSIS installer targets the current user so early testers do not need
 administrator privileges just to install OffPDF.

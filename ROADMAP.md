@@ -7,7 +7,7 @@ trust, reliable packaging, and performance on large PDFs.
 
 - Public repository cleanup and contributor-ready documentation.
 - Signed and notarized macOS builds.
-- Windows installer that works for non-technical users and includes the required
+- Windows installer that works for non-technical users and includes the core
   runtime pieces offline.
 - Windows test artifacts from GitHub Actions for early installation testing.
 - GitHub Releases with checksums as the canonical binary distribution channel.
@@ -42,15 +42,14 @@ trust, reliable packaging, and performance on large PDFs.
 ## Near Term
 
 - Finalize app metadata, icons, and public branding under OffPDF.
-- Bundle `qpdf` per platform and document how release artifacts are assembled.
+- Bundle `qpdf` and poppler per platform and document how release artifacts are assembled.
 - Add GitHub Actions for build checks and release artifact generation.
 - Add checksums to every release.
 - Prepare the first public alpha release.
 
 ## Later
 
-- Bundle or document optional engine packs for poppler, Tesseract, and
-  LibreOffice.
+- Bundle or document optional engine packs for Tesseract and LibreOffice.
 - Improve OCR language selection and install guidance.
 - Add more robust PDF/A validation after export.
 - Add optional, clearly disclosed update checks behind an offline-first setting.

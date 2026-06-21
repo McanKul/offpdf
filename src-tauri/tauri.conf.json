@@ -41,7 +41,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "binaries/*": "binaries/"
+      "binaries/": "binaries/",
+      "share/": "share/"
     },
     "windows": {
       "webviewInstallMode": {
