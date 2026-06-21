@@ -10,7 +10,8 @@ trust, reliable packaging, and performance on large PDFs.
 - Windows installer that works for non-technical users and includes the required
   runtime pieces offline.
 - GitHub Releases with checksums as the canonical binary distribution channel.
-- A simple landing page with one clear download button per platform.
+- A simple `offpdf.com` landing page with one clear download button per
+  platform.
 
 ## Current Capabilities
 
@@ -52,4 +53,4 @@ trust, reliable packaging, and performance on large PDFs.
 - Improve OCR language selection and install guidance.
 - Add more robust PDF/A validation after export.
 - Add optional, clearly disclosed update checks behind an offline-first setting.
-- Build landing-page download flows that hide GitHub complexity from end users.
+- Build `offpdf.com` download flows that hide GitHub complexity from end users.

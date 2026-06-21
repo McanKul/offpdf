@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a new tool, workflow, or improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the PDF workflow or frustration.
+      placeholder: I often need to...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like OffPDF to do?
+      description: Describe the ideal behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Mention any current workaround or similar tool.
+    validations:
+      required: false
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy expectation
+      options:
+        - label: This feature should work locally/offline.
+          required: true

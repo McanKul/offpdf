@@ -12,9 +12,9 @@ on the default branch until stable release channels exist.
 
 Please do not post exploit details in a public issue.
 
-Use GitHub Security Advisories once the public repository is available. If that
-is not available yet, contact the maintainers privately through the project
-website or maintainer profile.
+Use GitHub Security Advisories once the public repository is available. Until
+then, contact the maintainer privately through [offpdf.com](https://offpdf.com)
+or the maintainer profile.
 
 Useful reports include:
 

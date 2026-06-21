@@ -2,6 +2,8 @@
 
 Free, open-source, offline-first desktop PDF tools.
 
+Website: [offpdf.com](https://offpdf.com)
+
 OffPDF is a Tauri v2 desktop app for working with PDFs without uploads, cloud
 accounts, telemetry, or a network connection. Files are processed on the user's
 machine by local engines such as `qpdf`, `pdftoppm`, Tesseract, and LibreOffice.
@@ -43,7 +45,7 @@ notarized where required, and published with checksums.
 Recommended public distribution flow:
 
 - Publish binaries through GitHub Releases.
-- Point the landing page download buttons to the latest signed release assets.
+- Point the `offpdf.com` download buttons to the latest signed release assets.
 - Keep release notes and checksums in the release page.
 - Do not require end users to understand GitHub; the website should expose one
   clear download button per platform.
