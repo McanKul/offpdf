@@ -55,5 +55,9 @@ Get-ChildItem -Path $QpdfBin -Filter "*.dll" | Copy-Item -Destination $OutDir -F
 Write-Host "Bundled files:"
 Get-ChildItem -Path $OutDir | Select-Object Name, Length | Format-Table -AutoSize
 
-Write-Host "qpdf version:"
-& (Join-Path $OutDir "qpdf.exe") --version
+if ($IsWindows) {
+  Write-Host "qpdf version:"
+  & (Join-Path $OutDir "qpdf.exe") --version
+} else {
+  Write-Host "Skipping qpdf.exe --version because this host is not Windows."
+}
