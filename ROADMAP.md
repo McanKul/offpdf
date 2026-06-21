@@ -9,6 +9,7 @@ trust, reliable packaging, and performance on large PDFs.
 - Signed and notarized macOS builds.
 - Windows installer that works for non-technical users and includes the required
   runtime pieces offline.
+- Windows test artifacts from GitHub Actions for early installation testing.
 - GitHub Releases with checksums as the canonical binary distribution channel.
 - A simple `offpdf.com` landing page with one clear download button per
   platform.

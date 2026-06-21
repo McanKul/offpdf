@@ -51,7 +51,7 @@
         "language": "en-US"
       },
       "nsis": {
-        "installMode": "perMachine"
+        "installMode": "currentUser"
       }
     }
   },
