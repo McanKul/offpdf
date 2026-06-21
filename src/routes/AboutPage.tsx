@@ -1,7 +1,13 @@
 import { Card } from "@/components/ui/Card";
 import { Icon } from "@/components/ui/Icon";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { PrivacyBadge } from "@/components/layout/PrivacyBadge";
+import { useToast } from "@/components/ui/Toast";
+import { openPath } from "@/lib/tauriCommands";
+import { toAppError } from "@/lib/types";
+
+const CONTACT_EMAIL = "kul3562@gmail.com";
 
 function Point({ icon, title, children }: { icon: Parameters<typeof Icon>[0]["name"]; title: string; children: React.ReactNode }) {
   return (
@@ -20,6 +26,20 @@ function Point({ icon, title, children }: { icon: Parameters<typeof Icon>[0]["na
 }
 
 export function AboutPage() {
+  const { toast } = useToast();
+
+  const sendMail = async () => {
+    try {
+      await openPath(`mailto:${CONTACT_EMAIL}?subject=OffPDF feedback`);
+    } catch (e) {
+      toast({
+        title: "Couldn't open your mail app",
+        description: `Email ${CONTACT_EMAIL} directly. (${toAppError(e).message})`,
+        variant: "error",
+      });
+    }
+  };
+
   return (
     <div className="col gap-lg">
       <div className="page-header">
@@ -62,10 +82,23 @@ export function AboutPage() {
           <Badge variant="success">Free + Open source</Badge>
         </div>
         <p className="muted" style={{ fontSize: 13.5, lineHeight: 1.6 }}>
-          OffPDF exists for people who need to handle private, oversized, or sensitive PDFs without
-          sending them through a web service. It is built as a free, open-source desktop app with a
-          simple rule: local work stays local.
+          OffPDF was started by <b>McanKul</b> after seeing how often students and professionals had
+          to upload private or oversized PDFs to online tools just to do simple work. The project is
+          built around a simple rule: PDF work should be fast, local, and private by default.
         </p>
+        <div className="mt" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div className="muted" style={{ fontSize: 13 }}>
+            Have feedback or a feature request?
+          </div>
+          <div className="row gap-sm wrap">
+            <span className="mono selectable" style={{ fontWeight: 600 }}>
+              {CONTACT_EMAIL}
+            </span>
+            <Button variant="secondary" size="sm" onClick={sendMail} leftIcon={<Icon name="external" size={15} />}>
+              Send feedback
+            </Button>
+          </div>
+        </div>
       </Card>
 
       <Card padded>
