@@ -27,7 +27,11 @@ fn tesseract_exe() -> &'static str {
 pub fn resolve_tesseract() -> PathBuf {
     let exe = tesseract_exe();
     #[cfg(not(windows))]
-    for c in ["/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract", "/usr/bin/tesseract"] {
+    for c in [
+        "/opt/homebrew/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/usr/bin/tesseract",
+    ] {
         let p = PathBuf::from(c);
         if p.exists() {
             return p;
@@ -43,7 +47,9 @@ pub fn available() -> bool {
         return exe.exists();
     }
     let mut cmd = Command::new(&exe);
-    cmd.arg("--version").stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
     !matches!(cmd.status(), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
@@ -76,7 +82,8 @@ pub fn ocr(
     let pdftoppm = render::resolve_pdftoppm(app);
     let tess = resolve_tesseract();
     let work = temp::root(app)?.join("work").join(job_id);
-    std::fs::create_dir_all(&work).map_err(|e| AppError::io("Could not create a temp directory.", e))?;
+    std::fs::create_dir_all(&work)
+        .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
 
     let result = (|| -> Result<Vec<String>, AppError> {
         let n = picks.len();
@@ -88,13 +95,18 @@ pub fn ocr(
             }
             let _ = app.emit(
                 "job:update",
-                JobUpdate::new(job_id, "running", &format!("Reading text — page {} of {n}", i + 1))
-                    .percent(i as f32 / n as f32 * 100.0),
+                JobUpdate::new(
+                    job_id,
+                    "running",
+                    &format!("Reading text — page {} of {n}", i + 1),
+                )
+                .percent(i as f32 / n as f32 * 100.0),
             );
 
             // 1. render page → PNG at 300 DPI (good OCR accuracy)
             let img_prefix = work.join(format!("p{i}"));
             let mut r = Command::new(&pdftoppm);
+            render::configure_poppler_command(&mut r, &pdftoppm);
             r.args([
                 "-png",
                 "-r",
@@ -141,7 +153,10 @@ pub fn ocr(
         }
 
         // 3. merge the per-page searchable PDFs
-        let _ = app.emit("job:update", JobUpdate::new(job_id, "running", "Merging pages").percent(99.0));
+        let _ = app.emit(
+            "job:update",
+            JobUpdate::new(job_id, "running", "Merging pages").percent(99.0),
+        );
         let mut args: Vec<String> = vec!["--empty".into(), "--pages".into()];
         for p in &page_pdfs {
             args.push(p.clone());

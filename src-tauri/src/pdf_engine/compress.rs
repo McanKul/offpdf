@@ -76,8 +76,12 @@ pub fn compress(
             }
             let _ = app.emit(
                 "job:update",
-                JobUpdate::new(job_id, "running", &format!("Compressing page {} of {n}", i + 1))
-                    .percent(i as f32 / n as f32 * 100.0),
+                JobUpdate::new(
+                    job_id,
+                    "running",
+                    &format!("Compressing page {} of {n}", i + 1),
+                )
+                .percent(i as f32 / n as f32 * 100.0),
             );
 
             let jpg = match target_bytes {
@@ -85,7 +89,9 @@ pub fn compress(
                     let budget = (total / n as u64).max(15_000);
                     // Auto: estimate a DPI for the budget (cap at `dpi`), then tune
                     // quality (≤ `quality`). Resolution drops before quality is crushed.
-                    render_auto(app, handle, &pk.path, pk.page, budget, dpi, 25, quality, &work, i)?
+                    render_auto(
+                        app, handle, &pk.path, pk.page, budget, dpi, 25, quality, &work, i,
+                    )?
                 }
                 None => render_jpeg(app, handle, &pk.path, pk.page, dpi, quality, &work, i)?,
             };
@@ -93,7 +99,12 @@ pub fn compress(
                 .map_err(|e| AppError::io("Could not read a rendered page.", e))?;
             let (w, h, comps) = jpeg_info(&bytes)
                 .ok_or_else(|| AppError::engine_failed("Rendered page was not a valid JPEG."))?;
-            images.push(PageImage { path: jpg, w, h, comps });
+            images.push(PageImage {
+                path: jpg,
+                w,
+                h,
+                comps,
+            });
         }
 
         let _ = app.emit(
@@ -161,18 +172,29 @@ pub fn image_to_pdf(app: &tauri::AppHandle, input: &str) -> Result<String, AppEr
         let file = std::fs::File::create(&jpg_path)
             .map_err(|e| AppError::io("Could not write the converted image.", e))?;
         let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(BufWriter::new(file), 90);
-        image::ImageEncoder::write_image(encoder, rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
-            .map_err(|e| AppError::engine_failed(e.to_string()))?;
+        image::ImageEncoder::write_image(
+            encoder,
+            rgb.as_raw(),
+            w,
+            h,
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| AppError::engine_failed(e.to_string()))?;
     }
 
     let bytes = std::fs::read(&jpg_path)
         .map_err(|e| AppError::io("Could not read the converted image.", e))?;
-    let (w, h, comps) =
-        jpeg_info(&bytes).ok_or_else(|| AppError::engine_failed("Converted image was not valid JPEG."))?;
+    let (w, h, comps) = jpeg_info(&bytes)
+        .ok_or_else(|| AppError::engine_failed("Converted image was not valid JPEG."))?;
 
     let out_pdf = dir.join(format!("{stem}.pdf"));
     let out_pdf_str = out_pdf.to_string_lossy().to_string();
-    let pages = [PageImage { path: jpg_path, w, h, comps }];
+    let pages = [PageImage {
+        path: jpg_path,
+        w,
+        h,
+        comps,
+    }];
     write_image_pdf(&out_pdf_str, &pages, 96)?;
     Ok(out_pdf_str)
 }
@@ -191,7 +213,8 @@ fn render_jpeg(
 ) -> Result<PathBuf, AppError> {
     let prefix = dir.join(format!("c{idx}"));
     let exe = render::resolve_pdftoppm(app);
-    let mut cmd = Command::new(exe);
+    let mut cmd = Command::new(&exe);
+    render::configure_poppler_command(&mut cmd, &exe);
     cmd.args([
         "-jpeg",
         "-jpegopt",
@@ -368,7 +391,11 @@ fn write_image_pdf(output: &str, pages: &[PageImage], dpi: u32) -> Result<(), Ap
 
         let wpt = pg.w as f64 * 72.0 / dpi as f64;
         let hpt = pg.h as f64 * 72.0 / dpi as f64;
-        let cs = if pg.comps == 1 { "/DeviceGray" } else { "/DeviceRGB" };
+        let cs = if pg.comps == 1 {
+            "/DeviceGray"
+        } else {
+            "/DeviceRGB"
+        };
 
         let jpeg = std::fs::read(&pg.path)
             .map_err(|e| AppError::io("Could not read a rendered page.", e))?;

@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tauri::Emitter;
+use tauri::Manager;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -33,22 +34,10 @@ fn tool_exe() -> &'static str {
 /// Locate `pdftoppm`: bundled `binaries/` first, then common install dirs, then
 /// PATH. Mirrors `qpdf::resolve_qpdf` (a Finder-launched .app has no shell PATH).
 pub fn resolve_pdftoppm(app: &tauri::AppHandle) -> PathBuf {
-    use tauri::Manager;
     let exe = tool_exe();
 
-    if let Ok(res) = app.path().resource_dir() {
-        let c = res.join("binaries").join(exe);
-        if c.exists() {
-            return c;
-        }
-    }
-    if let Ok(cur) = std::env::current_exe() {
-        if let Some(parent) = cur.parent() {
-            let c = parent.join("binaries").join(exe);
-            if c.exists() {
-                return c;
-            }
-        }
+    if let Some(found) = find_bundled_tool(app, exe) {
+        return found;
     }
     #[cfg(not(windows))]
     {
@@ -69,22 +58,93 @@ pub fn resolve_pdftoppm(app: &tauri::AppHandle) -> PathBuf {
 
 /// Locate poppler's `pdftotext` (same dirs as pdftoppm).
 fn resolve_pdftotext(app: &tauri::AppHandle) -> PathBuf {
-    use tauri::Manager;
-    let exe = if cfg!(windows) { "pdftotext.exe" } else { "pdftotext" };
-    if let Ok(res) = app.path().resource_dir() {
-        let c = res.join("binaries").join(exe);
-        if c.exists() {
-            return c;
-        }
+    let exe = if cfg!(windows) {
+        "pdftotext.exe"
+    } else {
+        "pdftotext"
+    };
+    if let Some(found) = find_bundled_tool(app, exe) {
+        return found;
     }
     #[cfg(not(windows))]
-    for c in ["/opt/homebrew/bin/pdftotext", "/usr/local/bin/pdftotext", "/opt/local/bin/pdftotext", "/usr/bin/pdftotext"] {
+    for c in [
+        "/opt/homebrew/bin/pdftotext",
+        "/usr/local/bin/pdftotext",
+        "/opt/local/bin/pdftotext",
+        "/usr/bin/pdftotext",
+    ] {
         let p = PathBuf::from(c);
         if p.exists() {
             return p;
         }
     }
     PathBuf::from(exe)
+}
+
+fn app_roots(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(res) = app.path().resource_dir() {
+        roots.push(res);
+    }
+    if let Ok(cur) = std::env::current_exe() {
+        if let Some(parent) = cur.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    roots
+}
+
+fn find_bundled_tool(app: &tauri::AppHandle, exe: &str) -> Option<PathBuf> {
+    for root in app_roots(app) {
+        for candidate in [
+            root.join("binaries").join(exe),
+            root.join("resources").join("binaries").join(exe),
+            root.join("binaries").join("binaries").join(exe),
+        ] {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn poppler_data_dir_for_tool(exe: &Path) -> Option<PathBuf> {
+    let bin_dir = exe.parent()?;
+    let root = bin_dir.parent().unwrap_or(bin_dir);
+    for candidate in [
+        root.join("share").join("poppler"),
+        root.join("share").join("share").join("poppler"),
+        bin_dir.join("share").join("poppler"),
+        bin_dir.join("..").join("share").join("poppler"),
+    ] {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+pub fn configure_poppler_command(cmd: &mut Command, exe: &Path) {
+    let Some(bin_dir) = exe.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return;
+    };
+
+    cmd.current_dir(bin_dir);
+
+    if let Some(current_path) = std::env::var_os("PATH") {
+        let mut paths = std::env::split_paths(&current_path).collect::<Vec<_>>();
+        paths.insert(0, bin_dir.to_path_buf());
+        if let Ok(joined) = std::env::join_paths(paths) {
+            cmd.env("PATH", joined);
+        }
+    } else {
+        cmd.env("PATH", bin_dir);
+    }
+
+    if let Some(data_dir) = poppler_data_dir_for_tool(exe) {
+        cmd.env("POPPLER_DATADIR", data_dir);
+    }
 }
 
 /// Hard cap on text read for search, so a pathologically large (e.g. 100 GB)
@@ -100,7 +160,8 @@ pub fn page_texts(app: &tauri::AppHandle, input: &str) -> Result<Vec<String>, Ap
         return Err(AppError::invalid_pdf(input));
     }
     let exe = resolve_pdftotext(app);
-    let mut cmd = Command::new(exe);
+    let mut cmd = Command::new(&exe);
+    configure_poppler_command(&mut cmd, &exe);
     cmd.args(["-layout", "-enc", "UTF-8", input, "-"]);
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
@@ -138,18 +199,30 @@ const MAX_PAGE_PDF_BYTES: u64 = 48 * 1024 * 1024;
 /// Extract one page into a tiny standalone PDF and return it base64-encoded, for
 /// true-vector rendering with pdf.js in the webview. Returns `None` if the page
 /// is too large to safely load into the webview. Cached on disk per (file,page).
-pub fn page_pdf_b64(app: &tauri::AppHandle, input: &str, page: u32) -> Result<Option<String>, AppError> {
+pub fn page_pdf_b64(
+    app: &tauri::AppHandle,
+    input: &str,
+    page: u32,
+) -> Result<Option<String>, AppError> {
     if !Path::new(input).is_file() {
         return Err(AppError::invalid_pdf(input));
     }
     let dir = temp::root(app)?.join("pagepdf").join(fnv1a_hex(input));
-    std::fs::create_dir_all(&dir).map_err(|e| AppError::io("Could not create the page cache.", e))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| AppError::io("Could not create the page cache.", e))?;
     let out = dir.join(format!("p{page}.pdf"));
     let out_str = out.to_string_lossy().to_string();
 
     if !out.exists() {
         let mut cmd = Command::new(crate::pdf_engine::qpdf::resolve_qpdf(app));
-        cmd.args(["--empty", "--pages", input, &page.to_string(), "--", &out_str]);
+        cmd.args([
+            "--empty",
+            "--pages",
+            input,
+            &page.to_string(),
+            "--",
+            &out_str,
+        ]);
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
         #[cfg(windows)]
         cmd.creation_flags(0x08000000);
@@ -175,10 +248,18 @@ pub fn page_pdf_b64(app: &tauri::AppHandle, input: &str, page: u32) -> Result<Op
 }
 
 /// Render one page to a PNG file (returns its path). Used by the compare tool.
-fn render_to_png(app: &tauri::AppHandle, input: &str, page: u32, size: u32, dir: &Path, name: &str) -> Result<PathBuf, AppError> {
+fn render_to_png(
+    app: &tauri::AppHandle,
+    input: &str,
+    page: u32,
+    size: u32,
+    dir: &Path,
+    name: &str,
+) -> Result<PathBuf, AppError> {
     let exe = resolve_pdftoppm(app);
     let prefix = dir.join(name);
-    let mut cmd = Command::new(exe);
+    let mut cmd = Command::new(&exe);
+    configure_poppler_command(&mut cmd, &exe);
     cmd.args([
         "-png",
         "-scale-to",
@@ -219,14 +300,21 @@ pub fn diff_pages(
     size: u32,
 ) -> Result<crate::models::DiffResult, AppError> {
     let size = size.clamp(200, 4000);
-    let dir = temp::root(app)?.join("cmp").join(fnv1a_hex(&format!("{a_path}|{b_path}")));
-    std::fs::create_dir_all(&dir).map_err(|e| AppError::io("Could not create a temp directory.", e))?;
+    let dir = temp::root(app)?
+        .join("cmp")
+        .join(fnv1a_hex(&format!("{a_path}|{b_path}")));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
 
     let pa = render_to_png(app, a_path, a_page, size, &dir, &format!("a{a_page}"))?;
     let pb = render_to_png(app, b_path, b_page, size, &dir, &format!("b{b_page}"))?;
 
-    let ia = image::open(&pa).map_err(|e| AppError::engine_failed(format!("read A: {e}")))?.to_rgba8();
-    let ib = image::open(&pb).map_err(|e| AppError::engine_failed(format!("read B: {e}")))?.to_rgba8();
+    let ia = image::open(&pa)
+        .map_err(|e| AppError::engine_failed(format!("read A: {e}")))?
+        .to_rgba8();
+    let ib = image::open(&pb)
+        .map_err(|e| AppError::engine_failed(format!("read B: {e}")))?
+        .to_rgba8();
     let (wa, ha) = ia.dimensions();
     let (wb, hb) = ib.dimensions();
     let w = wa.max(wb);
@@ -237,8 +325,16 @@ pub fn diff_pages(
     const THRESH: i32 = 60;
     for y in 0..h {
         for x in 0..w {
-            let ap = if x < wa && y < ha { ia.get_pixel(x, y).0 } else { [255, 255, 255, 255] };
-            let bp = if x < wb && y < hb { ib.get_pixel(x, y).0 } else { [255, 255, 255, 255] };
+            let ap = if x < wa && y < ha {
+                ia.get_pixel(x, y).0
+            } else {
+                [255, 255, 255, 255]
+            };
+            let bp = if x < wb && y < hb {
+                ib.get_pixel(x, y).0
+            } else {
+                [255, 255, 255, 255]
+            };
             let d = (ap[0] as i32 - bp[0] as i32).abs()
                 + (ap[1] as i32 - bp[1] as i32).abs()
                 + (ap[2] as i32 - bp[2] as i32).abs();
@@ -269,7 +365,8 @@ pub fn diff_pages(
 /// Whether a page renderer is available (controls the "Pick visually" UI).
 pub fn available(app: &tauri::AppHandle) -> bool {
     let exe = resolve_pdftoppm(app);
-    let mut cmd = Command::new(exe);
+    let mut cmd = Command::new(&exe);
+    configure_poppler_command(&mut cmd, &exe);
     cmd.arg("-v").stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
@@ -299,7 +396,8 @@ fn render_one(
         // pdftoppm writes "<prefix>.png" when -singlefile is set.
         let prefix = dir.join(format!("p{page}_s{size}"));
         let exe = resolve_pdftoppm(app);
-        let mut cmd = Command::new(exe);
+        let mut cmd = Command::new(&exe);
+        configure_poppler_command(&mut cmd, &exe);
         cmd.args([
             "-png",
             "-f",
@@ -378,8 +476,7 @@ pub fn to_images(
     if picks.is_empty() {
         return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
     }
-    std::fs::create_dir_all(out_dir)
-        .map_err(|_| AppError::output_not_writable(out_dir))?;
+    std::fs::create_dir_all(out_dir).map_err(|_| AppError::output_not_writable(out_dir))?;
 
     let is_jpg = format.eq_ignore_ascii_case("jpg") || format.eq_ignore_ascii_case("jpeg");
     let ext = if is_jpg { "jpg" } else { "png" };
@@ -394,14 +491,19 @@ pub fn to_images(
         }
         let _ = app.emit(
             "job:update",
-            JobUpdate::new(job_id, "running", &format!("Exporting page {} of {n}", i + 1))
-                .percent(i as f32 / n as f32 * 100.0),
+            JobUpdate::new(
+                job_id,
+                "running",
+                &format!("Exporting page {} of {n}", i + 1),
+            )
+            .percent(i as f32 / n as f32 * 100.0),
         );
 
         let prefix = Path::new(out_dir).join(format!("page-{:03}", i + 1));
         let prefix_str = prefix.to_string_lossy().to_string();
 
         let mut cmd = Command::new(&exe);
+        configure_poppler_command(&mut cmd, &exe);
         if is_jpg {
             cmd.args(["-jpeg", "-jpegopt", "quality=92"]);
         } else {
