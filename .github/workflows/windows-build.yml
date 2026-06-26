@@ -11,6 +11,14 @@ on:
         description: Optional poppler-windows tag, for example 26.02.0-0. Empty uses latest.
         required: false
         type: string
+      tesseract_version:
+        description: Optional Chocolatey tesseract package version. Empty uses latest.
+        required: false
+        type: string
+      libreoffice_version:
+        description: Optional Chocolatey libreoffice-fresh package version. Empty uses latest.
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -22,6 +30,7 @@ jobs:
   windows:
     name: Build Windows installer
     runs-on: windows-latest
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -46,6 +55,14 @@ jobs:
       - name: Bundle poppler for Windows
         shell: pwsh
         run: ./scripts/prepare-poppler-windows.ps1 -Version "${{ github.event.inputs.poppler_version }}"
+
+      - name: Bundle Tesseract OCR for Windows
+        shell: pwsh
+        run: ./scripts/prepare-tesseract-windows.ps1 -Version "${{ github.event.inputs.tesseract_version }}"
+
+      - name: Bundle LibreOffice for Windows
+        shell: pwsh
+        run: ./scripts/prepare-libreoffice-windows.ps1 -Version "${{ github.event.inputs.libreoffice_version }}"
 
       - name: Build Windows NSIS installer
         run: npm run tauri:build -- --bundles nsis

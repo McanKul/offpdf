@@ -7,10 +7,11 @@ use crate::models::{JobHandle, JobUpdate, PagePick};
 use crate::pdf_engine::render;
 use crate::utils::process::run_qpdf;
 use crate::utils::temp;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tauri::Emitter;
+use tauri::Manager;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -24,8 +25,13 @@ fn tesseract_exe() -> &'static str {
 }
 
 /// Locate the Tesseract binary.
-pub fn resolve_tesseract() -> PathBuf {
+pub fn resolve_tesseract(app: &tauri::AppHandle) -> PathBuf {
     let exe = tesseract_exe();
+
+    if let Some(found) = find_bundled_tesseract(app, exe) {
+        return found;
+    }
+
     #[cfg(not(windows))]
     for c in [
         "/opt/homebrew/bin/tesseract",
@@ -41,18 +47,80 @@ pub fn resolve_tesseract() -> PathBuf {
 }
 
 /// Whether Tesseract is available.
-pub fn available() -> bool {
-    let exe = resolve_tesseract();
-    if exe.is_absolute() {
-        return exe.exists();
-    }
+pub fn available(app: &tauri::AppHandle) -> bool {
+    let exe = resolve_tesseract(app);
     let mut cmd = Command::new(&exe);
+    configure_tesseract_command(&mut cmd, &exe);
     cmd.arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
-    !matches!(cmd.status(), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+    matches!(cmd.status(), Ok(status) if status.success())
+}
+
+fn app_roots(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(res) = app.path().resource_dir() {
+        roots.push(res);
+    }
+    if let Ok(cur) = std::env::current_exe() {
+        if let Some(parent) = cur.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    roots
+}
+
+fn find_bundled_tesseract(app: &tauri::AppHandle, exe: &str) -> Option<PathBuf> {
+    for root in app_roots(app) {
+        for candidate in [
+            root.join("tesseract").join(exe),
+            root.join("resources").join("tesseract").join(exe),
+            root.join("binaries").join(exe),
+            root.join("resources").join("binaries").join(exe),
+        ] {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn tessdata_dir_for_tool(exe: &Path) -> Option<PathBuf> {
+    let bin_dir = exe.parent()?;
+    for candidate in [
+        bin_dir.join("tessdata"),
+        bin_dir.join("..").join("tessdata"),
+    ] {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn configure_tesseract_command(cmd: &mut Command, exe: &Path) {
+    let Some(bin_dir) = exe.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return;
+    };
+
+    cmd.current_dir(bin_dir);
+
+    if let Some(current_path) = std::env::var_os("PATH") {
+        let mut paths = std::env::split_paths(&current_path).collect::<Vec<_>>();
+        paths.insert(0, bin_dir.to_path_buf());
+        if let Ok(joined) = std::env::join_paths(paths) {
+            cmd.env("PATH", joined);
+        }
+    } else {
+        cmd.env("PATH", bin_dir);
+    }
+
+    if let Some(tessdata) = tessdata_dir_for_tool(exe) {
+        cmd.env("TESSDATA_PREFIX", &tessdata);
+    }
 }
 
 fn missing() -> AppError {
@@ -80,7 +148,7 @@ pub fn ocr(
     super::ensure_output_dir(output)?;
 
     let pdftoppm = render::resolve_pdftoppm(app);
-    let tess = resolve_tesseract();
+    let tess = resolve_tesseract(app);
     let work = temp::root(app)?.join("work").join(job_id);
     std::fs::create_dir_all(&work)
         .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
@@ -131,11 +199,13 @@ pub fn ocr(
             // 2. tesseract PNG → searchable one-page PDF
             let out_base = work.join(format!("o{i}"));
             let mut t = Command::new(&tess);
+            configure_tesseract_command(&mut t, &tess);
             t.arg(png.to_string_lossy().to_string())
-                .arg(out_base.to_string_lossy().to_string())
-                .arg("-l")
-                .arg(lang)
-                .arg("pdf");
+                .arg(out_base.to_string_lossy().to_string());
+            if let Some(tessdata) = tessdata_dir_for_tool(&tess) {
+                t.arg("--tessdata-dir").arg(tessdata);
+            }
+            t.arg("-l").arg(lang).arg("pdf");
             t.stdout(Stdio::null()).stderr(Stdio::piped());
             #[cfg(windows)]
             t.creation_flags(0x08000000);

@@ -42,7 +42,9 @@
     ],
     "resources": {
       "binaries/*": "binaries/",
-      "share/": "share/"
+      "share/": "share/",
+      "tesseract/": "tesseract/",
+      "libreoffice/": "libreoffice/"
     },
     "windows": {
       "webviewInstallMode": {

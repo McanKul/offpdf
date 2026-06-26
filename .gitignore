@@ -16,6 +16,10 @@ src-tauri/binaries/*
 !src-tauri/binaries/.gitkeep
 src-tauri/share/*
 !src-tauri/share/.gitkeep
+src-tauri/tesseract/*
+!src-tauri/tesseract/.gitkeep
+src-tauri/libreoffice/*
+!src-tauri/libreoffice/.gitkeep
 
 # Editor / OS
 .DS_Store

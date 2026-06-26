@@ -121,8 +121,8 @@ pub async fn diff_pages(
 
 /// Whether Tesseract (OCR) is available.
 #[tauri::command]
-pub async fn ocr_available() -> Result<bool, AppError> {
-    tauri::async_runtime::spawn_blocking(ocr::available)
+pub async fn ocr_available(app: tauri::AppHandle) -> Result<bool, AppError> {
+    tauri::async_runtime::spawn_blocking(move || ocr::available(&app))
         .await
         .map_err(|e| AppError::io("Could not probe Tesseract.", e))
 }
@@ -153,8 +153,8 @@ pub async fn ocr_pdf(
 
 /// Whether LibreOffice is available (controls Office conversion features).
 #[tauri::command]
-pub async fn office_available() -> Result<bool, AppError> {
-    tauri::async_runtime::spawn_blocking(office::available)
+pub async fn office_available(app: tauri::AppHandle) -> Result<bool, AppError> {
+    tauri::async_runtime::spawn_blocking(move || office::available(&app))
         .await
         .map_err(|e| AppError::io("Could not probe LibreOffice.", e))
 }
@@ -165,7 +165,7 @@ pub async fn office_available() -> Result<bool, AppError> {
 pub async fn office_to_pdf(app: tauri::AppHandle, input_path: String) -> Result<String, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         let dir = temp::root(&app)?.join("office").join(hashed(&input_path));
-        office::to_pdf(None, &input_path, &dir.to_string_lossy())
+        office::to_pdf(&app, None, &input_path, &dir.to_string_lossy())
     })
     .await
     .map_err(|e| AppError::io("Could not convert the document.", e))?
@@ -195,7 +195,7 @@ pub async fn office_to_pdf_batch(
                 JobUpdate::new(&jid, "running", &format!("Converting {} of {n}", i + 1))
                     .percent(i as f32 / n as f32 * 100.0),
             );
-            outputs.push(office::to_pdf(Some(&handle), inp, &output_dir)?);
+            outputs.push(office::to_pdf(&app2, Some(&handle), inp, &output_dir)?);
         }
         Ok(outputs)
     })
@@ -235,7 +235,7 @@ pub async fn pdfa_pdf(
         let result = (|| -> Result<Vec<String>, AppError> {
             crate::pdf_engine::assemble(&app2, &handle, &jid, &groups, &merged)?;
             let _ = app2.emit("job:update", JobUpdate::new(&jid, "running", "Converting to PDF/A"));
-            let produced = office::to_pdfa(Some(&handle), &merged, &out_dir)?;
+            let produced = office::to_pdfa(&app2, Some(&handle), &merged, &out_dir)?;
             Ok(vec![produced])
         })();
         let _ = std::fs::remove_dir_all(&work);
@@ -271,7 +271,7 @@ pub async fn pdf_to_office(
         let result = (|| -> Result<Vec<String>, AppError> {
             crate::pdf_engine::assemble(&app2, &handle, &jid, &groups, &merged_str)?;
             let _ = app2.emit("job:update", JobUpdate::new(&jid, "running", "Converting"));
-            let out = office::from_pdf(Some(&handle), &merged_str, &output_dir, &format)?;
+            let out = office::from_pdf(&app2, Some(&handle), &merged_str, &output_dir, &format)?;
             Ok(vec![out])
         })();
         let _ = std::fs::remove_dir_all(&work);
