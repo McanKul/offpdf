@@ -28,27 +28,35 @@ pub fn resolve_soffice(app: &tauri::AppHandle) -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     for root in app_roots(app) {
-        candidates.push(root.join("libreoffice").join("program").join(soffice_exe()));
-        candidates.push(
-            root.join("resources")
-                .join("libreoffice")
-                .join("program")
-                .join(soffice_exe()),
-        );
-        candidates.push(
-            root.join("libreoffice")
-                .join("LibreOffice")
-                .join("program")
-                .join(soffice_exe()),
-        );
+        for exe in soffice_names() {
+            candidates.push(root.join("libreoffice").join("program").join(exe));
+            candidates.push(
+                root.join("resources")
+                    .join("libreoffice")
+                    .join("program")
+                    .join(exe),
+            );
+            candidates.push(
+                root.join("libreoffice")
+                    .join("LibreOffice")
+                    .join("program")
+                    .join(exe),
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
     candidates.push(PathBuf::from("/Applications/LibreOffice.app/Contents/MacOS/soffice"));
     #[cfg(windows)]
     {
-        candidates.push(PathBuf::from("C:\\Program Files\\LibreOffice\\program\\soffice.exe"));
-        candidates.push(PathBuf::from("C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe"));
+        for exe in soffice_names() {
+            candidates.push(PathBuf::from(format!(
+                "C:\\Program Files\\LibreOffice\\program\\{exe}"
+            )));
+            candidates.push(PathBuf::from(format!(
+                "C:\\Program Files (x86)\\LibreOffice\\program\\{exe}"
+            )));
+        }
     }
     for p in [
         "/opt/homebrew/bin/soffice",
@@ -63,7 +71,7 @@ pub fn resolve_soffice(app: &tauri::AppHandle) -> PathBuf {
             return c;
         }
     }
-    PathBuf::from(soffice_exe())
+    PathBuf::from(soffice_names()[0])
 }
 
 /// Whether LibreOffice is available.
@@ -77,8 +85,15 @@ pub fn available(app: &tauri::AppHandle) -> bool {
     matches!(cmd.status(), Ok(status) if status.success())
 }
 
-fn soffice_exe() -> &'static str {
-    if cfg!(windows) { "soffice.exe" } else { "soffice" }
+fn soffice_names() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &["soffice.com", "soffice.exe"]
+    }
+    #[cfg(not(windows))]
+    {
+        &["soffice"]
+    }
 }
 
 fn app_roots(app: &tauri::AppHandle) -> Vec<PathBuf> {
