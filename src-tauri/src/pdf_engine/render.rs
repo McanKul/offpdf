@@ -125,6 +125,22 @@ fn poppler_data_dir_for_tool(exe: &Path) -> Option<PathBuf> {
     None
 }
 
+fn fontconfig_dir_for_tool(exe: &Path) -> Option<PathBuf> {
+    let bin_dir = exe.parent()?;
+    let root = bin_dir.parent().unwrap_or(bin_dir);
+    for candidate in [
+        root.join("share").join("fontconfig"),
+        root.join("share").join("share").join("fontconfig"),
+        bin_dir.join("share").join("fontconfig"),
+        bin_dir.join("..").join("share").join("fontconfig"),
+    ] {
+        if candidate.join("fonts.conf").exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 pub fn configure_poppler_command(cmd: &mut Command, exe: &Path) {
     let Some(bin_dir) = exe.parent().filter(|p| !p.as_os_str().is_empty()) else {
         return;
@@ -144,6 +160,10 @@ pub fn configure_poppler_command(cmd: &mut Command, exe: &Path) {
 
     if let Some(data_dir) = poppler_data_dir_for_tool(exe) {
         cmd.env("POPPLER_DATADIR", data_dir);
+    }
+    if let Some(fontconfig_dir) = fontconfig_dir_for_tool(exe) {
+        cmd.env("FONTCONFIG_PATH", &fontconfig_dir);
+        cmd.env("FONTCONFIG_FILE", fontconfig_dir.join("fonts.conf"));
     }
 }
 

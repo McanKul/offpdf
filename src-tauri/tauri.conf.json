@@ -41,7 +41,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "binaries/*": "binaries/",
+      "binaries/": "binaries/",
       "share/": "share/",
       "tesseract/": "tesseract/",
       "libreoffice/": "libreoffice/"
@@ -56,6 +56,10 @@
       "nsis": {
         "installMode": "currentUser"
       }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": true
     }
   },
   "plugins": {}

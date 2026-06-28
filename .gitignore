@@ -29,3 +29,8 @@ src-tauri/libreoffice/*
 *.log
 .env
 .env.*
+
+# Signing material must never be committed
+*.p12
+AuthKey_*.p8
+*.certSigningRequest
