@@ -1,4 +1,4 @@
-name: Windows Build
+name: Windows Release
 
 on:
   workflow_dispatch:
@@ -19,25 +19,26 @@ on:
         description: Optional Chocolatey libreoffice-fresh package version. Empty uses latest.
         required: false
         type: string
-  push:
-    tags:
-      - "v*"
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  windows:
-    name: Build Windows installer
+  windows-x64:
+    name: Build and release Windows installer
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
@@ -45,7 +46,7 @@ jobs:
       - name: Use stable Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
         run: npm ci
 
       - name: Bundle qpdf for Windows
@@ -64,17 +65,25 @@ jobs:
         shell: pwsh
         run: ./scripts/prepare-libreoffice-windows.ps1 -Version "${{ github.event.inputs.libreoffice_version }}"
 
-      - name: Build Windows NSIS installer
-        run: npm run tauri:build -- --bundles nsis
+      - name: Build and release Windows installer
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: OffPDF v__VERSION__
+          releaseBody: |
+            OffPDF build for Windows (x64).
+
+            Note: this installer is not code-signed yet, so Windows SmartScreen
+            may show an "unknown publisher" warning. Click "More info" then
+            "Run anyway" to install.
+
+            LibreOffice is bundled and only required for Office conversion tools.
+          releaseDraft: true
+          prerelease: false
+          args: --bundles nsis
 
       - name: List bundle outputs
         shell: pwsh
         run: Get-ChildItem -Path src-tauri/target/release/bundle -Recurse | Select-Object FullName, Length
-
-      - name: Upload Windows installers
-        uses: actions/upload-artifact@v4
-        with:
-          name: offpdf-windows-${{ github.sha }}
-          path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: error
