@@ -22,10 +22,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
@@ -104,11 +104,18 @@ jobs:
 
       - name: Verify application signature and notarization ticket
         run: |
-          app_path="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
           dmg_path="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
-
-          test -n "$app_path"
           test -n "$dmg_path"
+
+          mount_path="$RUNNER_TEMP/offpdf-dmg"
+          mkdir -p "$mount_path"
+          hdiutil attach "$dmg_path" -nobrowse -readonly -mountpoint "$mount_path"
+          trap 'hdiutil detach "$mount_path"' EXIT
+
+          app_path="$(find "$mount_path" -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app_path"
+
+          codesign --verify --strict --verbose=2 "$dmg_path"
           codesign --verify --deep --strict --verbose=2 "$app_path"
           spctl --assess --type execute --verbose=2 "$app_path"
-          xcrun stapler validate "$dmg_path"
+          xcrun stapler validate "$app_path"
