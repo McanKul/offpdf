@@ -207,6 +207,17 @@ pub fn poster(
             .and_then(|d| d.get(b"Parent").ok())
             .and_then(|o| o.as_reference().ok());
 
+        // A /Rotate 90 or 270 page is tiled in unrotated page space, but every
+        // tile inherits the rotation when displayed/printed. Swap the tile
+        // dimensions so the printed sheets come out in the requested
+        // orientation (and the grid matches the frontend estimate, which is
+        // based on the rotated viewport).
+        let (tile_w, tile_h) = if rotate % 180 != 0 {
+            (tile_h, tile_w)
+        } else {
+            (tile_w, tile_h)
+        };
+
         // Clamp overlap so a tile still advances.
         let overlap = overlap.max(0.0).min(tile_w.min(tile_h) - 12.0).max(0.0);
         let step_x = (tile_w - overlap).max(1.0);

@@ -5,8 +5,11 @@
 //! qpdf argv array (never a shell string) and invokes the engine. They return
 //! the produced output path(s) so the command can report them to the frontend.
 
+pub mod blank;
 pub mod compress;
 pub mod crop;
+pub mod metadata;
+pub mod nup;
 pub mod ocr;
 pub mod office;
 pub mod outline;
@@ -15,13 +18,15 @@ pub mod poster;
 pub mod qpdf;
 pub mod render;
 pub mod stamp;
+pub mod textexport;
 
 use crate::error::AppError;
-use crate::models::{JobHandle, PageGroup, PagePick, RotateGroup, SplitMode};
+use crate::models::{JobHandle, JobUpdate, PageGroup, PagePick, RotateGroup, SplitMode};
 use crate::utils::process::run_qpdf;
 use crate::utils::temp;
 use std::path::Path;
 use std::sync::Arc;
+use tauri::Emitter;
 
 // ---------------------------------------------------------------------------
 // Shared validation helpers
@@ -516,8 +521,42 @@ pub fn rotate(
     Ok(vec![output.to_string()])
 }
 
+/// True if `spec` expands, in order, to exactly pages 1..=n — i.e. the whole
+/// document in natural order ("1-z", "1-N" or "1,2,…,N"). Conservative: any
+/// unparseable part returns false.
+fn spec_is_full_range(spec: &str, n: u32) -> bool {
+    let trimmed = spec.trim();
+    if trimmed == "1-z" {
+        return true;
+    }
+    let mut expect: u32 = 1;
+    for raw in trimmed.split(',') {
+        let part = raw.trim();
+        let (lo, hi) = match part.split_once('-') {
+            Some((a, b)) => match (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
+                (Ok(a), Ok(b)) => (a, b),
+                _ => return false,
+            },
+            None => match part.parse::<u32>() {
+                Ok(p) => (p, p),
+                Err(_) => return false,
+            },
+        };
+        if lo != expect || hi < lo {
+            return false;
+        }
+        expect = hi + 1;
+    }
+    expect == n + 1
+}
+
 /// Non-destructive optimization of the combined document: assemble + linearize
 /// + generate object streams in one qpdf pass. Keeps text and vectors intact.
+/// The first group's file is qpdf's primary input (its `--pages` slot is `.`),
+/// which preserves document-level data — outline/bookmarks, Info metadata —
+/// that the `--empty` form would strip. If the input is a single unmodified
+/// file and qpdf's rewrite comes out larger (linearization overhead), the
+/// original file is kept instead.
 pub fn optimize(
     app: &tauri::AppHandle,
     handle: &Arc<JobHandle>,
@@ -534,12 +573,14 @@ pub fn optimize(
     ensure_output_dir(output)?;
 
     let mut args: Vec<String> = vec![
-        "--empty".into(),
+        groups[0].path.clone(),
         "--linearize".into(),
         "--object-streams=generate".into(),
         "--pages".into(),
+        ".".into(),
+        groups[0].pages.clone(),
     ];
-    for g in groups {
+    for g in &groups[1..] {
         args.push(g.path.clone());
         args.push(g.pages.clone());
     }
@@ -547,6 +588,23 @@ pub fn optimize(
     args.push(output.to_string());
 
     run_qpdf(app, handle, job_id, &args, "Optimizing PDF", None)?;
+
+    // Size guard: when the result is just a rewrite of one whole file in its
+    // natural order, never ship an output bigger than the input.
+    if groups.len() == 1
+        && spec_is_full_range(&groups[0].pages, qpdf::npages(app, &groups[0].path)?)
+    {
+        let in_size = std::fs::metadata(&groups[0].path).map(|m| m.len()).unwrap_or(0);
+        let out_size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(u64::MAX);
+        if in_size > 0 && out_size >= in_size {
+            std::fs::copy(&groups[0].path, output)
+                .map_err(|e| AppError::io("Could not write the output file.", e))?;
+            let _ = app.emit(
+                "job:update",
+                JobUpdate::new(job_id, "running", "Already optimal — kept the original file"),
+            );
+        }
+    }
     Ok(vec![output.to_string()])
 }
 
@@ -629,5 +687,36 @@ pub fn split(
             }
             Ok(outputs)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_ranges, parse_pages, spec_is_full_range};
+
+    #[test]
+    fn full_range_specs_detected() {
+        assert!(spec_is_full_range("1-z", 5));
+        assert!(spec_is_full_range("1-5", 5));
+        assert!(spec_is_full_range("1,2,3,4,5", 5));
+    }
+
+    #[test]
+    fn partial_or_reordered_specs_rejected() {
+        assert!(!spec_is_full_range("1-4", 5));
+        assert!(!spec_is_full_range("2-5", 5));
+        assert!(!spec_is_full_range("3,2,1", 3)); // reorder must never trigger the guard
+    }
+
+    #[test]
+    fn parse_pages_sorts_and_dedupes() {
+        assert_eq!(parse_pages("3,1,5-7,5").unwrap(), vec![1, 3, 5, 6, 7]);
+        assert!(parse_pages("abc").is_err());
+    }
+
+    #[test]
+    fn format_ranges_compacts_runs() {
+        assert_eq!(format_ranges(&[1, 3, 4, 6]), "1,3-4,6");
+        assert_eq!(format_ranges(&[2]), "2");
     }
 }
