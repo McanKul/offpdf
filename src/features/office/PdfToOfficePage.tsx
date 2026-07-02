@@ -31,7 +31,9 @@ export function PdfToOfficePage() {
 
   const lastFolder = useSettingsStore((s) => s.lastOutputFolder);
   const [folder, setFolder] = useState<string | null>(lastFolder);
-  const [format, setFormat] = useState<"docx" | "pptx" | "xlsx">("docx");
+  // "xlsx" is intentionally not offered: LibreOffice has no PDF import filter
+  // for Calc, so PDF → Excel can never succeed.
+  const [format, setFormat] = useState<"docx" | "pptx">("docx");
   const [available, setAvailable] = useState(true);
 
   useEffect(() => {
@@ -76,17 +78,17 @@ export function PdfToOfficePage() {
         <Select
           label="Format"
           value={format}
-          onChange={(v) => setFormat(v as "docx" | "pptx" | "xlsx")}
+          onChange={(v) => setFormat(v as "docx" | "pptx")}
           options={[
             { value: "docx", label: "Word (.docx)" },
             { value: "pptx", label: "PowerPoint (.pptx)" },
-            { value: "xlsx", label: "Excel (.xlsx)" },
           ]}
         />
         <div className="mt">
           <Alert variant="info">
             Best effort: text is recovered well, but complex page layouts, columns and graphics may not
-            be reproduced exactly. For a faithful copy, keep the PDF.
+            be reproduced exactly. For a faithful copy, keep the PDF. Excel output isn&apos;t supported —
+            convert to Word and copy tables from there.
           </Alert>
         </div>
       </ToolSection>
