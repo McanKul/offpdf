@@ -103,7 +103,9 @@ export function CompressPage() {
           const lossless = await optimizePdf(id, outputPath, groups);
           try {
             const info = await getFileInfo(outputPath);
-            if (info.sizeBytes <= targetBytes) return lossless; // lossless was enough
+            // Lossless is only "enough" if it meets the target AND actually
+            // shrank the input — never accept an output bigger than the source.
+            if (info.sizeBytes <= targetBytes && info.sizeBytes < totalBytes) return lossless;
           } catch {
             /* fall through to lossy */
           }

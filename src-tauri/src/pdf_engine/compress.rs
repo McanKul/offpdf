@@ -84,16 +84,26 @@ pub fn compress(
                 .percent(i as f32 / n as f32 * 100.0),
             );
 
-            let jpg = match target_bytes {
+            // Track the DPI each page was ACTUALLY rendered at — in target mode
+            // render_auto picks its own per-page DPI, and the page's physical
+            // size in the output must be computed from that value.
+            let (jpg, page_dpi) = match target_bytes {
                 Some(total) => {
                     let budget = (total / n as u64).max(15_000);
                     // Auto: estimate a DPI for the budget (cap at `dpi`), then tune
                     // quality (≤ `quality`). Resolution drops before quality is crushed.
+                    // qmin 40: below ~q40 JPEG ringing eats hairlines even at
+                    // adequate DPI. Combined with the 150-dpi floor this keeps
+                    // technical-drawing lines visible; tight targets may
+                    // overshoot slightly instead of destroying detail.
                     render_auto(
-                        app, handle, &pk.path, pk.page, budget, dpi, 25, quality, &work, i,
+                        app, handle, &pk.path, pk.page, budget, dpi, 40, quality, &work, i,
                     )?
                 }
-                None => render_jpeg(app, handle, &pk.path, pk.page, dpi, quality, &work, i)?,
+                None => (
+                    render_jpeg(app, handle, &pk.path, pk.page, dpi, quality, &work, i)?,
+                    dpi,
+                ),
             };
             let bytes = std::fs::read(&jpg)
                 .map_err(|e| AppError::io("Could not read a rendered page.", e))?;
@@ -104,6 +114,7 @@ pub fn compress(
                 w,
                 h,
                 comps,
+                dpi: page_dpi,
             });
         }
 
@@ -111,7 +122,7 @@ pub fn compress(
             "job:update",
             JobUpdate::new(job_id, "running", "Assembling PDF").percent(99.0),
         );
-        write_image_pdf(output, &images, dpi)?;
+        write_image_pdf(output, &images)?;
         Ok(vec![output.to_string()])
     })();
 
@@ -124,6 +135,8 @@ pub(crate) struct PageImage {
     pub w: u32,
     pub h: u32,
     pub comps: u8,
+    /// DPI this page was rendered at — physical page size derives from it.
+    pub dpi: u32,
 }
 
 /// Wrap a single uploaded image into a one-page PDF (so it can be previewed,
@@ -194,8 +207,9 @@ pub fn image_to_pdf(app: &tauri::AppHandle, input: &str) -> Result<String, AppEr
         w,
         h,
         comps,
+        dpi: 96,
     }];
-    write_image_pdf(&out_pdf_str, &pages, 96)?;
+    write_image_pdf(&out_pdf_str, &pages)?;
     Ok(out_pdf_str)
 }
 
@@ -259,7 +273,7 @@ fn render_auto(
     qmax: u32,
     dir: &Path,
     idx: usize,
-) -> Result<PathBuf, AppError> {
+) -> Result<(PathBuf, u32), AppError> {
     if handle.is_cancelled() {
         return Err(AppError::cancelled());
     }
@@ -267,13 +281,18 @@ fn render_auto(
     let p = render_jpeg(app, handle, input, page, probe, 75, dir, idx)?;
     let s = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
     if s == 0 {
-        return Ok(p);
+        return Ok((p, probe));
     }
     // JPEG size scales ~ with pixel count (∝ dpi²); leave 10% headroom.
     let scale = ((budget as f64 * 0.9) / s as f64).sqrt();
     let est = ((probe as f64) * scale).round() as i64;
-    let dpi = est.clamp(50, max_dpi as i64) as u32;
-    render_to_budget(app, handle, input, page, dpi, budget, qmin, qmax, dir, idx)
+    // Floor at 150 dpi: below that, hairlines (0.3-0.5pt in technical
+    // drawings) fall under one pixel and vanish entirely. Preferring a
+    // slightly-over-target file over an unreadable plan.
+    let floor = 150.min(max_dpi) as i64;
+    let dpi = est.clamp(floor, max_dpi as i64) as u32;
+    let jpg = render_to_budget(app, handle, input, page, dpi, budget, qmin, qmax, dir, idx)?;
+    Ok((jpg, dpi))
 }
 
 /// Render a page choosing the highest JPEG quality (≤ qmax) whose file fits
@@ -364,7 +383,8 @@ fn jpeg_info(data: &[u8]) -> Option<(u32, u32, u8)> {
 }
 
 /// Build a minimal PDF that places one JPEG per page (DCTDecode XObjects).
-fn write_image_pdf(output: &str, pages: &[PageImage], dpi: u32) -> Result<(), AppError> {
+/// Each page's physical size derives from its own render DPI.
+fn write_image_pdf(output: &str, pages: &[PageImage]) -> Result<(), AppError> {
     let n = pages.len();
     let total_objs = 2 + 3 * n; // catalog + pages + (image, content, page) per page
     let mut buf: Vec<u8> = Vec::new();
@@ -389,8 +409,8 @@ fn write_image_pdf(output: &str, pages: &[PageImage], dpi: u32) -> Result<(), Ap
         let content_obj = 4 + i * 3;
         let page_obj = 5 + i * 3;
 
-        let wpt = pg.w as f64 * 72.0 / dpi as f64;
-        let hpt = pg.h as f64 * 72.0 / dpi as f64;
+        let wpt = pg.w as f64 * 72.0 / pg.dpi as f64;
+        let hpt = pg.h as f64 * 72.0 / pg.dpi as f64;
         let cs = if pg.comps == 1 {
             "/DeviceGray"
         } else {
