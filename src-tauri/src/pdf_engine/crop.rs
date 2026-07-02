@@ -17,8 +17,9 @@ fn num(o: &Object, doc: &Document) -> Option<f64> {
     }
 }
 
-/// Resolve a page's effective MediaBox, walking up Parent for inheritance.
-fn media_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
+/// Resolve a page's box entry (`MediaBox`, `CropBox`, …), walking up Parent for
+/// inheritance. Returns a normalized rect (x0 < x1, y0 < y1), or None.
+fn inherited_box(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f64; 4]> {
     let mut cur = Some(page_id);
     let mut steps = 0;
     while let Some(id) = cur {
@@ -27,7 +28,7 @@ fn media_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
         }
         steps += 1;
         let Ok(dict) = doc.get_dictionary(id) else { break };
-        if let Ok(obj) = dict.get(b"MediaBox") {
+        if let Ok(obj) = dict.get(key) {
             let resolved = if let Ok(r) = obj.as_reference() {
                 doc.get_object(r).ok()
             } else {
@@ -44,14 +45,44 @@ fn media_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
                         }
                     }
                     if ok {
-                        return v;
+                        return Some([v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3])]);
                     }
                 }
             }
         }
         cur = dict.get(b"Parent").ok().and_then(|o| o.as_reference().ok());
     }
-    [0.0, 0.0, 612.0, 792.0]
+    None
+}
+
+/// Resolve a page's effective MediaBox, walking up Parent for inheritance.
+pub(crate) fn media_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
+    inherited_box(doc, page_id, b"MediaBox").unwrap_or([0.0, 0.0, 612.0, 792.0])
+}
+
+/// Effective /Rotate of a page (walking up Parent), normalized to 0/90/180/270.
+pub(crate) fn page_rotation(doc: &Document, page_id: ObjectId) -> i64 {
+    let mut cur = Some(page_id);
+    let mut steps = 0;
+    while let Some(id) = cur {
+        if steps > 32 {
+            break;
+        }
+        steps += 1;
+        let Ok(dict) = doc.get_dictionary(id) else { break };
+        if let Ok(obj) = dict.get(b"Rotate") {
+            let resolved = if let Ok(r) = obj.as_reference() {
+                doc.get_object(r).ok()
+            } else {
+                Some(obj)
+            };
+            if let Some(n) = resolved.and_then(|o| o.as_i64().ok()) {
+                return ((n % 360) + 360) % 360;
+            }
+        }
+        cur = dict.get(b"Parent").ok().and_then(|o| o.as_reference().ok());
+    }
+    0
 }
 
 /// Crop the combined document by trimming `left/top/right/bottom` percent of
@@ -89,11 +120,33 @@ pub fn crop(
         let page_ids: Vec<ObjectId> = doc.get_pages().values().cloned().collect();
         for id in page_ids {
             let mb = media_box(&doc, id);
-            let (w, h) = (mb[2] - mb[0], mb[3] - mb[1]);
-            let nx0 = mb[0] + w * left / 100.0;
-            let nx1 = mb[2] - w * right / 100.0;
-            let ny0 = mb[1] + h * bottom / 100.0;
-            let ny1 = mb[3] - h * top / 100.0;
+            // Trim relative to the page area the user actually SEES: the
+            // CropBox (clipped to the MediaBox) when present, else the MediaBox.
+            // Basing it on the MediaBox alone would grow the visible window on
+            // documents whose CropBox is smaller.
+            let eff = match inherited_box(&doc, id, b"CropBox") {
+                Some(cb) => {
+                    let ix0 = cb[0].max(mb[0]);
+                    let iy0 = cb[1].max(mb[1]);
+                    let ix1 = cb[2].min(mb[2]);
+                    let iy1 = cb[3].min(mb[3]);
+                    if ix1 - ix0 > 1.0 && iy1 - iy0 > 1.0 { [ix0, iy0, ix1, iy1] } else { mb }
+                }
+                None => mb,
+            };
+            // The UI margins are visual; /Rotate 90/180/270 shuffles which
+            // physical box edge each visual edge is (CW: left edge shows as top).
+            let (l, t, r, b) = match page_rotation(&doc, id) {
+                90 => (top, right, bottom, left),
+                180 => (right, bottom, left, top),
+                270 => (bottom, left, top, right),
+                _ => (left, top, right, bottom),
+            };
+            let (w, h) = (eff[2] - eff[0], eff[3] - eff[1]);
+            let nx0 = eff[0] + w * l / 100.0;
+            let nx1 = eff[2] - w * r / 100.0;
+            let ny0 = eff[1] + h * b / 100.0;
+            let ny1 = eff[3] - h * t / 100.0;
             if nx1 - nx0 < 1.0 || ny1 - ny0 < 1.0 {
                 return Err(AppError::new(
                     "CROP_TOO_MUCH",
@@ -108,8 +161,15 @@ pub fn crop(
                 Object::Real(ny1 as f32),
             ]);
             if let Ok(dict) = doc.get_object_mut(id).and_then(|o| o.as_dict_mut()) {
-                dict.set(b"MediaBox".to_vec(), rect.clone());
-                dict.set(b"CropBox".to_vec(), rect);
+                dict.set(b"CropBox".to_vec(), rect.clone());
+                // Shrink the MediaBox too, but never grow it past the original.
+                if nx0 >= mb[0] - 0.01 && ny0 >= mb[1] - 0.01 && nx1 <= mb[2] + 0.01 && ny1 <= mb[3] + 0.01 {
+                    dict.set(b"MediaBox".to_vec(), rect);
+                }
+                // Print boxes from the source could poke outside the new window.
+                dict.remove(b"TrimBox");
+                dict.remove(b"BleedBox");
+                dict.remove(b"ArtBox");
             }
         }
 

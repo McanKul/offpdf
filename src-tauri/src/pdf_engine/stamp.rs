@@ -5,16 +5,12 @@
 
 use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
-use crate::pdf_engine::qpdf;
+use crate::pdf_engine::{crop, overlay, qpdf};
 use crate::utils::process::run_qpdf;
 use crate::utils::temp;
 use lopdf::{Document, Object, ObjectId};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-
-fn esc(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('(', "\\(").replace(')', "\\)")
-}
 
 fn num(o: &Object, doc: &Document) -> Option<f64> {
     match o {
@@ -51,8 +47,10 @@ fn media_box(doc: &Document, page_id: ObjectId) -> (f64, f64) {
     (612.0, 792.0)
 }
 
-/// Size of `page` (1-based) in points, by extracting it to a tiny PDF (safe even
-/// for huge sources) and reading its MediaBox.
+/// Displayed size of `page` (1-based) in points, by extracting it to a tiny PDF
+/// (safe even for huge sources) and reading its MediaBox. /Rotate 90/270 swaps
+/// the displayed width/height; matching the displayed size lets qpdf map the
+/// overlay 1:1 (its rotation compensation keeps the text upright).
 fn page_size(app: &tauri::AppHandle, merged: &str, page: u32, dir: &std::path::Path) -> (f64, f64) {
     let one = dir.join("one.pdf");
     let one_str = one.to_string_lossy().to_string();
@@ -73,7 +71,10 @@ fn page_size(app: &tauri::AppHandle, merged: &str, page: u32, dir: &std::path::P
             .get_pages()
             .values()
             .next()
-            .map(|id| media_box(&doc, *id))
+            .map(|id| {
+                let (w, h) = media_box(&doc, *id);
+                if crop::page_rotation(&doc, *id) % 180 == 90 { (h, w) } else { (w, h) }
+            })
             .unwrap_or((612.0, 792.0)),
         Err(_) => (612.0, 792.0),
     }
@@ -82,7 +83,7 @@ fn page_size(app: &tauri::AppHandle, merged: &str, page: u32, dir: &std::path::P
 fn build_overlay(out: &str, w: f64, h: f64, text: &str, x: f64, y: f64, fs: f64, color: [f64; 3]) -> Result<(), AppError> {
     let content = format!(
         "{:.3} {:.3} {:.3} rg\nBT\n/F1 {fs:.1} Tf\n{x:.1} {y:.1} Td\n({}) Tj\nET\n",
-        color[0], color[1], color[2], esc(text)
+        color[0], color[1], color[2], overlay::encode_pdf_text(text)
     );
     let mut buf: Vec<u8> = Vec::new();
     let mut off = [0usize; 6];
@@ -92,7 +93,7 @@ fn build_overlay(out: &str, w: f64, h: f64, text: &str, x: f64, y: f64, fs: f64,
     off[2] = buf.len();
     buf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [5 0 R] /Count 1 >>\nendobj\n");
     off[3] = buf.len();
-    buf.extend_from_slice(b"3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n");
+    buf.extend_from_slice(format!("3 0 obj\n{}\nendobj\n", overlay::FONT_DICT).as_bytes());
     off[4] = buf.len();
     buf.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream\n{content}endstream\nendobj\n", content.len()).as_bytes());
     off[5] = buf.len();
