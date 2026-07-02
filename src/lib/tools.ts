@@ -98,6 +98,16 @@ export const TOOLS: ToolMeta[] = [
     category: "Organize",
   },
   {
+    id: "nup",
+    name: "N-up / Booklet",
+    description: "Print 2 or 4 pages per sheet, or impose a foldable booklet.",
+    longDescription:
+      "Lay several pages of the combined document onto each sheet (2-up or 4-up) to save paper, or reorder them as a saddle-stitch booklet: print double-sided, fold the stack in half, and the pages read in order. Fully vector and lossless.",
+    icon: "grip",
+    path: "/tools/nup",
+    category: "Organize",
+  },
+  {
     id: "compare",
     name: "Compare PDFs",
     description: "Spot differences between two PDFs, page by page.",
@@ -196,6 +206,36 @@ export const TOOLS: ToolMeta[] = [
     icon: "wrench",
     path: "/tools/repair",
     category: "Optimize & secure",
+  },
+  {
+    id: "blankPages",
+    name: "Remove blank pages",
+    description: "Find and remove empty pages from scanned PDFs.",
+    longDescription:
+      "Scan the loaded documents for blank pages (including flat scanner-gray pages), review the detected pages as thumbnails, keep any false positives, and save a cleaned copy. Detection runs locally at a tiny resolution.",
+    icon: "file",
+    path: "/tools/blank-pages",
+    category: "Organize",
+  },
+  {
+    id: "metadata",
+    name: "Edit metadata",
+    description: "View and edit the document's title, author and more.",
+    longDescription:
+      "Read and edit the PDF's Info metadata — Title, Author, Subject, Keywords, Creator, Producer — or clear all of it in one go (sanitize). Non-ASCII text such as Turkish is stored as UTF-16, so it survives intact.",
+    icon: "info",
+    path: "/tools/metadata",
+    category: "Optimize & secure",
+  },
+  {
+    id: "textExport",
+    name: "PDF to text",
+    description: "Export the document's text to a .txt file.",
+    longDescription:
+      "Extract the text of the whole document (or a page range) into a UTF-8 .txt file with the page layout preserved, using the local poppler engine. Scanned PDFs need OCR first to have any text.",
+    icon: "fileText",
+    path: "/tools/text-export",
+    category: "Convert",
   },
 ];
 

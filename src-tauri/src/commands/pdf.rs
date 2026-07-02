@@ -231,6 +231,32 @@ pub async fn poster_pdf(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn nup_pdf(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, JobRegistry>,
+    job_id: String,
+    output_path: String,
+    groups: Vec<PageGroup>,
+    mode: String,
+    sheet_w: f64,
+    sheet_h: f64,
+) -> Result<JobResult, AppError> {
+    let handle = registry.register(&job_id);
+    let app2 = app.clone();
+    let jid = job_id.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::pdf_engine::nup::nup(&app2, &handle, &jid, &groups, &output_path, &mode, sheet_w, sheet_h)
+    })
+    .await
+    .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
+    registry.remove(&job_id);
+    let output_paths = res?;
+    Ok(completed(&app, job_id, output_paths))
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn add_page_numbers(
     app: tauri::AppHandle,
     registry: tauri::State<'_, JobRegistry>,
@@ -239,12 +265,27 @@ pub async fn add_page_numbers(
     groups: Vec<PageGroup>,
     position: String,
     start: i64,
+    prefix: Option<String>,
+    pad_width: Option<u32>,
+    with_date: Option<bool>,
 ) -> Result<JobResult, AppError> {
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::pdf_engine::overlay::add_page_numbers(&app2, &handle, &jid, &groups, &output_path, &position, start)
+        // Any format arg present → Bates mode; all absent → plain numbers.
+        let format = if prefix.is_some() || pad_width.is_some() || with_date.unwrap_or(false) {
+            Some(crate::pdf_engine::overlay::NumberFormat {
+                prefix: prefix.unwrap_or_default(),
+                pad_width: pad_width.unwrap_or(0) as usize,
+                with_date: with_date.unwrap_or(false),
+            })
+        } else {
+            None
+        };
+        crate::pdf_engine::overlay::add_page_numbers_formatted(
+            &app2, &handle, &jid, &groups, &output_path, &position, start, format,
+        )
     })
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Icon } from "@/components/ui/Icon";
+import { Alert } from "@/components/ui/Alert";
 import { useToast } from "@/components/ui/Toast";
 import {
   WorkspaceFilePicker,
@@ -14,8 +15,8 @@ import {
   buildGroups,
 } from "@/components/pdf";
 import { useJob, JobStatus, useDiskGuard } from "@/components/jobs";
-import { addPageNumbers } from "@/lib/tauriCommands";
 import { getTool } from "@/lib/tools";
+import { addPageNumbers } from "@/lib/tauriCommands";
 import { estimateRequiredBytes, validateOutputName, joinPath } from "@/lib/validation";
 import { stripExt } from "@/lib/formatBytes";
 import { useSettingsStore } from "@/state/settingsStore";
@@ -32,6 +33,25 @@ const POSITIONS = [
   { value: "top-left", label: "Top left" },
 ];
 
+/** Label format: plain numbers, or Bates-style prefix + zero-padded counter,
+ * optionally followed by today's date. */
+type FormatMode = "plain" | "bates" | "bates-date";
+
+const FORMATS = [
+  { value: "plain", label: "Plain number (1, 2, 3…)" },
+  { value: "bates", label: "Prefix + padded (DAVA-000123)" },
+  { value: "bates-date", label: "Prefix + padded + date" },
+];
+
+/** Live example of the first page's label, mirroring the backend format. */
+function previewLabel(fm: FormatMode, prefix: string, pad: number, start: number): string {
+  if (fm === "plain") return String(start);
+  const padded = String(Math.abs(start)).padStart(pad, "0");
+  const num = `${start < 0 ? "-" : ""}${padded}`;
+  const date = fm === "bates-date" ? ` – ${new Date().toLocaleDateString("tr-TR")}` : "";
+  return `${prefix}${num}${date}`;
+}
+
 export function PageNumbersPage() {
   const files = useWorkspace((s) => s.files);
   const refs = useCombinedDoc();
@@ -44,6 +64,9 @@ export function PageNumbersPage() {
   const [name, setName] = useState("numbered.pdf");
   const [position, setPosition] = useState("bottom-center");
   const [start, setStart] = useState("1");
+  const [formatMode, setFormatMode] = useState<FormatMode>("plain");
+  const [prefix, setPrefix] = useState("");
+  const [padWidth, setPadWidth] = useState("6");
 
   const first = files[0];
   useEffect(() => {
@@ -55,15 +78,32 @@ export function PageNumbersPage() {
     if (!folder) return toast({ title: "Choose an output folder", variant: "error" });
     const startNum = Number(start);
     if (!Number.isInteger(startNum)) return toast({ title: "Start number must be a whole number", variant: "error" });
+    const padNum = Number(padWidth);
+    const isBates = formatMode !== "plain";
+    if (isBates && (!Number.isInteger(padNum) || padNum < 0 || padNum > 12))
+      return toast({ title: "Digits must be a whole number between 0 and 12", variant: "error" });
     const nameRes = validateOutputName(name);
     if (!nameRes.ok) return toast({ title: "Invalid file name", description: nameRes.error, variant: "error" });
     const outputPath = joinPath(folder, nameRes.value);
     if (!(await disk.ensure(folder, estimateRequiredBytes("optimize", files.map((f) => f.sizeBytes))))) return;
 
-    await job.run((id) => addPageNumbers(id, outputPath, buildGroups(refs), position, startNum), {
-      tool: "pageNumbers",
-      label: `Number ${refs.length} pages`,
-    });
+    await job.run(
+      (id) =>
+        addPageNumbers(
+          id,
+          outputPath,
+          buildGroups(refs),
+          position,
+          startNum,
+          isBates ? prefix : undefined,
+          isBates ? padNum : undefined,
+          formatMode === "bates-date" ? true : undefined,
+        ),
+      {
+        tool: "pageNumbers",
+        label: `Number ${refs.length} pages`,
+      },
+    );
   };
 
   const canStart = refs.length > 0 && !!folder && !job.isBusy;
@@ -83,6 +123,40 @@ export function PageNumbersPage() {
         <div className="row">
           <Select label="Position" value={position} onChange={setPosition} options={POSITIONS} />
           <Input label="Start at" type="number" value={start} onChange={(e) => setStart(e.target.value)} hint="First page's number." />
+        </div>
+      </ToolSection>
+
+      <ToolSection label="Format" sublabel="Bates numbering for legal/archive filing — e.g. DAVA-000123.">
+        <div className="col">
+          <Select
+            label="Label format"
+            value={formatMode}
+            onChange={(v) => setFormatMode(v as FormatMode)}
+            options={FORMATS}
+          />
+          {formatMode !== "plain" && (
+            <div className="row">
+              <Input
+                label="Prefix"
+                value={prefix}
+                onChange={(e) => setPrefix(e.target.value)}
+                placeholder="DAVA-"
+                hint="Turkish characters (İ ş ğ …) are fine."
+              />
+              <Input
+                label="Digits"
+                type="number"
+                min={0}
+                max={12}
+                value={padWidth}
+                onChange={(e) => setPadWidth(e.target.value)}
+                hint="Counter is zero-padded to this width."
+              />
+            </div>
+          )}
+          <Alert variant="info">
+            First page will read: <strong>{previewLabel(formatMode, prefix, Math.max(0, Number(padWidth) || 0), Number(start) || 1)}</strong>
+          </Alert>
         </div>
       </ToolSection>
 

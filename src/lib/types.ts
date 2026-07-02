@@ -141,7 +141,11 @@ export type ToolId =
   | "pdfa"
   | "compare"
   | "stamp"
-  | "poster";
+  | "poster"
+  | "nup"
+  | "blankPages"
+  | "metadata"
+  | "textExport";
 
 /** Locally-stored metadata about a completed/failed job (no PDF content). */
 export interface RecentJob {

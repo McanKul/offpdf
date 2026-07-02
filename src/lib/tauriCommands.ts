@@ -300,15 +300,44 @@ export function posterPdf(
   return invoke<JobResult>("poster_pdf", { jobId, outputPath, groups, page, tileW, tileH, overlap, marks });
 }
 
-/** Stamp page numbers onto the combined document. */
+/** Stamp page numbers onto the combined document. Optional Bates format:
+ * `prefix` + zero-`padWidth`-padded counter + optional date (dd.MM.yyyy). */
 export function addPageNumbers(
   jobId: string,
   outputPath: string,
   groups: PageGroup[],
   position: string,
   start: number,
+  prefix?: string,
+  padWidth?: number,
+  withDate?: boolean,
 ): Promise<JobResult> {
-  return invoke<JobResult>("add_page_numbers", { jobId, outputPath, groups, position, start });
+  return invoke<JobResult>("add_page_numbers", {
+    jobId,
+    outputPath,
+    groups,
+    position,
+    start,
+    prefix: prefix ?? null,
+    padWidth: padWidth ?? null,
+    withDate: withDate ?? null,
+  });
+}
+
+/**
+ * Lay 2 or 4 pages per sheet, or impose a saddle-stitch booklet (print
+ * double-sided, flip on the short edge, fold + staple).
+ * `sheetW`/`sheetH` are the output sheet size in PostScript points.
+ */
+export function nupPdf(
+  jobId: string,
+  outputPath: string,
+  groups: PageGroup[],
+  mode: "2up" | "4up" | "booklet",
+  sheetW: number,
+  sheetH: number,
+): Promise<JobResult> {
+  return invoke<JobResult>("nup_pdf", { jobId, outputPath, groups, mode, sheetW, sheetH });
 }
 
 /** Convert an Office document to a PDF (temp); returns the new PDF path. */
@@ -394,6 +423,59 @@ export function protectPdf(
   ownerPassword: string,
 ): Promise<JobResult> {
   return invoke<JobResult>("protect_pdf", { jobId, outputPath, groups, userPassword, ownerPassword });
+}
+
+// ---------------------------------------------------------------------------
+// Utility tools: blank pages / metadata / text export
+// ---------------------------------------------------------------------------
+
+/** Sensitivity presets for blank-page detection. */
+export type BlankSensitivity = "strict" | "normal" | "aggressive";
+
+/** The /Info metadata fields of a PDF. `null`/empty = not set (read) or remove (write). */
+export interface PdfMeta {
+  title: string | null;
+  author: string | null;
+  subject: string | null;
+  keywords: string | null;
+  creator: string | null;
+  producer: string | null;
+}
+
+/** Detect blank pages (1-based) of one PDF. Cancellable via `cancelJob(jobId)`. */
+export function detectBlankPages(
+  jobId: string,
+  inputPath: string,
+  sensitivity: BlankSensitivity,
+): Promise<number[]> {
+  return invoke<number[]>("detect_blank_pages", { jobId, inputPath, sensitivity });
+}
+
+/** Read a PDF's /Info metadata (missing entries are null). */
+export function readPdfMeta(inputPath: string): Promise<PdfMeta> {
+  return invoke<PdfMeta>("read_pdf_meta", { inputPath });
+}
+
+/** Write /Info metadata to a copy of the PDF; `clearAll` strips everything (sanitize). */
+export function writePdfMeta(
+  jobId: string,
+  inputPath: string,
+  outputPath: string,
+  fields: PdfMeta,
+  clearAll: boolean,
+): Promise<JobResult> {
+  return invoke<JobResult>("write_pdf_meta", { jobId, inputPath, outputPath, fields, clearAll });
+}
+
+/** Export a PDF's text (whole doc or a 1-based page range) to a UTF-8 .txt file. */
+export function exportPdfText(
+  jobId: string,
+  inputPath: string,
+  outputPath: string,
+  firstPage: number | null,
+  lastPage: number | null,
+): Promise<JobResult> {
+  return invoke<JobResult>("export_pdf_text", { jobId, inputPath, outputPath, firstPage, lastPage });
 }
 
 /**

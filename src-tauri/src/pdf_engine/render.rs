@@ -57,7 +57,7 @@ pub fn resolve_pdftoppm(app: &tauri::AppHandle) -> PathBuf {
 }
 
 /// Locate poppler's `pdftotext` (same dirs as pdftoppm).
-fn resolve_pdftotext(app: &tauri::AppHandle) -> PathBuf {
+pub(crate) fn resolve_pdftotext(app: &tauri::AppHandle) -> PathBuf {
     let exe = if cfg!(windows) {
         "pdftotext.exe"
     } else {
@@ -582,7 +582,7 @@ fn base64(data: &[u8]) -> String {
     s
 }
 
-fn fnv1a_hex(s: &str) -> String {
+pub(crate) fn fnv1a_hex(s: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in s.as_bytes() {
         hash ^= *byte as u64;

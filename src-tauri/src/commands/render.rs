@@ -17,6 +17,24 @@ fn hashed(s: &str) -> String {
     format!("{h:016x}")
 }
 
+/// File stem of `path` ("report" for "/x/report.docx"), or "document".
+fn stem_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "document".to_string())
+}
+
+/// Move a file, falling back to copy + delete when `rename` crosses volumes.
+fn move_file(src: &str, dst: &str) -> Result<(), AppError> {
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(src, dst).map_err(|e| AppError::io("Could not save the converted file.", e))?;
+    let _ = std::fs::remove_file(src);
+    Ok(())
+}
+
 /// Whether a local page renderer (poppler `pdftoppm`) is available.
 #[tauri::command]
 pub async fn renderer_available(app: tauri::AppHandle) -> Result<bool, AppError> {
@@ -185,19 +203,57 @@ pub async fn office_to_pdf_batch(
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, AppError> {
         let n = input_paths.len();
-        let mut outputs = Vec::with_capacity(n);
-        for (i, inp) in input_paths.iter().enumerate() {
-            if handle.is_cancelled() {
-                return Err(AppError::cancelled());
+        let work = temp::root(&app2)?.join("work").join(&jid);
+        let result = (|| -> Result<Vec<String>, AppError> {
+            let mut outputs = Vec::with_capacity(n);
+            // Output paths produced by THIS batch — used to detect inputs that
+            // share a stem (report.docx + report.xlsx) so the second one gets a
+            // "report (2).pdf" name instead of silently overwriting the first.
+            let mut taken = std::collections::HashSet::<String>::new();
+            for (i, inp) in input_paths.iter().enumerate() {
+                if handle.is_cancelled() {
+                    return Err(AppError::cancelled());
+                }
+                let _ = app2.emit(
+                    "job:update",
+                    JobUpdate::new(&jid, "running", &format!("Converting {} of {n}", i + 1))
+                        .percent(i as f32 / n as f32 * 100.0),
+                );
+
+                let stem = stem_of(inp);
+                let expected = std::path::Path::new(&output_dir).join(format!("{stem}.pdf"));
+                if !taken.contains(&expected.to_string_lossy().to_string()) {
+                    let out = office::to_pdf(&app2, Some(&handle), inp, &output_dir)?;
+                    taken.insert(out.clone());
+                    outputs.push(out);
+                    continue;
+                }
+
+                // Stem collision: convert into a scratch dir, then move the
+                // result to a unique "<stem> (N).pdf" in the output folder.
+                let scratch = work.join(i.to_string());
+                std::fs::create_dir_all(&scratch)
+                    .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
+                let produced =
+                    office::to_pdf(&app2, Some(&handle), inp, &scratch.to_string_lossy())?;
+                let mut k = 2;
+                let target = loop {
+                    let cand =
+                        std::path::Path::new(&output_dir).join(format!("{stem} ({k}).pdf"));
+                    let cand_str = cand.to_string_lossy().to_string();
+                    if !taken.contains(&cand_str) && !cand.exists() {
+                        break cand_str;
+                    }
+                    k += 1;
+                };
+                move_file(&produced, &target)?;
+                taken.insert(target.clone());
+                outputs.push(target);
             }
-            let _ = app2.emit(
-                "job:update",
-                JobUpdate::new(&jid, "running", &format!("Converting {} of {n}", i + 1))
-                    .percent(i as f32 / n as f32 * 100.0),
-            );
-            outputs.push(office::to_pdf(&app2, Some(&handle), inp, &output_dir)?);
-        }
-        Ok(outputs)
+            Ok(outputs)
+        })();
+        let _ = std::fs::remove_dir_all(&work);
+        result
     })
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
@@ -249,6 +305,99 @@ pub async fn pdfa_pdf(
     Ok(JobResult { job_id, output_paths, status: "completed".to_string() })
 }
 
+// ---------------------------------------------------------------------------
+// Utility tools: blank pages / metadata / text export
+// ---------------------------------------------------------------------------
+
+/// Detect blank pages of one PDF (1-based page numbers). Cancellable via
+/// `cancel_job` with the same job id. `sensitivity`: "strict" | "normal" |
+/// "aggressive".
+#[tauri::command]
+pub async fn detect_blank_pages(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, JobRegistry>,
+    job_id: String,
+    input_path: String,
+    sensitivity: String,
+) -> Result<Vec<u32>, AppError> {
+    let handle = registry.register(&job_id);
+    let jid = job_id.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::pdf_engine::blank::detect_blank_pages(&app, &handle, &jid, &input_path, &sensitivity)
+    })
+    .await
+    .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
+    registry.remove(&job_id);
+    res
+}
+
+/// Read a PDF's /Info metadata (Title, Author, Subject, Keywords, Creator,
+/// Producer). Missing entries come back as null.
+#[tauri::command]
+pub async fn read_pdf_meta(
+    input_path: String,
+) -> Result<crate::pdf_engine::metadata::PdfMeta, AppError> {
+    tauri::async_runtime::spawn_blocking(move || crate::pdf_engine::metadata::read_meta(&input_path))
+        .await
+        .map_err(|e| AppError::io("Could not read the metadata.", e))?
+}
+
+/// Write /Info metadata to a copy of the PDF. Empty/null fields are removed;
+/// `clear_all` strips the whole /Info ("sanitize"). Turkish and any other
+/// non-ASCII text is stored as UTF-16BE so it survives.
+#[tauri::command]
+pub async fn write_pdf_meta(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, JobRegistry>,
+    job_id: String,
+    input_path: String,
+    output_path: String,
+    fields: crate::pdf_engine::metadata::PdfMeta,
+    clear_all: bool,
+) -> Result<JobResult, AppError> {
+    let handle = registry.register(&job_id);
+    let app2 = app.clone();
+    let jid = job_id.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::pdf_engine::metadata::write_meta(
+            &app2, &handle, &jid, &input_path, &output_path, &fields, clear_all,
+        )
+    })
+    .await
+    .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
+    registry.remove(&job_id);
+    let output_paths = res?;
+    let _ = app.emit("job:update", JobUpdate::new(&job_id, "completed", "Done"));
+    Ok(JobResult { job_id, output_paths, status: "completed".to_string() })
+}
+
+/// Export a PDF's text (whole document or a page range) to a UTF-8 .txt file.
+#[tauri::command]
+pub async fn export_pdf_text(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, JobRegistry>,
+    job_id: String,
+    input_path: String,
+    output_path: String,
+    first_page: Option<u32>,
+    last_page: Option<u32>,
+) -> Result<JobResult, AppError> {
+    let handle = registry.register(&job_id);
+    let app2 = app.clone();
+    let jid = job_id.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::pdf_engine::textexport::export_text(
+            &app2, &handle, &jid, &input_path, &output_path, first_page, last_page,
+        )
+    })
+    .await
+    .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
+    registry.remove(&job_id);
+    let output_paths = res?;
+    let _ = app.emit("job:update", JobUpdate::new(&job_id, "completed", "Done"));
+    Ok(JobResult { job_id, output_paths, status: "completed".to_string() })
+}
+
 /// "PDF → Office": assemble the combined document, then convert to docx/pptx/xlsx.
 #[tauri::command]
 pub async fn pdf_to_office(
@@ -266,7 +415,21 @@ pub async fn pdf_to_office(
         let work = temp::root(&app2)?.join("work").join(&jid);
         std::fs::create_dir_all(&work)
             .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
-        let merged = work.join("merged.pdf");
+        // LibreOffice names its output after the input stem, so name the
+        // intermediate merged PDF after the user's first source file — the
+        // converted document then gets a meaningful name (not "merged.docx").
+        let base_stem = groups.first().map(|g| stem_of(&g.path)).unwrap_or_else(|| "document".into());
+        // Never silently overwrite an existing file in the output folder.
+        let mut stem = base_stem.clone();
+        let mut k = 2;
+        while std::path::Path::new(&output_dir)
+            .join(format!("{stem}.{format}"))
+            .exists()
+        {
+            stem = format!("{base_stem} ({k})");
+            k += 1;
+        }
+        let merged = work.join(format!("{stem}.pdf"));
         let merged_str = merged.to_string_lossy().to_string();
         let result = (|| -> Result<Vec<String>, AppError> {
             crate::pdf_engine::assemble(&app2, &handle, &jid, &groups, &merged_str)?;

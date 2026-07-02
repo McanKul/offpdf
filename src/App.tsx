@@ -25,6 +25,10 @@ import { PdfaPage } from "@/features/pdfa/PdfaPage";
 import { ComparePage } from "@/features/compare/ComparePage";
 import { StampPage } from "@/features/stamp/StampPage";
 import { PosterPage } from "@/features/poster/PosterPage";
+import { NupPage } from "@/features/nup/NupPage";
+import { BlankPage } from "@/features/blank/BlankPage";
+import { MetadataPage } from "@/features/metadata/MetadataPage";
+import { TextExportPage } from "@/features/text-export/TextExportPage";
 
 export function App() {
   return (
@@ -52,6 +56,10 @@ export function App() {
               <Route path="/tools/compare" element={<ComparePage />} />
               <Route path="/tools/stamp" element={<StampPage />} />
               <Route path="/tools/poster" element={<PosterPage />} />
+              <Route path="/tools/nup" element={<NupPage />} />
+              <Route path="/tools/blank-pages" element={<BlankPage />} />
+              <Route path="/tools/metadata" element={<MetadataPage />} />
+              <Route path="/tools/text-export" element={<TextExportPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/about" element={<AboutPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />

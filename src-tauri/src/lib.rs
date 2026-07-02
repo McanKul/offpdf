@@ -77,6 +77,7 @@ pub fn run() {
             commands::pdf::watermark_pdf,
             commands::pdf::crop_pdf,
             commands::pdf::poster_pdf,
+            commands::pdf::nup_pdf,
             // jobs
             commands::jobs::cancel_job,
             // page preview / review
@@ -95,6 +96,10 @@ pub fn run() {
             commands::render::ocr_available,
             commands::render::ocr_pdf,
             commands::render::pdfa_pdf,
+            commands::render::detect_blank_pages,
+            commands::render::read_pdf_meta,
+            commands::render::write_pdf_meta,
+            commands::render::export_pdf_text,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the OffPDF application");
