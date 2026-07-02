@@ -1,6 +1,6 @@
 [package]
 name = "offpdf"
-version = "0.1.0"
+version = "0.2.0"
 description = "Free, open-source, offline-first desktop PDF utility."
 authors = ["OffPDF contributors"]
 edition = "2021"
