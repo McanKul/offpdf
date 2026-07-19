@@ -1,11 +1,11 @@
 /** Which files the app accepts. PDFs load directly; images and Office documents
  * are converted to PDF on import (Office needs LibreOffice). */
 
-export const IMAGE_RE = /\.(png|jpe?g|gif|bmp|webp|tiff?)$/i;
+export const IMAGE_RE = /\.(png|jpe?g|gif|bmp|webp|tiff?|hei[cf])$/i;
 export const PDF_RE = /\.pdf$/i;
 export const OFFICE_RE = /\.(docx?|xlsx?|pptx?|odt|ods|odp|rtf|csv|html?)$/i;
 export const SUPPORTED_RE =
-  /\.(pdf|png|jpe?g|gif|bmp|webp|tiff?|docx?|xlsx?|pptx?|odt|ods|odp|rtf|csv|html?)$/i;
+  /\.(pdf|png|jpe?g|gif|bmp|webp|tiff?|hei[cf]|docx?|xlsx?|pptx?|odt|ods|odp|rtf|csv|html?)$/i;
 
 export function isImagePath(path: string): boolean {
   return IMAGE_RE.test(path);

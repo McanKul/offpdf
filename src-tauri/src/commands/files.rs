@@ -32,7 +32,7 @@ pub async fn pick_pdf_files(app: tauri::AppHandle) -> Result<Vec<String>, AppErr
             .add_filter(
                 "PDF, images & Office",
                 &[
-                    "pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "doc", "docx",
+                    "pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "doc", "docx",
                     "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "csv", "html", "htm",
                 ],
             )
@@ -58,7 +58,7 @@ pub async fn pick_pdf_file(app: tauri::AppHandle) -> Result<Option<String>, AppE
             .add_filter(
                 "PDF, images & Office",
                 &[
-                    "pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "doc", "docx",
+                    "pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "doc", "docx",
                     "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "csv", "html", "htm",
                 ],
             )

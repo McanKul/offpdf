@@ -176,10 +176,14 @@ pub fn image_to_pdf(app: &tauri::AppHandle, input: &str) -> Result<String, AppEr
             .map_err(|e| AppError::io("Could not read the image.", e))?;
     } else {
         // Decode any supported format and re-encode to JPEG.
-        let img = image::open(in_path).map_err(|e| {
-            AppError::new("INVALID_IMAGE", "Could not read this image", e.to_string())
-                .with_suggestion("Supported: PNG, JPEG, GIF, BMP, WebP, TIFF.")
-        })?;
+        let img = if ext == "heic" || ext == "heif" {
+            decode_heif(in_path)?
+        } else {
+            image::open(in_path).map_err(|e| {
+                AppError::new("INVALID_IMAGE", "Could not read this image", e.to_string())
+                    .with_suggestion("Supported: HEIC, HEIF, PNG, JPEG, GIF, BMP, WebP, TIFF.")
+            })?
+        };
         let rgb = img.to_rgb8();
         let (w, h) = (rgb.width(), rgb.height());
         let file = std::fs::File::create(&jpg_path)
@@ -211,6 +215,16 @@ pub fn image_to_pdf(app: &tauri::AppHandle, input: &str) -> Result<String, AppEr
     }];
     write_image_pdf(&out_pdf_str, &pages)?;
     Ok(out_pdf_str)
+}
+
+/// Decode the primary image in a HEIC/HEIF container with the bundled libheif.
+fn decode_heif(path: &Path) -> Result<image::DynamicImage, AppError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| AppError::io("Could not read the HEIC/HEIF image.", e))?;
+    heif::decode(&bytes).map_err(|e| {
+        AppError::new("INVALID_IMAGE", "Could not decode this HEIC/HEIF image", e.to_string())
+            .with_suggestion("Try exporting the original photo again if the file is incomplete.")
+    })
 }
 
 /// Render one page to a JPEG at the given DPI/quality. `idx` keeps file names

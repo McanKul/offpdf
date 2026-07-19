@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Free, open-source, offline-first desktop PDF utility."
 authors = ["OffPDF contributors"]
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.85"
 
 # The library is what Tauri (and the mobile entrypoints) link against.
 [lib]
@@ -37,6 +37,9 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
     "tiff",
 ] }
+# Decode iPhone/iPad HEIC and HEIF photos. libheif is built and linked into the
+# app so users do not need to install a system codec or upload their photos.
+heif-rs = "26.7"
 
 [features]
 # By default Tauri uses custom protocols. Keep network features off.
