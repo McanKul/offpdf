@@ -4,6 +4,12 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+## 0.2.1
+
+### Added
+
+- Convert HEIC and HEIF photos, including iPhone and iPad images, to PDF entirely offline with a bundled decoder.
+
 ## 0.2.0
 
 ### Fixed
