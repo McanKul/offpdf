@@ -84,6 +84,28 @@ jobs:
           prerelease: false
           args: --bundles nsis
 
+      - name: Smoke test installed application
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path src-tauri/target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer was not produced.' }
+
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Silent install failed with exit code $($process.ExitCode)." }
+
+          $appPath = Join-Path $env:LOCALAPPDATA 'OffPDF\offpdf.exe'
+          if (-not (Test-Path $appPath)) { throw "Installed application not found at $appPath" }
+
+          foreach ($runtime in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
+            $runtimePath = Join-Path (Split-Path $appPath) $runtime
+            if (-not (Test-Path $runtimePath)) { throw "Required runtime is missing: $runtimePath" }
+          }
+
+          $app = Start-Process -FilePath $appPath -PassThru
+          Start-Sleep -Seconds 10
+          if ($app.HasExited) { throw "OffPDF exited during startup with code $($app.ExitCode)." }
+          Stop-Process -Id $app.Id -Force
+
       - name: List bundle outputs
         shell: pwsh
         run: Get-ChildItem -Path src-tauri/target/release/bundle -Recurse | Select-Object FullName, Length
