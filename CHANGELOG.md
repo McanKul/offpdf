@@ -4,6 +4,13 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+## 0.2.2
+
+### Fixed
+
+- Windows: bundle the Microsoft Visual C++ runtime beside the application so OffPDF starts on clean Windows installations after HEIC/HEIF support was added.
+- Windows release builds now install and launch the packaged application as a smoke test before publishing it.
+
 ## 0.2.1
 
 ### Added
