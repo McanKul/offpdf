@@ -1281,3 +1281,151 @@ button {
     flex-direction: column;
   }
 }
+
+/* =========================================================================
+   Visual PDF editor canvas (issue #6)
+   ========================================================================= */
+.pdf-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+.pdf-editor__toolbar {
+  flex-wrap: wrap;
+}
+.pdf-editor__sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 4px;
+}
+.pdf-editor__body {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 14px;
+  min-height: 420px;
+  align-items: start;
+}
+.pdf-editor__sidebar {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 12px;
+  max-height: 70vh;
+  overflow: auto;
+}
+.pdf-editor__sidebar-title {
+  font-weight: 650;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.pdf-editor__object-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pdf-editor__object-list li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pdf-editor__object-item {
+  flex: 1;
+  text-align: left;
+  border: 1px solid transparent;
+  background: var(--surface-2);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+.pdf-editor__object-item:hover {
+  border-color: var(--border-strong);
+}
+.pdf-editor__object-item.is-selected {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+}
+.pdf-editor__object-delete {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.pdf-editor__object-delete:hover {
+  background: var(--surface-2);
+  color: var(--danger, #b91c1c);
+}
+.pdf-editor__stage {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  min-height: 50vh;
+  max-height: 78vh;
+  overflow: auto;
+  padding: 16px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.pdf-editor__status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  padding: 40px;
+}
+.pdf-editor__page-wrap {
+  position: relative;
+  box-shadow: var(--shadow-sm);
+  border-radius: 4px;
+  background: #fff;
+  flex: none;
+  line-height: 0;
+}
+.pdf-editor__canvas {
+  display: block;
+  border-radius: 2px;
+  max-width: none;
+}
+.pdf-editor__overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  cursor: crosshair;
+  touch-action: none;
+}
+.pdf-editor__coords {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+.pdf-editor__debug {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.pdf-editor__debug-pre {
+  margin: 10px 0 0;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+}
+@media (max-width: 800px) {
+  .pdf-editor__body {
+    grid-template-columns: 1fr;
+  }
+}
