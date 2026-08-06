@@ -23,3 +23,4 @@ export type { FileSelection } from "./useFileSelection";
 export { useThumbnails } from "./useThumbnails";
 export { useFileThumb } from "./useFileThumb";
 export { useSortable } from "./useSortable";
+export { PdfEditorCanvas } from "./editor";
