@@ -31,6 +31,15 @@ pub struct OutlineItem {
     pub level: u32,
 }
 
+/// Bounded PNG/JPEG preview for the editor (path in, small data URL out).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImagePreview {
+    pub data_url: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Result of a visual page comparison: a diff-overlay image (base64 data URL)
 /// plus the fraction of pixels that changed.
 #[derive(Debug, Clone, Serialize)]

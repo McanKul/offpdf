@@ -14,6 +14,7 @@ import type {
   DiskSpaceInfo,
   FileInfo,
   DiffResult,
+  ImagePreview,
   JobResult,
   JobUpdate,
   OutlineItem,
@@ -24,6 +25,7 @@ import type {
   RotationAngle,
   SplitMode,
 } from "./types";
+import type { EditDocument } from "./editor";
 
 /** Generate a unique job id on the frontend (passed into every operation). */
 export function newJobId(): string {
@@ -48,6 +50,14 @@ export function pickPdfFile(): Promise<string | null> {
 
 export function pickOutputFolder(): Promise<string | null> {
   return invoke<string | null>("pick_output_folder");
+}
+
+export function pickImageFile(): Promise<string | null> {
+  return invoke<string | null>("pick_image_file");
+}
+
+export function previewImage(path: string): Promise<ImagePreview> {
+  return invoke<ImagePreview>("preview_image", { path });
 }
 
 export function getFileInfo(path: string): Promise<FileInfo> {
@@ -270,6 +280,15 @@ export function ocrPdf(
 }
 
 /** Stamp a line of text (typed signature / "APPROVED" / date) on one page. */
+export function editPdfOverlays(
+  jobId: string,
+  outputPath: string,
+  groups: PageGroup[],
+  document: EditDocument,
+): Promise<JobResult> {
+  return invoke<JobResult>("edit_pdf_overlays", { jobId, outputPath, groups, document });
+}
+
 export function stampPdf(
   jobId: string,
   outputPath: string,

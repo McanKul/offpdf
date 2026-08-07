@@ -1,58 +1,111 @@
 /**
- * Reusable visual PDF editor canvas (issue #6).
+ * Reusable visual PDF editor canvas.
  * Renders a page, hosts an SVG draft overlay, object list, zoom/page chrome.
- * Does not write PDF output — that is issue #7+.
- *
- * MVP objects are rectangles only — enough to prove select/move/resize/undo and
- * coordinate accuracy. Text, images, freehand, and real PDF export land in #7–#8.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { Spinner } from "@/components/ui/Spinner";
 import { Alert } from "@/components/ui/Alert";
-import { pagePdf } from "@/lib/tauriCommands";
+import { pagePdf, pickImageFile, previewImage } from "@/lib/tauriCommands";
 import { base64ToBytes } from "@/lib/pdfjs";
-import type { EditDocument, PdfRect } from "@/lib/editor";
+import type { EditDocument, EditObject, ShapeStyle } from "@/lib/editor";
+import {
+  cloneObject,
+  displayedSize,
+  isClosedShapeObject,
+  makeMapping,
+  offsetObject,
+  pdfRectToViewport,
+  rgbToHex,
+  viewportToPdf,
+} from "@/lib/editor";
 import { PageSurface, type PageLayout } from "./PageSurface";
-import { EditorOverlay } from "./EditorOverlay";
+import { EditorOverlay, type EditorTool } from "./EditorOverlay";
 import { ObjectList } from "./ObjectList";
+import { ObjectInspector, type ColorPickTarget } from "./ObjectInspector";
+import { ShapePicker, SHAPE_TOOLS } from "./ShapePicker";
 import { useEditSession } from "./useEditSession";
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 4;
 const STEP = 0.25;
+const PASTE_NUDGE = 14;
+
+function newObjectId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `obj-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+const MAIN_TOOLS: {
+  id: EditorTool;
+  label: string;
+  icon: "mousePointer" | "hand" | "type" | "image" | "pencil";
+}[] = [
+  { id: "select", label: "Select", icon: "mousePointer" },
+  { id: "hand", label: "Hand", icon: "hand" },
+  { id: "text", label: "Text", icon: "type" },
+  { id: "image", label: "Image", icon: "image" },
+  { id: "ink", label: "Draw", icon: "pencil" },
+];
+
+function isTextEntryTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!el.isContentEditable;
+}
 
 export function PdfEditorCanvas({
   sourcePath,
-  pageNumber,
+  sourcePage,
+  pageIndex,
   pageCount,
+  resetKey,
   onPageChange,
   onChange,
 }: {
-  /** Absolute path to the PDF on disk. */
   sourcePath: string;
-  /** 1-based page number (matches pagePdf). */
-  pageNumber: number;
+  /** 1-based page number inside `sourcePath` (pagePdf). */
+  sourcePage: number;
+  /** 0-based index in the combined editor session. */
+  pageIndex: number;
   pageCount: number;
-  onPageChange?: (page: number) => void;
+  /** Change this when the workspace document identity changes. */
+  resetKey?: string;
+  onPageChange?: (pageIndex: number) => void;
   onChange?: (doc: EditDocument) => void;
 }) {
-  const session = useEditSession(onChange);
+  const session = useEditSession(onChange, resetKey);
   const [zoom, setZoom] = useState(1);
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [layout, setLayout] = useState<PageLayout | null>(null);
-  const [createMode, setCreateMode] = useState(true);
+  const [tool, setTool] = useState<EditorTool>("text");
+  const [spacePan, setSpacePan] = useState(false);
+  const [panning, setPanning] = useState(false);
+  const [shapeOpen, setShapeOpen] = useState(false);
+  const [lastShape, setLastShape] = useState<(typeof SHAPE_TOOLS)[number]["id"]>("rect");
   const [surfaceKey, setSurfaceKey] = useState(0);
-  /** Stable unzoomed fit width from the stage (not the page element). */
   const [fitWidth, setFitWidth] = useState(640);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [colorPick, setColorPick] = useState<ColorPickTarget | null>(null);
+  const [pickCursor, setPickCursor] = useState<{ x: number; y: number } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const pageCanvasRef = useRef<HTMLCanvasElement>(null);
+  const panRef = useRef<{ x: number; y: number; sl: number; st: number } | null>(null);
+  const clipboardRef = useRef<EditObject[]>([]);
+  const pasteGen = useRef(1);
+  const [canPaste, setCanPaste] = useState(false);
+  const lastShapeStyle = useRef<ShapeStyle>({
+    fill: "none",
+    stroke: "#111827",
+    strokeWidth: 1.5,
+    opacity: 1,
+  });
 
-  const pageIndex = pageNumber - 1;
-
-  // Measure the stage once content can use it; zoom must not feed back into this.
   useEffect(() => {
     const el = stageRef.current;
     if (!el) return;
@@ -74,13 +127,11 @@ export function PdfEditorCanvas({
     setLoadError(null);
     setBytes(null);
     setLayout(null);
-    pagePdf(sourcePath, pageNumber)
+    pagePdf(sourcePath, sourcePage)
       .then((b64) => {
         if (!active) return;
         if (!b64) {
-          setLoadError(
-            "Could not extract this page for the editor. Check that qpdf is installed (brew install qpdf).",
-          );
+          setLoadError("Could not open this page. Check that qpdf is installed.");
           setLoading(false);
           return;
         }
@@ -92,13 +143,13 @@ export function PdfEditorCanvas({
       .catch((e: unknown) => {
         if (!active) return;
         const msg = e instanceof Error ? e.message : "Could not load this page.";
-        setLoadError(`${msg} Is qpdf on PATH?`);
+        setLoadError(msg);
         setLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [sourcePath, pageNumber]);
+  }, [sourcePath, sourcePage]);
 
   const clampZoom = (z: number) =>
     Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 100) / 100));
@@ -112,77 +163,328 @@ export function PdfEditorCanvas({
 
   const go = (delta: number) => {
     if (!onPageChange) return;
-    const next = Math.min(pageCount, Math.max(1, pageNumber + delta));
+    const next = Math.min(pageCount - 1, Math.max(0, pageIndex + delta));
     onPageChange(next);
   };
 
-  const addCenteredRect = () => {
+  const placeImage = async (atCss?: { x: number; y: number }) => {
     if (!layout) return;
-    const { box } = layout.geometry;
-    const w = Math.min(120, box.w * 0.25);
-    const h = Math.min(80, box.h * 0.15);
-    const rect: PdfRect = {
-      x: box.x + (box.w - w) / 2,
-      y: box.y + (box.h - h) / 2,
-      w,
-      h,
+    try {
+      const path = await pickImageFile();
+      if (!path) return;
+      const preview = await previewImage(path);
+      const disp = displayedSize(layout.geometry);
+      const mapping = makeMapping(layout.geometry, layout.cssWidth, layout.cssHeight);
+      const natW = preview.width;
+      const natH = preview.height;
+      const maxW = disp.w * 0.45;
+      const scale = natW > 0 ? Math.min(1, maxW / natW) : 1;
+      const w = Math.max(24, natW * scale);
+      const h = Math.max(24, natH * scale);
+      let cx = layout.geometry.box.x + (layout.geometry.box.w - w) / 2;
+      let cy = layout.geometry.box.y + (layout.geometry.box.h - h) / 2;
+      if (atCss) {
+        const pt = viewportToPdf(atCss, mapping);
+        cx = pt.x - w / 2;
+        cy = pt.y - h / 2;
+      }
+      session.addImage(pageIndex, { x: cx, y: cy, w, h }, path, preview.dataUrl);
+      setTool("select");
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Could not add that image.");
+    }
+  };
+
+  const copySelection = useCallback(() => {
+    const sel = session.objects.filter((o) => session.selectedIds.includes(o.id));
+    if (sel.length === 0) return false;
+    clipboardRef.current = sel.map(cloneObject);
+    pasteGen.current = 1;
+    setCanPaste(true);
+    return true;
+  }, [session.objects, session.selectedIds]);
+
+  const pasteClipboard = useCallback(() => {
+    if (clipboardRef.current.length === 0) return;
+    const n = pasteGen.current++;
+    const dx = PASTE_NUDGE * n;
+    const dy = -PASTE_NUDGE * n;
+    session.addMany(
+      clipboardRef.current.map((o) => {
+        const next = offsetObject(o, dx, dy);
+        next.id = newObjectId();
+        next.pageIndex = pageIndex;
+        return next;
+      }),
+    );
+  }, [session, pageIndex]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (isTextEntryTarget(t)) return;
+      if (!root.contains(t) && document.activeElement && !root.contains(document.activeElement)) {
+        return;
+      }
+
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod && e.key.toLowerCase() === "h") {
+        e.preventDefault();
+        setTool("hand");
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        session.undo();
+        return;
+      }
+      if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) {
+        e.preventDefault();
+        session.redo();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "c") {
+        if (copySelection()) e.preventDefault();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "v") {
+        if (clipboardRef.current.length === 0) return;
+        e.preventDefault();
+        pasteClipboard();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "d") {
+        if (session.selectedIds.length === 0) return;
+        e.preventDefault();
+        copySelection();
+        pasteClipboard();
+        return;
+      }
+      if (e.key === "Escape") {
+        if (shapeOpen) {
+          setShapeOpen(false);
+          return;
+        }
+        if (colorPick) {
+          setColorPick(null);
+          setPickCursor(null);
+          return;
+        }
+        session.clearSelection();
+        setEditingTextId(null);
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (session.selectedIds.length === 0) return;
+        e.preventDefault();
+        session.remove(session.selectedIds);
+        return;
+      }
+      if (session.selectedIds.length === 0) return;
+      const step = e.shiftKey ? 10 : 1;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        session.nudgeSelected(-step, 0);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        session.nudgeSelected(step, 0);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        session.nudgeSelected(0, step);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        session.nudgeSelected(0, -step);
+      }
     };
-    session.addRect(pageIndex, rect);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [session, colorPick, copySelection, pasteClipboard, shapeOpen]);
+
+  useEffect(() => {
+    const stopSpacePan = () => {
+      setSpacePan(false);
+      panRef.current = null;
+      setPanning(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== "Space" && e.key !== " ") return;
+      if (isTextEntryTarget(e.target) || isTextEntryTarget(document.activeElement)) return;
+      const ae = document.activeElement;
+      const root = rootRef.current;
+      const stage = stageRef.current;
+      // Only when the editor shell or the page stage is focused — not toolbar buttons.
+      if (ae !== root && !(ae instanceof Node && !!stage?.contains(ae))) return;
+      e.preventDefault();
+      if (e.repeat) return;
+      setSpacePan(true);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== "Space" && e.key !== " ") return;
+      stopSpacePan();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", stopSpacePan);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", stopSpacePan);
+    };
+  }, []);
+
+  const selected = session.objects.find((o) => o.id === session.selectedIds[0]) ?? null;
+  const panMode = !colorPick && (tool === "hand" || spacePan);
+
+  const onStagePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    rootRef.current?.focus();
+    if (!panMode) return;
+    if (e.button !== 0) return;
+    const el = stageRef.current;
+    if (!el) return;
+    panRef.current = { x: e.clientX, y: e.clientY, sl: el.scrollLeft, st: el.scrollTop };
+    setPanning(true);
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture is best-effort */
+    }
+    e.preventDefault();
+  };
+
+  const onStagePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const el = stageRef.current;
+    const drag = panRef.current;
+    if (!el || !drag) return;
+    el.scrollLeft = drag.sl - (e.clientX - drag.x);
+    el.scrollTop = drag.st - (e.clientY - drag.y);
+  };
+
+  const onStagePointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!panRef.current) return;
+    panRef.current = null;
+    setPanning(false);
+    const el = stageRef.current;
+    if (el?.hasPointerCapture(e.pointerId)) {
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const applyPickedColor = (hex: string) => {
+    if (!selected || !colorPick) return;
+    if (colorPick === "color") session.updateObject(selected.id, { color: hex } as Partial<EditObject>);
+    else if (colorPick === "fill") session.updateObject(selected.id, { fill: hex } as Partial<EditObject>);
+    else session.updateObject(selected.id, { stroke: hex } as Partial<EditObject>);
+    setColorPick(null);
+    setPickCursor(null);
+  };
+
+  const samplePageColor = (css: { x: number; y: number }) => {
+    const canvas = pageCanvasRef.current;
+    if (!canvas || canvas.width < 1 || canvas.height < 1) return;
+    const scaleX = canvas.width / Math.max(canvas.clientWidth, 1);
+    const scaleY = canvas.height / Math.max(canvas.clientHeight, 1);
+    const x = Math.min(canvas.width - 1, Math.max(0, Math.floor(css.x * scaleX)));
+    const y = Math.min(canvas.height - 1, Math.max(0, Math.floor(css.y * scaleY)));
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+    const data = ctx.getImageData(x, y, 1, 1).data;
+    applyPickedColor(rgbToHex(data[0], data[1], data[2]));
   };
 
   return (
-    <div className="pdf-editor">
+    <div className="pdf-editor" ref={rootRef} tabIndex={0}>
       <div className="pdf-editor__toolbar thumb-toolbar wrap">
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={session.undo}
-          disabled={!session.canUndo}
-          leftIcon={<Icon name="undo" size={14} />}
-        >
-          Undo
+        <Button size="sm" variant="secondary" onClick={session.undo} disabled={!session.canUndo} title="Undo" aria-label="Undo">
+          <Icon name="undo" size={15} />
         </Button>
-        <Button size="sm" variant="secondary" onClick={session.redo} disabled={!session.canRedo}>
-          Redo
+        <Button size="sm" variant="secondary" onClick={session.redo} disabled={!session.canRedo} title="Redo" aria-label="Redo">
+          <Icon name="undo" size={15} style={{ transform: "scaleX(-1)" }} />
         </Button>
-        <span className="pdf-editor__sep" />
-        <Button size="sm" variant="ghost" onClick={() => setZoomSafe((z) => z - STEP)}>
-          −
-        </Button>
-        <span className="muted" style={{ fontSize: 12.5, minWidth: 40, textAlign: "center" }}>
-          {Math.round(zoom * 100)}%
-        </span>
-        <Button size="sm" variant="ghost" onClick={() => setZoomSafe((z) => z + STEP)}>
-          +
-        </Button>
-        <Button size="sm" variant="ghost" onClick={() => setZoomSafe(1)}>
-          Reset zoom
-        </Button>
-        <span className="pdf-editor__sep" />
-        <Button size="sm" variant="ghost" onClick={() => go(-1)} disabled={pageNumber <= 1}>
-          ← Page
-        </Button>
-        <span className="muted" style={{ fontSize: 12.5 }}>
-          {pageNumber} / {pageCount}
-        </span>
         <Button
           size="sm"
           variant="ghost"
-          onClick={() => go(1)}
-          disabled={pageNumber >= pageCount}
+          onClick={copySelection}
+          disabled={session.selectedIds.length === 0}
+          title="Copy (Ctrl/Cmd+C)"
+          aria-label="Copy"
         >
-          Page →
+          <Icon name="copy" size={15} />
         </Button>
-        <span className="pdf-editor__sep" />
         <Button
           size="sm"
-          variant={createMode ? "primary" : "secondary"}
-          onClick={() => setCreateMode((v) => !v)}
+          variant="ghost"
+          onClick={pasteClipboard}
+          disabled={!canPaste}
+          title="Paste (Ctrl/Cmd+V)"
+          aria-label="Paste"
         >
-          {createMode ? "Drag to draw" : "Select mode"}
+          <Icon name="clipboard" size={15} />
         </Button>
-        <Button size="sm" variant="secondary" onClick={addCenteredRect} disabled={!layout}>
-          Add rectangle
+        <span className="pdf-editor__sep" />
+        {MAIN_TOOLS.filter((t) => t.id !== "ink").map((t) => (
+          <Button
+            key={t.id}
+            size="sm"
+            variant={tool === t.id ? "primary" : "ghost"}
+            title={t.id === "hand" ? "Hand — drag to slide the page (H, hold Space)" : t.label}
+            aria-label={t.id === "hand" ? "Hand" : t.label}
+            aria-pressed={tool === t.id}
+            onClick={() => {
+              if (t.id === "image") {
+                void placeImage();
+                return;
+              }
+              setTool(t.id);
+            }}
+          >
+            <Icon name={t.icon} size={16} />
+          </Button>
+        ))}
+        <ShapePicker
+          tool={tool}
+          open={shapeOpen}
+          lastShape={lastShape}
+          onOpenChange={setShapeOpen}
+          onPick={(id) => {
+            setLastShape(id);
+            setTool(id);
+          }}
+        />
+        <Button
+          size="sm"
+          variant={tool === "ink" ? "primary" : "ghost"}
+          title="Draw"
+          aria-label="Draw"
+          aria-pressed={tool === "ink"}
+          onClick={() => setTool("ink")}
+        >
+          <Icon name="pencil" size={16} />
+        </Button>
+        <span className="pdf-editor__sep" />
+        <Button size="sm" variant="ghost" onClick={() => setZoomSafe((z) => z - STEP)} title="Zoom out" aria-label="Zoom out">
+          <Icon name="minus" size={15} />
+        </Button>
+        <button type="button" className="btn btn--ghost btn--sm" title="Reset zoom" aria-label="Reset zoom" onClick={() => setZoomSafe(1)} style={{ minWidth: 44 }}>
+          {Math.round(zoom * 100)}%
+        </button>
+        <Button size="sm" variant="ghost" onClick={() => setZoomSafe((z) => z + STEP)} title="Zoom in" aria-label="Zoom in">
+          <Icon name="plus" size={15} />
+        </Button>
+        <span className="pdf-editor__sep" />
+        <Button size="sm" variant="ghost" onClick={() => go(-1)} disabled={pageIndex <= 0} title="Previous page" aria-label="Previous page">
+          <Icon name="chevronRight" size={15} style={{ transform: "rotate(180deg)" }} />
+        </Button>
+        <span className="muted" style={{ fontSize: 12.5 }}>
+          {pageIndex + 1} / {pageCount}
+        </span>
+        <Button size="sm" variant="ghost" onClick={() => go(1)} disabled={pageIndex >= pageCount - 1} title="Next page" aria-label="Next page">
+          <Icon name="chevronRight" size={15} />
         </Button>
       </div>
 
@@ -195,26 +497,51 @@ export function PdfEditorCanvas({
             onSelect={session.select}
             onDelete={session.remove}
           />
-          {session.selectedIds.length > 0 && (
-            <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
-              Delete / Backspace removes selection. Arrows nudge (Shift = 10pt).
+          {selected && session.selectedIds.length > 1 && (
+            <div className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>
+              {session.selectedIds.length} selected — drag to move together
             </div>
           )}
-          {layout && session.selectedIds[0] && (
-            <SelectedCoords
-              objects={session.objects}
-              selectedId={session.selectedIds[0]}
+          {selected && session.selectedIds.length === 1 && (
+            <ObjectInspector
+              obj={selected}
+              picking={colorPick}
+              layerIndex={session.objects.filter((o) => o.pageIndex === selected.pageIndex).findIndex((o) => o.id === selected.id) + 1}
+              layerCount={session.objects.filter((o) => o.pageIndex === selected.pageIndex).length}
+              onChange={(patch) => {
+                session.updateObject(selected.id, patch);
+                if (isClosedShapeObject(selected)) {
+                  lastShapeStyle.current = { ...lastShapeStyle.current, ...patch };
+                }
+              }}
+              onPickFromPage={(target) => {
+                setColorPick((cur) => (cur === target ? null : target));
+                setPickCursor(null);
+              }}
+              onReorder={(dir) => session.reorder(selected.id, dir)}
             />
           )}
         </aside>
 
-        <div className="pdf-editor__stage" ref={stageRef}>
+        <div
+          className={`pdf-editor__stage${colorPick ? " is-eyedrop" : ""}${panMode ? " is-hand" : ""}${panning ? " is-panning" : ""}`}
+          ref={stageRef}
+          onPointerDown={onStagePointerDown}
+          onPointerMove={onStagePointerMove}
+          onPointerUp={onStagePointerUp}
+          onPointerCancel={onStagePointerUp}
+        >
           {loading && (
             <div className="pdf-editor__status">
               <Spinner /> Loading page…
             </div>
           )}
           {loadError && <Alert variant="danger">{loadError}</Alert>}
+          {colorPick && (
+            <div className="muted" style={{ fontSize: 12.5, padding: "8px 12px 0" }}>
+              Click the page to sample a color · Esc cancels
+            </div>
+          )}
           {bytes && !loadError && (
             <div
               className="pdf-editor__page-wrap"
@@ -225,15 +552,14 @@ export function PdfEditorCanvas({
               }
             >
               <PageSurface
-                key={`${sourcePath}:${pageNumber}:${surfaceKey}`}
+                key={`${sourcePath}:${sourcePage}:${surfaceKey}`}
                 bytes={bytes}
                 zoom={zoom}
                 fitWidth={fitWidth}
                 pageIndex={pageIndex}
+                canvasRef={pageCanvasRef}
                 onLayout={setLayout}
-                onFail={(reason) =>
-                  setLoadError(reason ?? "pdf.js could not render this page.")
-                }
+                onFail={(reason) => setLoadError(reason ?? "Could not render this page.")}
               />
               {layout && (
                 <EditorOverlay
@@ -241,43 +567,92 @@ export function PdfEditorCanvas({
                   objects={session.objects}
                   selectedIds={session.selectedIds}
                   pageIndex={pageIndex}
-                  createMode={createMode}
+                  tool={panMode ? "hand" : tool}
+                  createStyle={lastShapeStyle.current}
+                  pickColor={!!colorPick}
+                  onPickColor={samplePageColor}
+                  onPickHover={colorPick ? (p) => setPickCursor(p) : undefined}
                   onSelect={session.select}
                   onClearSelection={session.clearSelection}
                   onBeginGesture={session.beginGesture}
                   onEndGesture={session.endGesture}
                   onUpdateRect={session.updateRect}
-                  onCreateRect={(rect) => session.addRect(pageIndex, rect)}
+                  onUpdateRotate={(id, deg) => session.updateObject(id, { objectRotate: deg })}
+                  onCreateShape={(kind, rect, keepAspect) => {
+                    session.addShape(kind, pageIndex, rect, lastShapeStyle.current, keepAspect);
+                    setTool("select");
+                  }}
+                  onCreateText={(rect) => {
+                    session.addText(pageIndex, rect);
+                    setTool("select");
+                  }}
+                  onCreateLine={(a, b) => {
+                    session.addLine(pageIndex, a.x, a.y, b.x, b.y);
+                    setLastShape("line");
+                    setTool("select");
+                  }}
+                  onCreateInk={(pts) => {
+                    session.addInk(pageIndex, pts);
+                    setTool("select");
+                  }}
+                  onRequestImage={(at) => void placeImage(at)}
+                  onActivateText={(id) => setEditingTextId(id)}
+                />
+              )}
+              {editingTextId && layout && (
+                <TextEditor
+                  obj={session.objects.find((o) => o.id === editingTextId)}
+                  layout={layout}
+                  onChange={(content) => session.updateObject(editingTextId, { content } as Partial<EditObject>)}
+                  onClose={() => setEditingTextId(null)}
                 />
               )}
             </div>
           )}
         </div>
       </div>
+      {colorPick && pickCursor && (
+        <div className="pdf-editor__pick-cursor" style={{ left: pickCursor.x, top: pickCursor.y }} aria-hidden>
+          <Icon name="eyedropper" size={20} />
+        </div>
+      )}
     </div>
   );
 }
 
-function SelectedCoords({
-  objects,
-  selectedId,
+function TextEditor({
+  obj,
+  layout,
+  onChange,
+  onClose,
 }: {
-  objects: { id: string; rect: PdfRect }[];
-  selectedId: string;
+  obj: EditObject | undefined;
+  layout: PageLayout;
+  onChange: (content: string) => void;
+  onClose: () => void;
 }) {
-  const obj = objects.find((o) => o.id === selectedId);
-  if (!obj) return null;
-  const { x, y, w, h } = obj.rect;
-  const fmt = (n: number) => n.toFixed(1);
+  if (!obj || obj.kind !== "text") return null;
+  const mapping = makeMapping(layout.geometry, layout.cssWidth, layout.cssHeight);
+  const css = pdfRectToViewport(obj.rect, mapping);
+  const rot = obj.objectRotate ?? 0;
   return (
-    <div className="pdf-editor__coords mono" style={{ fontSize: 11, marginTop: 10 }}>
-      <div className="muted">PDF pts (export)</div>
-      <div>
-        x={fmt(x)} y={fmt(y)}
-      </div>
-      <div>
-        w={fmt(w)} h={fmt(h)}
-      </div>
-    </div>
+    <textarea
+      className="pdf-editor__text-edit"
+      style={{
+        left: css.x,
+        top: css.y,
+        width: Math.max(css.w, 80),
+        height: Math.max(css.h, 28),
+        transform: rot ? `rotate(${rot}deg)` : undefined,
+        transformOrigin: "center center",
+      }}
+      value={obj.content}
+      autoFocus
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={onClose}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    />
   );
 }

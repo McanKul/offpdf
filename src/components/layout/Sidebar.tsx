@@ -44,8 +44,6 @@ export function Sidebar() {
 
       <nav className="sidebar__nav sidebar__nav--footer" aria-label="App">
         <ThemeToggle />
-        {/* Issue #6 sandbox — not a product tool; for contributors / local testing */}
-        <NavRow to="/dev/editor-canvas" icon="crop" label="Editor canvas (dev)" />
         <NavRow to="/settings" icon="settings" label="Settings" />
         <NavRow to="/about" icon="info" label="About" />
       </nav>

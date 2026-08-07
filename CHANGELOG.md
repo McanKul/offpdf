@@ -4,6 +4,12 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+### Added
+
+- Edit PDF: add text (including Turkish), PNG/JPEG images, rectangles, lines and freehand drawings on a live page preview. Saves a new overlay PDF via qpdf; the original file is never overwritten. Noto Sans is bundled (SIL OFL) for Unicode overlay text.
+- Edit PDF: Hand tool (H) click-drags a zoomed page to pan; hold Space for a temporary hand. Trackpad scroll still works.
+- Edit PDF: Square and Circle in the shape picker stay 1:1; Rectangle and Ellipse stay free (hold Shift for a perfect ratio). Width and height can be typed; the lock keeps the ratio when resizing.
+
 ### Fixed
 
 - Page preview uses a grab cursor for drag-to-pan instead of a zoom-in magnifier. Zoom stays on the toolbar, keyboard shortcuts, and Ctrl/Cmd + wheel.

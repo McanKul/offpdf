@@ -5,8 +5,22 @@ export type {
   PdfRect,
   Point,
   EditObjectKind,
+  ClosedShapeKind,
+  EllipseObject,
+  TriangleObject,
+  StarObject,
+  RoundRectObject,
+  HexagonObject,
+  BubbleObject,
+  ArrowObject,
+  ShapeStyle,
   EditObjectBase,
   RectObject,
+  TextObject,
+  ImageObject,
+  LineObject,
+  InkObject,
+  TextAlign,
   EditObject,
   EditDocument,
 } from "./types";
@@ -15,6 +29,11 @@ export {
   normalizePdfRect,
   isPageRotation,
   normalizePageRotation,
+  lineBounds,
+  pointsBounds,
+  mapPointsToRect,
+  isClosedShape,
+  isClosedShapeObject,
 } from "./types";
 
 export type { CssRect, ViewportMapping } from "./coords";
@@ -29,15 +48,45 @@ export {
   makeMapping,
 } from "./coords";
 
-export type { HistoryState, EditAction } from "./editReducer";
+export type { PdfBoxQuad } from "./visibleBox";
+export { visiblePageBox, quadToBox, boxToQuad } from "./visibleBox";
+
+export type { HistoryState, EditAction, LayerDir } from "./editReducer";
 export {
   MAX_HISTORY,
   createHistoryState,
   editReducer,
   canUndo,
   canRedo,
+  reorderOnPage,
   makeRectObject,
+  makeClosedShape,
+  makeTextObject,
+  makeImageObject,
+  makeLineObject,
+  makeInkObject,
 } from "./editReducer";
 
 export type { ResizeHandle } from "./resizeRect";
-export { resizePdfRect } from "./resizeRect";
+export { resizePdfRect, resizeCssRect } from "./resizeRect";
+export {
+  cssBoxFromPoints,
+  constrainCssBox1to1,
+  resizeCssRectLocked,
+  aspectLocked,
+  sizeWithAspect,
+  isNearlySquare,
+} from "./aspect";
+export { closedShapeCssPoints, starPoints, polygonPoints, bubbleSvgPath } from "./shapes";
+export { rotateCss, cssCenter, pointerAngleDeg, normalizeDeg, snapDeg } from "./rotate";
+
+export {
+  cloneDocument,
+  cloneObject,
+  offsetObject,
+  toExportDocument,
+  parseHexColor,
+  isNoneFill,
+  toCssHex,
+  rgbToHex,
+} from "./serialize";

@@ -7,10 +7,11 @@
  * element’s current CSS width — otherwise zoom compounds and/or paint races
  * leave a blank canvas.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { pdfjsLib, PDF_OPTS } from "@/lib/pdfjs";
 import {
   normalizePageRotation,
+  visiblePageBox,
   type PageGeometry,
   type PageRotation,
 } from "@/lib/editor";
@@ -28,6 +29,7 @@ export function PageSurface({
   zoom,
   fitWidth,
   pageIndex,
+  canvasRef: canvasRefProp,
   onLayout,
   onFail,
 }: {
@@ -36,10 +38,18 @@ export function PageSurface({
   /** Unzoomed “fit to stage” width in CSS px (from the scroll stage, not the page). */
   fitWidth: number;
   pageIndex: number;
+  /** Optional external ref so the editor can sample pixels (eyedropper). */
+  canvasRef?: RefObject<HTMLCanvasElement | null>;
   onLayout: (layout: PageLayout) => void;
   onFail: (reason?: string) => void;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const localCanvas = useRef<HTMLCanvasElement | null>(null);
+  const setCanvas = (el: HTMLCanvasElement | null) => {
+    localCanvas.current = el;
+    if (canvasRefProp) {
+      (canvasRefProp as { current: HTMLCanvasElement | null }).current = el;
+    }
+  };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -77,14 +87,20 @@ export function PageSurface({
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const page = await (doc as any).getPage(1);
-          const view = page.view as number[];
           const rotate = normalizePageRotation(page.rotate ?? 0) as PageRotation;
-          const box = {
-            x: view[0] ?? 0,
-            y: view[1] ?? 0,
-            w: (view[2] ?? 612) - (view[0] ?? 0),
-            h: (view[3] ?? 792) - (view[1] ?? 0),
-          };
+          const media = (page.mediaBox ?? page.view) as number[];
+          const crop = (page.cropBox ?? null) as number[] | null;
+          const mediaQ: [number, number, number, number] = [
+            media[0] ?? 0,
+            media[1] ?? 0,
+            media[2] ?? 612,
+            media[3] ?? 792,
+          ];
+          const cropQ =
+            crop && crop.length === 4
+              ? ([crop[0], crop[1], crop[2], crop[3]] as [number, number, number, number])
+              : null;
+          const box = visiblePageBox(mediaQ, cropQ);
           if (!(box.w > 0 && box.h > 0)) {
             onFailRef.current("Page has an invalid size.");
             return;
@@ -131,7 +147,7 @@ export function PageSurface({
   useEffect(() => {
     if (!ready) return;
     const doc = docRef.current;
-    const canvas = canvasRef.current;
+    const canvas = localCanvas.current;
     const geometry = geometryRef.current;
     if (!doc || !canvas || !geometry) return;
 
@@ -193,7 +209,8 @@ export function PageSurface({
             ? String((e as { name: string }).name)
             : "";
         if (name === "RenderingCancelledException" || cancelled) return;
-        // If a non-cancel error happens mid-zoom, try once more on next effect.
+        const msg = e instanceof Error ? e.message : "Could not render this page.";
+        onFailRef.current(msg);
       }
     };
 
@@ -209,5 +226,5 @@ export function PageSurface({
     };
   }, [ready, zoom, fitWidth, pageIndex]);
 
-  return <canvas ref={canvasRef} className="pdf-editor__canvas" />;
+  return <canvas ref={setCanvas} className="pdf-editor__canvas" />;
 }

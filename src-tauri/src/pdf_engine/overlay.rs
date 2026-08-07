@@ -197,11 +197,7 @@ fn page_view_sizes(app: &tauri::AppHandle, path: &str) -> Result<Vec<(f64, f64)>
         let sizes: Vec<(f64, f64)> = doc
             .get_pages()
             .values()
-            .map(|id| {
-                let mb = crop::media_box(&doc, *id);
-                let (w, h) = (mb[2] - mb[0], mb[3] - mb[1]);
-                if crop::page_rotation(&doc, *id) % 180 == 90 { (h, w) } else { (w, h) }
-            })
+            .map(|id| crop::displayed_size(&doc, *id))
             .collect();
         if !sizes.is_empty() {
             return Ok(sizes);

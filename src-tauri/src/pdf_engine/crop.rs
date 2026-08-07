@@ -60,6 +60,37 @@ pub(crate) fn media_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
     inherited_box(doc, page_id, b"MediaBox").unwrap_or([0.0, 0.0, 612.0, 792.0])
 }
 
+/// Visible page box = CropBox ∩ MediaBox (else MediaBox). Matches the editor
+/// canvas contract so overlay placement agrees with the preview.
+pub(crate) fn visible_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
+    let mb = media_box(doc, page_id);
+    match inherited_box(doc, page_id, b"CropBox") {
+        Some(cb) => {
+            let ix0 = cb[0].max(mb[0]);
+            let iy0 = cb[1].max(mb[1]);
+            let ix1 = cb[2].min(mb[2]);
+            let iy1 = cb[3].min(mb[3]);
+            if ix1 - ix0 > 1.0 && iy1 - iy0 > 1.0 {
+                [ix0, iy0, ix1, iy1]
+            } else {
+                mb
+            }
+        }
+        None => mb,
+    }
+}
+
+/// Displayed width/height after /Rotate (points). Overlay pages use this size.
+pub(crate) fn displayed_size(doc: &Document, page_id: ObjectId) -> (f64, f64) {
+    let b = visible_box(doc, page_id);
+    let (w, h) = (b[2] - b[0], b[3] - b[1]);
+    if page_rotation(doc, page_id) % 180 == 90 {
+        (h, w)
+    } else {
+        (w, h)
+    }
+}
+
 /// Effective /Rotate of a page (walking up Parent), normalized to 0/90/180/270.
 pub(crate) fn page_rotation(doc: &Document, page_id: ObjectId) -> i64 {
     let mut cur = Some(page_id);
@@ -120,20 +151,8 @@ pub fn crop(
         let page_ids: Vec<ObjectId> = doc.get_pages().values().cloned().collect();
         for id in page_ids {
             let mb = media_box(&doc, id);
-            // Trim relative to the page area the user actually SEES: the
-            // CropBox (clipped to the MediaBox) when present, else the MediaBox.
-            // Basing it on the MediaBox alone would grow the visible window on
-            // documents whose CropBox is smaller.
-            let eff = match inherited_box(&doc, id, b"CropBox") {
-                Some(cb) => {
-                    let ix0 = cb[0].max(mb[0]);
-                    let iy0 = cb[1].max(mb[1]);
-                    let ix1 = cb[2].min(mb[2]);
-                    let iy1 = cb[3].min(mb[3]);
-                    if ix1 - ix0 > 1.0 && iy1 - iy0 > 1.0 { [ix0, iy0, ix1, iy1] } else { mb }
-                }
-                None => mb,
-            };
+            // Trim relative to the page area the user actually SEES.
+            let eff = visible_box(&doc, id);
             // The UI margins are visual; /Rotate 90/180/270 shuffles which
             // physical box edge each visual edge is (CW: left edge shows as top).
             let (l, t, r, b) = match page_rotation(&doc, id) {

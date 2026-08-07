@@ -11,7 +11,7 @@
 //! to present the panel).
 
 use crate::error::AppError;
-use crate::models::{DiskSpaceInfo, FileInfo};
+use crate::models::{DiskSpaceInfo, FileInfo, ImagePreview};
 use crate::pdf_engine::qpdf;
 use crate::utils::{disk, temp};
 use std::path::Path;
@@ -69,6 +69,67 @@ pub async fn pick_pdf_file(app: tauri::AppHandle) -> Result<Option<String>, AppE
     .map_err(|e| AppError::io("The file dialog could not be opened.", e))?;
 
     Ok(picked.and_then(filepath_to_string))
+}
+
+/// Single PNG/JPEG picker for editor image overlays.
+#[tauri::command]
+pub async fn pick_image_file(app: tauri::AppHandle) -> Result<Option<String>, AppError> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .add_filter("PNG and JPEG", &["png", "jpg", "jpeg"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| AppError::io("The file dialog could not be opened.", e))?;
+
+    Ok(picked.and_then(filepath_to_string))
+}
+
+/// Decode a PNG/JPEG at a bounded size for the editor preview (never full PDF bytes).
+#[tauri::command]
+pub async fn preview_image(path: String) -> Result<ImagePreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || preview_image_sync(&path))
+        .await
+        .map_err(|e| AppError::io("Could not read the image.", e))?
+}
+
+fn preview_image_sync(path: &str) -> Result<ImagePreview, AppError> {
+    let meta = std::fs::metadata(path).map_err(|e| AppError::io("Could not read the image.", e))?;
+    if meta.len() > 20 * 1024 * 1024 {
+        return Err(AppError::new(
+            "IMAGE_TOO_LARGE",
+            "Image is too large",
+            "Use a PNG or JPEG smaller than 20 MB.",
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|e| AppError::io("Could not read the image.", e))?;
+    if !(bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || bytes.starts_with(&[0xFF, 0xD8, 0xFF])) {
+        return Err(AppError::new(
+            "IMAGE_TYPE",
+            "Unsupported image",
+            "Only PNG and JPEG images can be added.",
+        ));
+    }
+    let img = image::load_from_memory(&bytes).map_err(|_| {
+        AppError::new("IMAGE_BAD", "Could not read the image", "The file does not look like a valid PNG or JPEG.")
+    })?;
+    let w0 = img.width().max(1);
+    let h0 = img.height().max(1);
+    let max_edge = 800u32;
+    let img = if w0.max(h0) > max_edge {
+        img.thumbnail(max_edge, max_edge)
+    } else {
+        img
+    };
+    let mut buf = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+        .map_err(|e| AppError::io("Could not preview the image.", e))?;
+    Ok(ImagePreview {
+        width: w0,
+        height: h0,
+        data_url: format!("data:image/png;base64,{}", crate::pdf_engine::render::base64(&buf)),
+    })
 }
 
 /// Open a folder picker for choosing an output directory. `None` if cancelled.

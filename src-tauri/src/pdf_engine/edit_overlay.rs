@@ -1,0 +1,1286 @@
+//! Edit-PDF overlay: build a vector/text/image overlay PDF from the editor
+//! document and stamp it with `qpdf --overlay`. Original page content is never
+//! rasterized; the source file is never overwritten.
+
+use crate::error::AppError;
+use crate::models::{JobHandle, PageGroup};
+use crate::pdf_engine::crop;
+use crate::utils::process::run_qpdf;
+use crate::utils::temp;
+use lopdf::Document;
+use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Arc;
+use tauri::Manager;
+use ttf_parser::{Face, GlyphId};
+
+const MAX_OBJECTS: usize = 500;
+const MAX_INK_POINTS: usize = 8_000;
+const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_IMAGE_EDGE: u32 = 4_096;
+const MAX_TEXT_CHARS: usize = 8_000;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditDocumentIn {
+    pub version: u32,
+    pub objects: Vec<EditObjectIn>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfRectIn {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PointIn {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum EditObjectIn {
+    Rect {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        fill: Option<String>,
+        stroke: Option<String>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: Option<f64>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    Ellipse {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        fill: Option<String>,
+        stroke: Option<String>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: Option<f64>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    Triangle {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        fill: Option<String>,
+        stroke: Option<String>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: Option<f64>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    Star {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        fill: Option<String>,
+        stroke: Option<String>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: Option<f64>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    #[serde(rename = "roundRect")]
+    RoundRect {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        fill: Option<String>,
+        stroke: Option<String>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: Option<f64>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    Hexagon {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        fill: Option<String>,
+        stroke: Option<String>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: Option<f64>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    Bubble {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        fill: Option<String>,
+        stroke: Option<String>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: Option<f64>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    Arrow {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        fill: Option<String>,
+        stroke: Option<String>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: Option<f64>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    Text {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        content: String,
+        #[serde(rename = "fontSize")]
+        font_size: f64,
+        color: Option<String>,
+        align: Option<String>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    Image {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        path: String,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    Line {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+        stroke: Option<String>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: Option<f64>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+    Ink {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        points: Vec<PointIn>,
+        stroke: Option<String>,
+        #[serde(rename = "strokeWidth")]
+        stroke_width: Option<f64>,
+        opacity: Option<f64>,
+        #[serde(default, rename = "objectRotate")]
+        object_rotate: f64,
+    },
+}
+
+impl EditObjectIn {
+    fn page_index(&self) -> u32 {
+        match self {
+            Self::Rect { page_index, .. }
+            | Self::Ellipse { page_index, .. }
+            | Self::Triangle { page_index, .. }
+            | Self::Star { page_index, .. }
+            | Self::RoundRect { page_index, .. }
+            | Self::Hexagon { page_index, .. }
+            | Self::Bubble { page_index, .. }
+            | Self::Arrow { page_index, .. }
+            | Self::Text { page_index, .. }
+            | Self::Image { page_index, .. }
+            | Self::Line { page_index, .. }
+            | Self::Ink { page_index, .. } => *page_index,
+        }
+    }
+    fn opacity(&self) -> f64 {
+        let o = match self {
+            Self::Rect { opacity, .. }
+            | Self::Ellipse { opacity, .. }
+            | Self::Triangle { opacity, .. }
+            | Self::Star { opacity, .. }
+            | Self::RoundRect { opacity, .. }
+            | Self::Hexagon { opacity, .. }
+            | Self::Bubble { opacity, .. }
+            | Self::Arrow { opacity, .. }
+            | Self::Text { opacity, .. }
+            | Self::Image { opacity, .. }
+            | Self::Line { opacity, .. }
+            | Self::Ink { opacity, .. } => *opacity,
+        };
+        o.unwrap_or(1.0).clamp(0.05, 1.0)
+    }
+
+    fn object_rotate(&self) -> f64 {
+        match self {
+            Self::Rect { object_rotate, .. }
+            | Self::Ellipse { object_rotate, .. }
+            | Self::Triangle { object_rotate, .. }
+            | Self::Star { object_rotate, .. }
+            | Self::RoundRect { object_rotate, .. }
+            | Self::Hexagon { object_rotate, .. }
+            | Self::Bubble { object_rotate, .. }
+            | Self::Arrow { object_rotate, .. }
+            | Self::Text { object_rotate, .. }
+            | Self::Image { object_rotate, .. }
+            | Self::Line { object_rotate, .. }
+            | Self::Ink { object_rotate, .. } => *object_rotate,
+        }
+    }
+
+    fn overlay_aabb(&self, vis: [f64; 4], page_rot: i64) -> (f64, f64, f64, f64) {
+        match self {
+            Self::Line { x1, y1, x2, y2, .. } => {
+                let (ax, ay) = pdf_point_to_overlay(*x1, *y1, vis, page_rot);
+                let (bx, by) = pdf_point_to_overlay(*x2, *y2, vis, page_rot);
+                let x = ax.min(bx);
+                let y = ay.min(by);
+                (x, y, (ax - bx).abs().max(0.5), (ay - by).abs().max(0.5))
+            }
+            Self::Ink { points, .. } => {
+                if points.is_empty() {
+                    return (0.0, 0.0, 1.0, 1.0);
+                }
+                let mapped: Vec<(f64, f64)> = points
+                    .iter()
+                    .map(|p| pdf_point_to_overlay(p.x, p.y, vis, page_rot))
+                    .collect();
+                let min_x = mapped.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+                let max_x = mapped.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+                let min_y = mapped.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+                let max_y = mapped.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+                (min_x, min_y, (max_x - min_x).max(0.5), (max_y - min_y).max(0.5))
+            }
+            Self::Rect { rect, .. }
+            | Self::Ellipse { rect, .. }
+            | Self::Triangle { rect, .. }
+            | Self::Star { rect, .. }
+            | Self::RoundRect { rect, .. }
+            | Self::Hexagon { rect, .. }
+            | Self::Bubble { rect, .. }
+            | Self::Arrow { rect, .. }
+            | Self::Text { rect, .. }
+            | Self::Image { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
+        }
+    }
+}
+
+fn push_object_rotate(content: &mut String, deg_cw: f64, aabb: (f64, f64, f64, f64)) -> bool {
+    if deg_cw.abs() < 0.05 {
+        return false;
+    }
+    let (x, y, w, h) = aabb;
+    let cx = x + w / 2.0;
+    let cy = y + h / 2.0;
+    let th = -deg_cw.to_radians();
+    let (c, s) = (th.cos(), th.sin());
+    content.push_str(&format!(
+        "q\n1 0 0 1 {cx:.2} {cy:.2} cm\n{c:.5} {s:.5} {:.5} {c:.5} 0 0 cm\n1 0 0 1 {:.2} {:.2} cm\n",
+        -s, -cx, -cy
+    ));
+    true
+}
+
+struct PdfBuilder {
+    buf: Vec<u8>,
+    offs: Vec<usize>,
+}
+
+impl PdfBuilder {
+    fn new() -> Self {
+        Self {
+            buf: b"%PDF-1.5\n%\xE2\xE3\xCF\xD3\n".to_vec(),
+            offs: vec![0],
+        }
+    }
+    fn begin(&mut self) -> usize {
+        self.offs.push(self.buf.len());
+        self.offs.len() - 1
+    }
+    fn s(&mut self, s: &str) {
+        self.buf.extend_from_slice(s.as_bytes());
+    }
+    fn bytes(&mut self, b: &[u8]) {
+        self.buf.extend_from_slice(b);
+    }
+    fn finish(mut self, root: usize) -> Vec<u8> {
+        let xref = self.buf.len();
+        let n = self.offs.len();
+        self.s(&format!("xref\n0 {n}\n0000000000 65535 f \n"));
+        for i in 1..n {
+            self.s(&format!("{:010} 00000 n \n", self.offs[i]));
+        }
+        self.s(&format!(
+            "trailer\n<< /Size {n} /Root {root} 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+        ));
+        self.buf
+    }
+}
+
+/// Map unrotated page-box-relative point into displayed overlay space (BL origin).
+pub fn unrotated_to_display(rx: f64, ry: f64, box_w: f64, box_h: f64, rotate: i64) -> (f64, f64) {
+    match ((rotate % 360) + 360) % 360 {
+        90 => (ry, box_w - rx),
+        180 => (box_w - rx, box_h - ry),
+        270 => (box_h - ry, rx),
+        _ => (rx, ry),
+    }
+}
+
+pub fn pdf_rect_to_overlay(rect: &PdfRectIn, vis: [f64; 4], rotate: i64) -> (f64, f64, f64, f64) {
+    let bw = vis[2] - vis[0];
+    let bh = vis[3] - vis[1];
+    let corners = [
+        (rect.x, rect.y),
+        (rect.x + rect.w, rect.y),
+        (rect.x + rect.w, rect.y + rect.h),
+        (rect.x, rect.y + rect.h),
+    ];
+    let mapped: Vec<(f64, f64)> = corners
+        .iter()
+        .map(|(x, y)| unrotated_to_display(x - vis[0], y - vis[1], bw, bh, rotate))
+        .collect();
+    let min_x = mapped.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let max_x = mapped.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let min_y = mapped.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let max_y = mapped.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    (min_x, min_y, (max_x - min_x).max(0.5), (max_y - min_y).max(0.5))
+}
+
+pub fn pdf_point_to_overlay(x: f64, y: f64, vis: [f64; 4], rotate: i64) -> (f64, f64) {
+    let bw = vis[2] - vis[0];
+    let bh = vis[3] - vis[1];
+    unrotated_to_display(x - vis[0], y - vis[1], bw, bh, rotate)
+}
+
+fn parse_hex(color: Option<&str>, fallback: (f64, f64, f64)) -> (f64, f64, f64) {
+    let Some(s) = color else {
+        return fallback;
+    };
+    let t = s.trim().trim_start_matches('#');
+    if t.len() == 6 {
+        if let Ok(n) = u32::from_str_radix(t, 16) {
+            return (
+                ((n >> 16) & 255) as f64 / 255.0,
+                ((n >> 8) & 255) as f64 / 255.0,
+                (n & 255) as f64 / 255.0,
+            );
+        }
+    }
+    fallback
+}
+
+fn fill_is_none(fill: Option<&str>) -> bool {
+    match fill {
+        None => true,
+        Some(s) => {
+            let t = s.trim().to_ascii_lowercase();
+            t.is_empty() || t == "none" || t == "transparent"
+        }
+    }
+}
+
+fn paint_path(content: &mut String, fill: Option<&str>, stroke: Option<&str>, stroke_width: Option<f64>, path: &str) {
+    let fill_none = fill_is_none(fill);
+    let (sr, sg, sb) = parse_hex(stroke, (0.067, 0.094, 0.153));
+    let sw = stroke_width.unwrap_or(1.5).clamp(0.2, 24.0);
+    if fill_none {
+        content.push_str(&format!("{sr:.3} {sg:.3} {sb:.3} RG\n{sw:.2} w\n{path}S\n"));
+    } else {
+        let (fr, fg, fb) = parse_hex(fill, (0.067, 0.094, 0.153));
+        content.push_str(&format!(
+            "{fr:.3} {fg:.3} {fb:.3} rg\n{sr:.3} {sg:.3} {sb:.3} RG\n{sw:.2} w\n{path}B\n"
+        ));
+    }
+}
+
+fn ellipse_path(x: f64, y: f64, w: f64, h: f64) -> String {
+    let cx = x + w / 2.0;
+    let cy = y + h / 2.0;
+    let rx = (w / 2.0).max(0.25);
+    let ry = (h / 2.0).max(0.25);
+    let k = 0.552_284_749_8;
+    let ox = rx * k;
+    let oy = ry * k;
+    format!(
+        "{:.2} {:.2} m\n\
+         {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\n\
+         {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\n\
+         {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\n\
+         {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\nh\n",
+        cx + rx,
+        cy,
+        cx + rx,
+        cy + oy,
+        cx + ox,
+        cy + ry,
+        cx,
+        cy + ry,
+        cx - ox,
+        cy + ry,
+        cx - rx,
+        cy + oy,
+        cx - rx,
+        cy,
+        cx - rx,
+        cy - oy,
+        cx - ox,
+        cy - ry,
+        cx,
+        cy - ry,
+        cx + ox,
+        cy - ry,
+        cx + rx,
+        cy - oy,
+        cx + rx,
+        cy,
+    )
+}
+
+fn polygon_path(pts: &[(f64, f64)]) -> String {
+    let mut s = String::new();
+    for (i, (px, py)) in pts.iter().enumerate() {
+        if i == 0 {
+            s.push_str(&format!("{px:.2} {py:.2} m\n"));
+        } else {
+            s.push_str(&format!("{px:.2} {py:.2} l\n"));
+        }
+    }
+    s.push_str("h\n");
+    s
+}
+
+fn triangle_pts(x: f64, y: f64, w: f64, h: f64) -> [(f64, f64); 3] {
+    [(x + w / 2.0, y + h), (x, y), (x + w, y)]
+}
+
+fn round_rect_path(x: f64, y: f64, w: f64, h: f64) -> String {
+    let r = (w.min(h) * 0.18).min(w / 2.0).min(h / 2.0).max(0.5);
+    let k = 0.552_284_749_8 * r;
+    format!(
+        "{:.2} {:.2} m\n{:.2} {:.2} l\n{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\n\
+         {:.2} {:.2} l\n{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\n\
+         {:.2} {:.2} l\n{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\n\
+         {:.2} {:.2} l\n{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\nh\n",
+        x + r,
+        y,
+        x + w - r,
+        y,
+        x + w - r + k,
+        y,
+        x + w,
+        y + r - k,
+        x + w,
+        y + r,
+        x + w,
+        y + h - r,
+        x + w,
+        y + h - r + k,
+        x + w - r + k,
+        y + h,
+        x + w - r,
+        y + h,
+        x + r,
+        y + h,
+        x + r - k,
+        y + h,
+        x,
+        y + h - r + k,
+        x,
+        y + h - r,
+        x,
+        y + r,
+        x,
+        y + r - k,
+        x + r - k,
+        y,
+        x + r,
+        y,
+    )
+}
+
+fn hexagon_pts(x: f64, y: f64, w: f64, h: f64) -> Vec<(f64, f64)> {
+    (0..6)
+        .map(|i| {
+            let a = std::f64::consts::PI / 3.0 * i as f64 + std::f64::consts::PI / 6.0;
+            (x + w / 2.0 + (w / 2.0) * a.cos(), y + h / 2.0 + (h / 2.0) * a.sin())
+        })
+        .collect()
+}
+
+fn arrow_pts(x: f64, y: f64, w: f64, h: f64) -> Vec<(f64, f64)> {
+    let nx = x + w * 0.55;
+    let mid = y + h / 2.0;
+    vec![
+        (x, y + h * 0.72),
+        (nx, y + h * 0.72),
+        (nx, y + h),
+        (x + w, mid),
+        (nx, y),
+        (nx, y + h * 0.28),
+        (x, y + h * 0.28),
+    ]
+}
+
+fn bubble_path(x: f64, y: f64, w: f64, h: f64) -> String {
+    let tail = (h * 0.22).min(28.0);
+    let by = y + tail;
+    let bh = (h - tail).max(8.0);
+    let r = (w.min(bh) * 0.16).max(0.5);
+    let k = 0.552_284_749_8 * r;
+    let t1x = x + w * 0.18;
+    let t2x = x + w * 0.08;
+    let t3x = x + w * 0.36;
+    format!(
+        "{:.2} {:.2} m\n{:.2} {:.2} l\n{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\n\
+         {:.2} {:.2} l\n{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\n\
+         {:.2} {:.2} l\n{:.2} {:.2} l\n{:.2} {:.2} l\n{:.2} {:.2} l\n\
+         {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\n\
+         {:.2} {:.2} l\n{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c\nh\n",
+        x + r,
+        by + bh,
+        x + w - r,
+        by + bh,
+        x + w - r + k,
+        by + bh,
+        x + w,
+        by + bh - r + k,
+        x + w,
+        by + bh - r,
+        x + w,
+        by + r,
+        x + w,
+        by + r - k,
+        x + w - r + k,
+        by,
+        x + w - r,
+        by,
+        t3x,
+        by,
+        t2x,
+        y,
+        t1x,
+        by,
+        x + r,
+        by,
+        x + r - k,
+        by,
+        x,
+        by + r - k,
+        x,
+        by + r,
+        x,
+        by + bh - r,
+        x,
+        by + bh - r + k,
+        x + r - k,
+        by + bh,
+        x + r,
+        by + bh,
+    )
+}
+
+fn star_pts(x: f64, y: f64, w: f64, h: f64) -> Vec<(f64, f64)> {
+    let cx = x + w / 2.0;
+    let cy = y + h / 2.0;
+    let rx = w / 2.0;
+    let ry = h / 2.0;
+    let inner = 0.382;
+    let mut pts = Vec::with_capacity(10);
+    for i in 0..10 {
+        let a = std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::PI / 5.0;
+        let r = if i % 2 == 0 { 1.0 } else { inner };
+        pts.push((cx + rx * r * a.cos(), cy + ry * r * a.sin()));
+    }
+    pts
+}
+
+struct FontInfo {
+    data: Vec<u8>,
+    units_per_em: f64,
+    bbox: [i16; 4],
+    ascent: i16,
+    descent: i16,
+}
+
+impl FontInfo {
+    fn parse(data: Vec<u8>) -> Result<Self, AppError> {
+        let face = Face::parse(&data, 0).map_err(|_| {
+            AppError::new("BAD_FONT", "Editor font unreadable", "The bundled font is damaged.")
+        })?;
+        let bb = face.global_bounding_box();
+        Ok(Self {
+            units_per_em: face.units_per_em() as f64,
+            bbox: [bb.x_min, bb.y_min, bb.x_max, bb.y_max],
+            ascent: face.ascender(),
+            descent: face.descender(),
+            data,
+        })
+    }
+    fn face(&self) -> Face<'_> {
+        Face::parse(&self.data, 0).expect("font already parsed")
+    }
+    fn gid(&self, ch: char) -> u16 {
+        self.face().glyph_index(ch).map(|g| g.0).unwrap_or(0)
+    }
+    fn width(&self, gid: u16) -> f64 {
+        let adv = self.face().glyph_hor_advance(GlyphId(gid)).unwrap_or(0) as f64;
+        adv / self.units_per_em * 1000.0
+    }
+    fn scale(&self) -> f64 {
+        1000.0 / self.units_per_em
+    }
+}
+
+fn wrap_text(font: &FontInfo, text: &str, font_size: f64, max_w: f64) -> Vec<String> {
+    let mut lines = Vec::new();
+    for para in text.split('\n') {
+        if para.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut cur = String::new();
+        let mut cur_w = 0.0;
+        for ch in para.chars() {
+            let cw = font.width(font.gid(ch)) * font_size / 1000.0;
+            if !cur.is_empty() && cur_w + cw > max_w && max_w > 8.0 {
+                lines.push(std::mem::take(&mut cur));
+                cur_w = 0.0;
+            }
+            cur.push(ch);
+            cur_w += cw;
+        }
+        lines.push(cur);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn line_hex_and_width(font: &FontInfo, text: &str) -> (String, f64) {
+    let mut hex = String::new();
+    let mut w = 0.0;
+    for ch in text.chars() {
+        let gid = font.gid(ch);
+        hex.push_str(&format!("{gid:04X}"));
+        w += font.width(gid);
+    }
+    (hex, w)
+}
+
+fn find_font_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, AppError> {
+    if let Ok(res) = app.path().resource_dir() {
+        for p in [
+            res.join("fonts").join("NotoSans-Regular.ttf"),
+            res.join("resources").join("fonts").join("NotoSans-Regular.ttf"),
+        ] {
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+    }
+    let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("fonts")
+        .join("NotoSans-Regular.ttf");
+    if dev.exists() {
+        return Ok(dev);
+    }
+    Err(
+        AppError::new("NO_FONT", "Editor font missing", "The bundled Noto Sans font could not be found.")
+            .with_suggestion("Reinstall OffPDF."),
+    )
+}
+
+struct Raster {
+    w: u32,
+    h: u32,
+    rgb: Vec<u8>,
+    alpha: Option<Vec<u8>>,
+}
+
+fn load_image_rgb(path: &str) -> Result<Raster, AppError> {
+    let meta = std::fs::metadata(path).map_err(|_| {
+        AppError::new("IMAGE_MISSING", "Image not found", "An image used in the edit could not be read.")
+            .with_suggestion("Choose the image again.")
+    })?;
+    if meta.len() > MAX_IMAGE_BYTES {
+        return Err(AppError::new(
+            "IMAGE_TOO_LARGE",
+            "Image is too large",
+            "Use a PNG or JPEG smaller than 20 MB.",
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|e| AppError::io("Could not read the image.", e))?;
+    if !(bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || bytes.starts_with(&[0xFF, 0xD8, 0xFF])) {
+        return Err(AppError::new(
+            "IMAGE_TYPE",
+            "Unsupported image",
+            "Only PNG and JPEG images can be added.",
+        ));
+    }
+    let img = image::load_from_memory(&bytes).map_err(|_| {
+        AppError::new("IMAGE_BAD", "Could not read the image", "The file does not look like a valid PNG or JPEG.")
+    })?;
+    if img.width() > MAX_IMAGE_EDGE || img.height() > MAX_IMAGE_EDGE {
+        return Err(AppError::new(
+            "IMAGE_TOO_LARGE",
+            "Image is too large",
+            format!("Images can be at most {MAX_IMAGE_EDGE} pixels on a side."),
+        ));
+    }
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+    let mut alpha = Vec::with_capacity((w * h) as usize);
+    let mut has_alpha = false;
+    for px in rgba.pixels() {
+        rgb.extend_from_slice(&px.0[0..3]);
+        alpha.push(px.0[3]);
+        if px.0[3] < 255 {
+            has_alpha = true;
+        }
+    }
+    Ok(Raster {
+        w,
+        h,
+        rgb,
+        alpha: if has_alpha { Some(alpha) } else { None },
+    })
+}
+
+fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
+    if doc.version != 1 {
+        return Err(AppError::new(
+            "BAD_EDIT",
+            "Unsupported edit data",
+            "This edit was created with a newer OffPDF version.",
+        ));
+    }
+    if doc.objects.is_empty() {
+        return Err(AppError::new("NO_EDITS", "Nothing to save", "Add text, an image or a shape before saving."));
+    }
+    if doc.objects.len() > MAX_OBJECTS {
+        return Err(AppError::new(
+            "TOO_MANY_OBJECTS",
+            "Too many objects",
+            format!("This edit has more than {MAX_OBJECTS} objects."),
+        ));
+    }
+    for o in &doc.objects {
+        match o {
+            EditObjectIn::Text { content, .. } if content.chars().count() > MAX_TEXT_CHARS => {
+                return Err(AppError::new("TEXT_TOO_LONG", "Text is too long", "Shorten the text box and try again."));
+            }
+            EditObjectIn::Ink { points, .. } if points.len() > MAX_INK_POINTS => {
+                return Err(AppError::new("INK_TOO_LONG", "Drawing is too complex", "Use a shorter stroke."));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn same_file(a: &str, b: &str) -> bool {
+    match (Path::new(a).canonicalize(), Path::new(b).canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+pub fn edit_pdf_overlays(
+    app: &tauri::AppHandle,
+    handle: &Arc<JobHandle>,
+    job_id: &str,
+    groups: &[PageGroup],
+    output: &str,
+    document: &EditDocumentIn,
+) -> Result<Vec<String>, AppError> {
+    if groups.is_empty() {
+        return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
+    }
+    for g in groups {
+        super::require_input(&g.path)?;
+        if same_file(&g.path, output) {
+            return Err(AppError::new(
+                "OVERWRITE",
+                "Choose a new file name",
+                "OffPDF never overwrites the original PDF.",
+            )
+            .with_suggestion("Pick a different name or folder."));
+        }
+    }
+    super::ensure_output_dir(output)?;
+    validate_doc(document)?;
+
+    let work = temp::root(app)?.join("work").join(job_id);
+    std::fs::create_dir_all(&work).map_err(|e| AppError::io("Could not create a temp directory.", e))?;
+    let merged = work.join("merged.pdf").to_string_lossy().to_string();
+    let overlay = work.join("overlay.pdf").to_string_lossy().to_string();
+
+    let result = (|| -> Result<Vec<String>, AppError> {
+        super::assemble_groups(app, handle, job_id, groups, &merged, "Preparing", None)?;
+        let font_bytes = std::fs::read(find_font_path(app)?).map_err(|e| AppError::io("Could not read the editor font.", e))?;
+        let font = FontInfo::parse(font_bytes)?;
+        write_overlay_pdf(&merged, &overlay, document, &font)?;
+        run_qpdf(
+            app,
+            handle,
+            job_id,
+            &[merged.clone(), "--overlay".into(), overlay.clone(), "--".into(), output.to_string()],
+            "Saving",
+            None,
+        )?;
+        Ok(vec![output.to_string()])
+    })();
+
+    let _ = std::fs::remove_dir_all(&work);
+    result
+}
+
+fn write_overlay_pdf(merged: &str, overlay_path: &str, document: &EditDocumentIn, font: &FontInfo) -> Result<(), AppError> {
+    let src = Document::load(merged).map_err(|e| AppError::engine_failed(format!("Could not read the assembled PDF: {e}")))?;
+    let page_ids: Vec<_> = src.get_pages().values().cloned().collect();
+    let n = page_ids.len();
+    if n == 0 {
+        return Err(AppError::invalid_pdf(merged));
+    }
+
+    let mut used: Vec<(u16, char)> = Vec::new();
+    for o in &document.objects {
+        if let EditObjectIn::Text { content, .. } = o {
+            for ch in content.chars() {
+                if ch != '\n' && ch != '\r' {
+                    used.push((font.gid(ch), ch));
+                }
+            }
+        }
+    }
+    used.sort_by_key(|(g, _)| *g);
+    used.dedup_by_key(|(g, _)| *g);
+
+    let mut rasters: Vec<Raster> = Vec::new();
+    let mut image_for_obj: Vec<Option<usize>> = vec![None; document.objects.len()];
+    for (i, o) in document.objects.iter().enumerate() {
+        if let EditObjectIn::Image { path, .. } = o {
+            image_for_obj[i] = Some(rasters.len());
+            rasters.push(load_image_rgb(path)?);
+        }
+    }
+
+    let mut opacities: Vec<i32> = document
+        .objects
+        .iter()
+        .map(|o| (o.opacity() * 100.0).round() as i32)
+        .collect();
+    opacities.push(100);
+    opacities.sort_unstable();
+    opacities.dedup();
+
+    let mut b = PdfBuilder::new();
+
+    let fontfile = b.begin();
+    b.s(&format!(
+        "{fontfile} 0 obj\n<< /Length {} /Length1 {} >>\nstream\n",
+        font.data.len(),
+        font.data.len()
+    ));
+    b.bytes(&font.data);
+    b.s("\nendstream\nendobj\n");
+
+    let sc = font.scale();
+    let bb: [i32; 4] = font.bbox.map(|v| (v as f64 * sc).round() as i32);
+    let ascent = (font.ascent as f64 * sc).round() as i32;
+    let descent = (font.descent as f64 * sc).round() as i32;
+
+    let desc = b.begin();
+    b.s(&format!(
+        "{desc} 0 obj\n<< /Type /FontDescriptor /FontName /NotoSans /Flags 32 \
+         /FontBBox [{} {} {} {}] /ItalicAngle 0 /Ascent {ascent} /Descent {descent} \
+         /CapHeight {ascent} /StemV 80 /FontFile2 {fontfile} 0 R >>\nendobj\n",
+        bb[0], bb[1], bb[2], bb[3]
+    ));
+
+    let mut w_arr = String::new();
+    for (gid, _) in &used {
+        if *gid != 0 {
+            w_arr.push_str(&format!("{gid} [{}] ", font.width(*gid) as i32));
+        }
+    }
+    let cidfont = b.begin();
+    b.s(&format!(
+        "{cidfont} 0 obj\n<< /Type /Font /Subtype /CIDFontType2 /BaseFont /NotoSans \
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+         /FontDescriptor {desc} 0 R /DW 600 /W [{w_arr}] /CIDToGIDMap /Identity >>\nendobj\n"
+    ));
+
+    let mut cmap = String::from(
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+         /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
+         1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
+    );
+    let pairs: Vec<(u16, char)> = used.iter().copied().filter(|(g, _)| *g != 0).collect();
+    for chunk in pairs.chunks(100) {
+        cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
+        for (gid, ch) in chunk {
+            let cp = *ch as u32;
+            if cp <= 0xFFFF {
+                cmap.push_str(&format!("<{gid:04X}> <{cp:04X}>\n"));
+            } else {
+                let u = cp - 0x10000;
+                let hi = 0xD800 + (u >> 10);
+                let lo = 0xDC00 + (u & 0x3FF);
+                cmap.push_str(&format!("<{gid:04X}> <{hi:04X}{lo:04X}>\n"));
+            }
+        }
+        cmap.push_str("endbfchar\n");
+    }
+    cmap.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    let touni = b.begin();
+    b.s(&format!("{touni} 0 obj\n<< /Length {} >>\nstream\n{cmap}endstream\nendobj\n", cmap.len()));
+
+    let type0 = b.begin();
+    b.s(&format!(
+        "{type0} 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /NotoSans /Encoding /Identity-H \
+         /DescendantFonts [{cidfont} 0 R] /ToUnicode {touni} 0 R >>\nendobj\n"
+    ));
+
+    let mut gs_ids: BTreeMap<i32, usize> = BTreeMap::new();
+    for op100 in &opacities {
+        let id = b.begin();
+        let ca = (*op100 as f64) / 100.0;
+        b.s(&format!("{id} 0 obj\n<< /Type /ExtGState /ca {ca:.2} /CA {ca:.2} >>\nendobj\n"));
+        gs_ids.insert(*op100, id);
+    }
+
+    let mut img_ids: Vec<(usize, Option<usize>)> = Vec::new();
+    for rast in &rasters {
+        let smask_id = if rast.alpha.is_some() {
+            let sid = b.begin();
+            let a = rast.alpha.as_ref().unwrap();
+            b.s(&format!(
+                "{sid} 0 obj\n<< /Type /XObject /Subtype /Image /Width {} /Height {} \
+                 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length {} >>\nstream\n",
+                rast.w, rast.h, a.len()
+            ));
+            b.bytes(a);
+            b.s("\nendstream\nendobj\n");
+            Some(sid)
+        } else {
+            None
+        };
+        let iid = b.begin();
+        let smask = smask_id.map(|s| format!(" /SMask {s} 0 R")).unwrap_or_default();
+        b.s(&format!(
+            "{iid} 0 obj\n<< /Type /XObject /Subtype /Image /Width {} /Height {} \
+             /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {}{smask} >>\nstream\n",
+            rast.w, rast.h, rast.rgb.len()
+        ));
+        b.bytes(&rast.rgb);
+        b.s("\nendstream\nendobj\n");
+        img_ids.push((iid, smask_id));
+    }
+
+    let next_id = b.offs.len();
+    let pages_id = next_id + n + n; // contents + page dicts, then Pages
+
+    let mut content_ids = Vec::with_capacity(n);
+    for (pi, pid) in page_ids.iter().enumerate() {
+        let vis = crop::visible_box(&src, *pid);
+        let rotate = crop::page_rotation(&src, *pid);
+        let mut content = String::new();
+        for (oi, obj) in document.objects.iter().enumerate() {
+            if obj.page_index() as usize != pi {
+                continue;
+            }
+            let op100 = (obj.opacity() * 100.0).round() as i32;
+            content.push_str(&format!("q\n/GS{op100} gs\n"));
+            let rotated = push_object_rotate(&mut content, obj.object_rotate(), obj.overlay_aabb(vis, rotate));
+            match obj {
+                EditObjectIn::Rect {
+                    rect,
+                    fill,
+                    stroke,
+                    stroke_width,
+                    ..
+                } => {
+                    let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
+                    paint_path(
+                        &mut content,
+                        fill.as_deref(),
+                        stroke.as_deref(),
+                        *stroke_width,
+                        &format!("{x:.2} {y:.2} {w:.2} {h:.2} re\n"),
+                    );
+                }
+                EditObjectIn::Ellipse {
+                    rect,
+                    fill,
+                    stroke,
+                    stroke_width,
+                    ..
+                } => {
+                    let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
+                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &ellipse_path(x, y, w, h));
+                }
+                EditObjectIn::Triangle {
+                    rect,
+                    fill,
+                    stroke,
+                    stroke_width,
+                    ..
+                } => {
+                    let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
+                    let pts = triangle_pts(x, y, w, h);
+                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &polygon_path(&pts));
+                }
+                EditObjectIn::Star {
+                    rect,
+                    fill,
+                    stroke,
+                    stroke_width,
+                    ..
+                } => {
+                    let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
+                    let pts = star_pts(x, y, w, h);
+                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &polygon_path(&pts));
+                }
+                EditObjectIn::RoundRect {
+                    rect,
+                    fill,
+                    stroke,
+                    stroke_width,
+                    ..
+                } => {
+                    let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
+                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &round_rect_path(x, y, w, h));
+                }
+                EditObjectIn::Hexagon {
+                    rect,
+                    fill,
+                    stroke,
+                    stroke_width,
+                    ..
+                } => {
+                    let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
+                    let pts = hexagon_pts(x, y, w, h);
+                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &polygon_path(&pts));
+                }
+                EditObjectIn::Bubble {
+                    rect,
+                    fill,
+                    stroke,
+                    stroke_width,
+                    ..
+                } => {
+                    let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
+                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &bubble_path(x, y, w, h));
+                }
+                EditObjectIn::Arrow {
+                    rect,
+                    fill,
+                    stroke,
+                    stroke_width,
+                    ..
+                } => {
+                    let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
+                    let pts = arrow_pts(x, y, w, h);
+                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &polygon_path(&pts));
+                }
+                EditObjectIn::Text {
+                    rect,
+                    content: text,
+                    font_size,
+                    color,
+                    align,
+                    ..
+                } => {
+                    let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
+                    let fs = font_size.clamp(6.0, 96.0);
+                    let (cr, cg, cb) = parse_hex(color.as_deref(), (0.12, 0.16, 0.22));
+                    let lines = wrap_text(font, text, fs, w);
+                    let mut ty = y + h - fs;
+                    content.push_str(&format!("{cr:.3} {cg:.3} {cb:.3} rg\nBT\n/F1 {fs:.1} Tf\n"));
+                    for line in lines {
+                        let (hex, tw_em) = line_hex_and_width(font, &line);
+                        let tw = tw_em * fs / 1000.0;
+                        let tx = match align.as_deref() {
+                            Some("center") => x + ((w - tw) / 2.0).max(0.0),
+                            Some("right") => x + (w - tw).max(0.0),
+                            _ => x,
+                        };
+                        if ty < y - fs {
+                            break;
+                        }
+                        content.push_str(&format!("1 0 0 1 {tx:.2} {ty:.2} Tm\n<{hex}> Tj\n"));
+                        ty -= fs * 1.25;
+                    }
+                    content.push_str("ET\n");
+                }
+                EditObjectIn::Image { rect, .. } => {
+                    if let Some(ii) = image_for_obj[oi] {
+                        let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
+                        content.push_str(&format!("q\n{w:.2} 0 0 {h:.2} {x:.2} {y:.2} cm\n/Im{ii} Do\nQ\n"));
+                    }
+                }
+                EditObjectIn::Line {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    stroke,
+                    stroke_width,
+                    ..
+                } => {
+                    let (ax, ay) = pdf_point_to_overlay(*x1, *y1, vis, rotate);
+                    let (bx, by) = pdf_point_to_overlay(*x2, *y2, vis, rotate);
+                    let (sr, sg, sb) = parse_hex(stroke.as_deref(), (0.067, 0.094, 0.153));
+                    let sw = stroke_width.unwrap_or(2.0).clamp(0.2, 24.0);
+                    content.push_str(&format!(
+                        "{sr:.3} {sg:.3} {sb:.3} RG\n{sw:.2} w 1 J\n{ax:.2} {ay:.2} m\n{bx:.2} {by:.2} l\nS\n"
+                    ));
+                }
+                EditObjectIn::Ink {
+                    points,
+                    stroke,
+                    stroke_width,
+                    ..
+                } => {
+                    if points.len() >= 2 {
+                        let (sr, sg, sb) = parse_hex(stroke.as_deref(), (0.067, 0.094, 0.153));
+                        let sw = stroke_width.unwrap_or(2.5).clamp(0.2, 24.0);
+                        content.push_str(&format!("{sr:.3} {sg:.3} {sb:.3} RG\n{sw:.2} w 1 J 1 j\n"));
+                        for (i, p) in points.iter().enumerate() {
+                            let (x, y) = pdf_point_to_overlay(p.x, p.y, vis, rotate);
+                            if i == 0 {
+                                content.push_str(&format!("{x:.2} {y:.2} m\n"));
+                            } else {
+                                content.push_str(&format!("{x:.2} {y:.2} l\n"));
+                            }
+                        }
+                        content.push_str("S\n");
+                    }
+                }
+            }
+            if rotated {
+                content.push_str("Q\n");
+            }
+            content.push_str("Q\n");
+        }
+
+        let cid = b.begin();
+        b.s(&format!("{cid} 0 obj\n<< /Length {} >>\nstream\n{content}endstream\nendobj\n", content.len()));
+        content_ids.push(cid);
+    }
+
+    let mut out_page_ids = Vec::with_capacity(n);
+    for (pi, pid) in page_ids.iter().enumerate() {
+        let (pw, ph) = crop::displayed_size(&src, *pid);
+        let mut xo = String::new();
+        for (oi, obj) in document.objects.iter().enumerate() {
+            if obj.page_index() as usize != pi {
+                continue;
+            }
+            if let (EditObjectIn::Image { .. }, Some(ii)) = (obj, image_for_obj[oi]) {
+                xo.push_str(&format!("/Im{ii} {} 0 R ", img_ids[ii].0));
+            }
+        }
+        let mut gs_res = String::new();
+        for op100 in gs_ids.keys() {
+            gs_res.push_str(&format!("/GS{op100} {} 0 R ", gs_ids[op100]));
+        }
+        let pg = b.begin();
+        b.s(&format!(
+            "{pg} 0 obj\n<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 {pw:.2} {ph:.2}] \
+             /Resources << /Font << /F1 {type0} 0 R >> /ExtGState << {gs_res}>> /XObject << {xo}>> >> \
+             /Contents {} 0 R >>\nendobj\n",
+            content_ids[pi]
+        ));
+        out_page_ids.push(pg);
+    }
+
+    let pages = b.begin();
+    debug_assert_eq!(pages, pages_id);
+    let kids = out_page_ids.iter().map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
+    b.s(&format!("{pages} 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {n} >>\nendobj\n"));
+
+    let catalog = b.begin();
+    b.s(&format!("{catalog} 0 obj\n<< /Type /Catalog /Pages {pages} 0 R >>\nendobj\n"));
+
+    let bytes = b.finish(catalog);
+    std::fs::write(overlay_path, &bytes).map_err(|e| AppError::output_not_writable(&format!("{overlay_path} ({e})")))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_rotate_90_swaps_axes() {
+        assert_eq!(unrotated_to_display(0.0, 0.0, 612.0, 792.0, 90), (0.0, 612.0));
+        assert_eq!(unrotated_to_display(612.0, 0.0, 612.0, 792.0, 90), (0.0, 0.0));
+    }
+
+    #[test]
+    fn overlay_rect_at_rotate_0_keeps_origin() {
+        let vis = [72.0, 72.0, 540.0, 720.0];
+        let r = PdfRectIn { x: 72.0, y: 72.0, w: 100.0, h: 50.0 };
+        let (x, y, w, h) = pdf_rect_to_overlay(&r, vis, 0);
+        assert!((x - 0.0).abs() < 1e-6);
+        assert!((y - 0.0).abs() < 1e-6);
+        assert!((w - 100.0).abs() < 1e-6);
+        assert!((h - 50.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hex_color_parses() {
+        let (r, g, b) = parse_hex(Some("#ff0000"), (0.0, 0.0, 0.0));
+        assert!((r - 1.0).abs() < 1e-6 && g < 1e-6 && b < 1e-6);
+    }
+
+    #[test]
+    fn turkish_glyphs_exist_in_bundled_font() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
+        let data = std::fs::read(path).expect("bundled font");
+        let font = FontInfo::parse(data).unwrap();
+        for ch in "GİZLİ ŞğıİıĞğ".chars() {
+            assert!(font.gid(ch) != 0, "missing glyph for {ch}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_empty() {
+        let d = EditDocumentIn { version: 1, objects: vec![] };
+        assert!(validate_doc(&d).is_err());
+    }
+
+    #[test]
+    fn serde_roundtrip_text_kind() {
+        let json = r##"{"version":1,"objects":[{"kind":"text","pageIndex":0,"rect":{"x":1,"y":2,"w":3,"h":4},"content":"GİZLİ","fontSize":14,"color":"#111827","align":"left","opacity":1}]}"##;
+        let d: EditDocumentIn = serde_json::from_str(json).unwrap();
+        assert_eq!(d.objects.len(), 1);
+        match &d.objects[0] {
+            EditObjectIn::Text { content, .. } => assert_eq!(content, "GİZLİ"),
+            _ => panic!("expected text"),
+        }
+    }
+}

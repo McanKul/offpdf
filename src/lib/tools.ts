@@ -88,6 +88,16 @@ export const TOOLS: ToolMeta[] = [
     category: "Organize",
   },
   {
+    id: "editPdf",
+    name: "Edit PDF",
+    description: "Add text, images and shapes — original file stays unchanged.",
+    longDescription:
+      "Place text, PNG/JPEG images, rectangles, lines and freehand drawings on the page. Existing text and vectors stay selectable. A new PDF is written; the original is never overwritten.",
+    icon: "fileText",
+    path: "/tools/edit-pdf",
+    category: "Organize",
+  },
+  {
     id: "poster",
     name: "Poster / tile print",
     description: "Split a big plan (A1/A0) into A4 sheets you can print at home.",

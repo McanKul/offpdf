@@ -18,7 +18,7 @@ OffPDF currently ships 18 tools, grouped the same way as the app UI.
 
 | Category | Tools |
 | --- | --- |
-| Organize | Merge PDFs, Split PDF, Organize pages, Page numbers, Watermark, Crop pages, Stamp / Sign, Poster / tile print, Compare PDFs |
+| Organize | Merge PDFs, Split PDF, Organize pages, Page numbers, Watermark, Crop pages, Stamp / Sign, Edit PDF, Poster / tile print, Compare PDFs |
 | Convert | Office / HTML to PDF, PDF to Office, PDF to images, OCR, PDF/A |
 | Optimize and secure | Compress PDF, Protect PDF, Unlock PDF, Repair PDF |
 

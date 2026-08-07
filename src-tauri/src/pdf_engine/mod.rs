@@ -8,6 +8,7 @@
 pub mod blank;
 pub mod compress;
 pub mod crop;
+pub mod edit_overlay;
 pub mod metadata;
 pub mod nup;
 pub mod ocr;

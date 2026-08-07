@@ -13,8 +13,50 @@
  */
 
 import { normalizePdfRect, type PdfRect } from "./types";
+import type { CssRect } from "./coords";
 
 export type ResizeHandle = "nw" | "ne" | "sw" | "se";
+
+/**
+ * Resize a CSS (top-left, y-down) rect from a named handle.
+ * Use this under page /Rotate, then map the result with `viewportRectToPdf`.
+ */
+export function resizeCssRect(start: CssRect, handle: ResizeHandle, dx: number, dy: number): CssRect {
+  let { x, y, w, h } = start;
+  switch (handle) {
+    case "se":
+      w += dx;
+      h += dy;
+      break;
+    case "sw":
+      x += dx;
+      w -= dx;
+      h += dy;
+      break;
+    case "ne":
+      w += dx;
+      y += dy;
+      h -= dy;
+      break;
+    case "nw":
+      x += dx;
+      y += dy;
+      w -= dx;
+      h -= dy;
+      break;
+  }
+  if (w < 0) {
+    x += w;
+    w = -w;
+  }
+  if (h < 0) {
+    y += h;
+    h = -h;
+  }
+  if (w < 1) w = 1;
+  if (h < 1) h = 1;
+  return { x, y, w, h };
+}
 
 export function resizePdfRect(
   start: PdfRect,
