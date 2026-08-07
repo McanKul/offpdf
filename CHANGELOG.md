@@ -4,6 +4,10 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+### Fixed
+
+- Page preview uses a grab cursor for drag-to-pan instead of a zoom-in magnifier. Zoom stays on the toolbar, keyboard shortcuts, and Ctrl/Cmd + wheel.
+
 ## 0.2.2
 
 ### Fixed
