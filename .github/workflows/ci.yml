@@ -34,7 +34,7 @@ jobs:
         run: npm test
 
   rust:
-    name: Rust check
+    name: Rust tests
     runs-on: ubuntu-latest
 
     steps:
@@ -59,6 +59,7 @@ jobs:
             librsvg2-dev \
             libwebkit2gtk-4.1-dev \
             patchelf \
+            qpdf \
             wget
 
       - name: Use stable Rust
@@ -70,5 +71,5 @@ jobs:
       - name: Build frontend assets
         run: npm run build
 
-      - name: Check Rust backend
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Test Rust backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib

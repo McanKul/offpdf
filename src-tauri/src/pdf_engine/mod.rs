@@ -10,6 +10,8 @@ pub mod compress;
 pub mod crop;
 pub mod edit_image;
 pub mod edit_overlay;
+#[cfg(test)]
+mod edit_overlay_integ;
 pub mod metadata;
 pub mod nup;
 pub mod ocr;
