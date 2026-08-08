@@ -12,6 +12,7 @@ All notable project changes should be documented here.
 
 ### Fixed
 
+- Edit PDF: saving keeps the original as qpdf's primary input, so bookmarks, document metadata, and forms survive a single-file export. Multi-file edits keep catalog data from the first file (same as Optimize).
 - Page preview uses a grab cursor for drag-to-pan instead of a zoom-in magnifier. Zoom stays on the toolbar, keyboard shortcuts, and Ctrl/Cmd + wheel.
 
 ## 0.2.2

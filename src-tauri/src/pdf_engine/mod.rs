@@ -525,7 +525,7 @@ pub fn rotate(
 /// True if `spec` expands, in order, to exactly pages 1..=n — i.e. the whole
 /// document in natural order ("1-z", "1-N" or "1,2,…,N"). Conservative: any
 /// unparseable part returns false.
-fn spec_is_full_range(spec: &str, n: u32) -> bool {
+pub(crate) fn spec_is_full_range(spec: &str, n: u32) -> bool {
     let trimmed = spec.trim();
     if trimmed == "1-z" {
         return true;

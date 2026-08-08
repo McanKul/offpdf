@@ -81,7 +81,11 @@ job.
    (`CropBox ∩ MediaBox`) and `/Rotate` into **displayed overlay space**
    (same size as stamp/watermark overlays).
 3. Build a hand-rolled overlay PDF (embedded Noto Sans, vector ops, image
-   XObjects) and `qpdf --overlay` it onto the assembled document.
+   XObjects) and `qpdf --overlay` it onto the **primary source**, not an empty
+   rebuild. A single full-range file is `original --overlay overlay -- dest`
+   (bookmarks, Info/XMP, AcroForm stay). A subset or multi-file job uses the
+   first file as infile with `--pages . <spec> …` — same compromise as Optimize.
+   Never `qpdf --empty --pages`.
 4. Keep offline path-based processing; never put full PDF bytes into React state
    for export.
 5. Preserve “original file is never overwritten.”

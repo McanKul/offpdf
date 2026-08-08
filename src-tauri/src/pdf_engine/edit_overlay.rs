@@ -9,7 +9,7 @@ use crate::utils::process::run_qpdf;
 use crate::utils::temp;
 use lopdf::Document;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 use tauri::Manager;
@@ -805,6 +805,181 @@ fn same_file(a: &str, b: &str) -> bool {
     }
 }
 
+/// Per-page geometry read from the original sources (not a `--empty` rebuild).
+#[derive(Debug, Clone, Copy)]
+struct OverlayPageGeom {
+    vis: [f64; 4],
+    rotate: i64,
+}
+
+fn displayed_wh(vis: [f64; 4], rotate: i64) -> (f64, f64) {
+    let w = vis[2] - vis[0];
+    let h = vis[3] - vis[1];
+    if rotate % 180 == 90 {
+        (h, w)
+    } else {
+        (w, h)
+    }
+}
+
+/// Expand a qpdf-style page spec into 1-based numbers, preserving order.
+/// Unlike `parse_pages`, this does not sort or dedupe.
+fn expand_page_spec(spec: &str, n: u32) -> Result<Vec<u32>, AppError> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("all") || trimmed == "1-z" {
+        return Ok((1..=n).collect());
+    }
+    let parse_tok = |raw: &str| -> Result<u32, AppError> {
+        let t = raw.trim();
+        if t.eq_ignore_ascii_case("z") {
+            return Ok(n);
+        }
+        t.parse::<u32>().map_err(|_| {
+            AppError::new(
+                "INVALID_PAGES",
+                "Invalid page selection",
+                format!("\"{spec}\" is not a valid page selection."),
+            )
+            .with_suggestion("Use page numbers and ranges like \"1,3,5-8\".")
+        })
+    };
+    let mut out: Vec<u32> = Vec::new();
+    for raw in trimmed.split(',') {
+        let part = raw.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((a, b)) = part.split_once('-') {
+            let lo = parse_tok(a)?;
+            let hi = parse_tok(b)?;
+            if lo <= hi {
+                for p in lo..=hi {
+                    out.push(p);
+                }
+            } else {
+                for p in (hi..=lo).rev() {
+                    out.push(p);
+                }
+            }
+        } else {
+            out.push(parse_tok(part)?);
+        }
+    }
+    if out.is_empty() {
+        return Err(AppError::new(
+            "INVALID_PAGES",
+            "Invalid page selection",
+            format!("\"{spec}\" is not a valid page selection."),
+        ));
+    }
+    if out.iter().any(|p| *p < 1 || *p > n) {
+        return Err(AppError::new(
+            "INVALID_PAGES",
+            "Page out of range",
+            format!("This PDF has {n} page{}.", if n == 1 { "" } else { "s" }),
+        ));
+    }
+    Ok(out)
+}
+
+fn collect_source_pages(groups: &[PageGroup]) -> Result<(Vec<OverlayPageGeom>, Vec<u32>), AppError> {
+    let mut docs: HashMap<String, Document> = HashMap::new();
+    let mut geoms = Vec::new();
+    let mut counts = Vec::with_capacity(groups.len());
+    for g in groups {
+        if !docs.contains_key(&g.path) {
+            let doc = Document::load(&g.path)
+                .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
+            docs.insert(g.path.clone(), doc);
+        }
+        let doc = docs.get(&g.path).expect("document just loaded");
+        let page_map = doc.get_pages();
+        let n = page_map.len() as u32;
+        counts.push(n);
+        for p in expand_page_spec(&g.pages, n)? {
+            let id = *page_map.get(&p).ok_or_else(|| {
+                AppError::new(
+                    "INVALID_PAGES",
+                    "Page out of range",
+                    format!("Page {p} is not in this PDF."),
+                )
+            })?;
+            geoms.push(OverlayPageGeom {
+                vis: crop::visible_box(doc, id),
+                rotate: crop::page_rotation(doc, id),
+            });
+        }
+    }
+    Ok((geoms, counts))
+}
+
+/// qpdf argv for Edit PDF. Never uses `--empty`: the first source is the
+/// primary input so bookmarks, Info/XMP, and AcroForm survive when possible.
+pub(crate) fn build_edit_overlay_args(
+    groups: &[PageGroup],
+    page_counts: &[u32],
+    overlay: &str,
+    dest: &str,
+) -> Result<Vec<String>, AppError> {
+    if groups.is_empty() {
+        return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
+    }
+    if groups.len() != page_counts.len() {
+        return Err(AppError::new(
+            "BAD_EDIT",
+            "Could not save",
+            "The page list does not match the open documents.",
+        ));
+    }
+    let primary = groups[0].path.clone();
+    let identity = groups.len() == 1 && super::spec_is_full_range(&groups[0].pages, page_counts[0]);
+    let mut args = vec![primary];
+    if !identity {
+        args.push("--pages".into());
+        args.push(".".into());
+        args.push(groups[0].pages.clone());
+        for g in &groups[1..] {
+            args.push(g.path.clone());
+            args.push(g.pages.clone());
+        }
+        // `--pages` must be closed before `--overlay` or qpdf treats the flag
+        // as another filename.
+        args.push("--".into());
+    }
+    args.push("--overlay".into());
+    args.push(overlay.to_string());
+    args.push("--".into());
+    args.push(dest.to_string());
+    Ok(args)
+}
+
+/// Build the overlay and run qpdf via `run`. Used by the Tauri command and tests.
+pub(crate) fn export_edit_pdf_with_runner<F>(
+    groups: &[PageGroup],
+    output: &str,
+    document: &EditDocumentIn,
+    font_path: &Path,
+    work: &Path,
+    mut run: F,
+) -> Result<Vec<String>, AppError>
+where
+    F: FnMut(&[String]) -> Result<(), AppError>,
+{
+    validate_doc(document)?;
+    let overlay = work.join("overlay.pdf");
+    let overlay_str = overlay.to_string_lossy().to_string();
+    let (geoms, counts) = collect_source_pages(groups)?;
+    if geoms.is_empty() {
+        return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
+    }
+    let font_bytes = std::fs::read(font_path).map_err(|e| AppError::io("Could not read the editor font.", e))?;
+    let font = FontInfo::parse(font_bytes)?;
+    write_overlay_pdf(&overlay_str, &geoms, document, &font)?;
+    let args = build_edit_overlay_args(groups, &counts, &overlay_str, output)?;
+    run(&args)?;
+    Ok(vec![output.to_string()])
+}
+
 pub fn edit_pdf_overlays(
     app: &tauri::AppHandle,
     handle: &Arc<JobHandle>,
@@ -832,35 +1007,30 @@ pub fn edit_pdf_overlays(
 
     let work = temp::root(app)?.join("work").join(job_id);
     std::fs::create_dir_all(&work).map_err(|e| AppError::io("Could not create a temp directory.", e))?;
-    let merged = work.join("merged.pdf").to_string_lossy().to_string();
-    let overlay = work.join("overlay.pdf").to_string_lossy().to_string();
+    let font_path = find_font_path(app)?;
 
     let result = (|| -> Result<Vec<String>, AppError> {
-        super::assemble_groups(app, handle, job_id, groups, &merged, "Preparing", None)?;
-        let font_bytes = std::fs::read(find_font_path(app)?).map_err(|e| AppError::io("Could not read the editor font.", e))?;
-        let font = FontInfo::parse(font_bytes)?;
-        write_overlay_pdf(&merged, &overlay, document, &font)?;
-        run_qpdf(
-            app,
-            handle,
-            job_id,
-            &[merged.clone(), "--overlay".into(), overlay.clone(), "--".into(), output.to_string()],
-            "Saving",
-            None,
-        )?;
-        Ok(vec![output.to_string()])
+        if handle.is_cancelled() {
+            return Err(AppError::cancelled());
+        }
+        export_edit_pdf_with_runner(groups, output, document, &font_path, &work, |args| {
+            run_qpdf(app, handle, job_id, args, "Saving", None)
+        })
     })();
 
     let _ = std::fs::remove_dir_all(&work);
     result
 }
 
-fn write_overlay_pdf(merged: &str, overlay_path: &str, document: &EditDocumentIn, font: &FontInfo) -> Result<(), AppError> {
-    let src = Document::load(merged).map_err(|e| AppError::engine_failed(format!("Could not read the assembled PDF: {e}")))?;
-    let page_ids: Vec<_> = src.get_pages().values().cloned().collect();
-    let n = page_ids.len();
+fn write_overlay_pdf(
+    overlay_path: &str,
+    geoms: &[OverlayPageGeom],
+    document: &EditDocumentIn,
+    font: &FontInfo,
+) -> Result<(), AppError> {
+    let n = geoms.len();
     if n == 0 {
-        return Err(AppError::invalid_pdf(merged));
+        return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
     }
 
     let mut used: Vec<(u16, char)> = Vec::new();
@@ -1003,9 +1173,9 @@ fn write_overlay_pdf(merged: &str, overlay_path: &str, document: &EditDocumentIn
     let pages_id = next_id + n + n; // contents + page dicts, then Pages
 
     let mut content_ids = Vec::with_capacity(n);
-    for (pi, pid) in page_ids.iter().enumerate() {
-        let vis = crop::visible_box(&src, *pid);
-        let rotate = crop::page_rotation(&src, *pid);
+    for (pi, geom) in geoms.iter().enumerate() {
+        let vis = geom.vis;
+        let rotate = geom.rotate;
         let mut content = String::new();
         for (oi, obj) in document.objects.iter().enumerate() {
             if obj.page_index() as usize != pi {
@@ -1192,8 +1362,8 @@ fn write_overlay_pdf(merged: &str, overlay_path: &str, document: &EditDocumentIn
     }
 
     let mut out_page_ids = Vec::with_capacity(n);
-    for (pi, pid) in page_ids.iter().enumerate() {
-        let (pw, ph) = crop::displayed_size(&src, *pid);
+    for (pi, geom) in geoms.iter().enumerate() {
+        let (pw, ph) = displayed_wh(geom.vis, geom.rotate);
         let mut xo = String::new();
         for (oi, obj) in document.objects.iter().enumerate() {
             if obj.page_index() as usize != pi {
@@ -1233,6 +1403,8 @@ fn write_overlay_pdf(merged: &str, overlay_path: &str, document: &EditDocumentIn
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::PageGroup;
+    use lopdf::Object;
 
     #[test]
     fn display_rotate_90_swaps_axes() {
@@ -1282,5 +1454,240 @@ mod tests {
             EditObjectIn::Text { content, .. } => assert_eq!(content, "GİZLİ"),
             _ => panic!("expected text"),
         }
+    }
+
+    fn g(path: &str, pages: &str) -> PageGroup {
+        PageGroup {
+            path: path.to_string(),
+            pages: pages.to_string(),
+        }
+    }
+
+    #[test]
+    fn overlay_args_identity_skips_empty_and_pages() {
+        let args = build_edit_overlay_args(&[g("/a.pdf", "1-5")], &[5], "/ov.pdf", "/out.pdf").unwrap();
+        assert_eq!(args, vec!["/a.pdf", "--overlay", "/ov.pdf", "--", "/out.pdf"]);
+        assert!(!args.iter().any(|a| a == "--empty"));
+        assert!(!args.iter().any(|a| a == "--pages"));
+    }
+
+    #[test]
+    fn overlay_args_1_z_is_identity() {
+        let args = build_edit_overlay_args(&[g("/a.pdf", "1-z")], &[12], "/ov.pdf", "/out.pdf").unwrap();
+        assert!(!args.iter().any(|a| a == "--pages"));
+        assert_eq!(args[0], "/a.pdf");
+    }
+
+    #[test]
+    fn overlay_args_subset_uses_dot_pages() {
+        let args = build_edit_overlay_args(&[g("/a.pdf", "2,4")], &[5], "/ov.pdf", "/out.pdf").unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "/a.pdf", "--pages", ".", "2,4", "--", "--overlay", "/ov.pdf", "--", "/out.pdf"
+            ]
+        );
+        assert!(!args.iter().any(|a| a == "--empty"));
+    }
+
+    #[test]
+    fn overlay_args_multi_keeps_first_as_primary() {
+        let args = build_edit_overlay_args(
+            &[g("/a.pdf", "1-2"), g("/b.pdf", "1")],
+            &[2, 1],
+            "/ov.pdf",
+            "/out.pdf",
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "/a.pdf", "--pages", ".", "1-2", "/b.pdf", "1", "--", "--overlay", "/ov.pdf", "--",
+                "/out.pdf"
+            ]
+        );
+        assert!(!args.iter().any(|a| a == "--empty"));
+    }
+
+    #[test]
+    fn expand_page_spec_keeps_order() {
+        assert_eq!(expand_page_spec("1-z", 4).unwrap(), vec![1, 2, 3, 4]);
+        assert_eq!(expand_page_spec("3,1,2", 3).unwrap(), vec![3, 1, 2]);
+        assert_eq!(expand_page_spec("z-1", 3).unwrap(), vec![3, 2, 1]);
+    }
+
+    fn sample_text_doc() -> EditDocumentIn {
+        EditDocumentIn {
+            version: 1,
+            objects: vec![EditObjectIn::Text {
+                page_index: 0,
+                rect: PdfRectIn {
+                    x: 72.0,
+                    y: 700.0,
+                    w: 200.0,
+                    h: 24.0,
+                },
+                content: "Hello".into(),
+                font_size: 14.0,
+                color: Some("#111827".into()),
+                align: None,
+                opacity: None,
+                object_rotate: 0.0,
+            }],
+        }
+    }
+
+    fn write_catalog_fixture(path: &Path) {
+        use lopdf::{Dictionary, Object, Stream};
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let content_id = doc.add_object(Object::Stream(Stream::new(
+            Dictionary::new(),
+            b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET".to_vec(),
+        )));
+        let mut page = Dictionary::new();
+        page.set("Type", "Page");
+        page.set("Parent", pages_id);
+        page.set(
+            "MediaBox",
+            vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(612),
+                Object::Integer(792),
+            ],
+        );
+        page.set("Contents", content_id);
+        let page_id = doc.add_object(Object::Dictionary(page));
+
+        let mut pages = Dictionary::new();
+        pages.set("Type", "Pages");
+        pages.set("Kids", vec![page_id.into()]);
+        pages.set("Count", 1);
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+        let mut item = Dictionary::new();
+        item.set("Title", Object::string_literal("Chapter 1"));
+        item.set("Dest", vec![page_id.into(), Object::Name(b"Fit".to_vec())]);
+        let item_id = doc.add_object(Object::Dictionary(item));
+
+        let mut outlines = Dictionary::new();
+        outlines.set("Type", "Outlines");
+        outlines.set("First", item_id);
+        outlines.set("Last", item_id);
+        outlines.set("Count", 1);
+        let outlines_id = doc.add_object(Object::Dictionary(outlines));
+        if let Ok(Object::Dictionary(d)) = doc.get_object_mut(item_id) {
+            d.set("Parent", outlines_id);
+        }
+
+        let mut acro = Dictionary::new();
+        acro.set("Fields", Vec::<Object>::new());
+        let acro_id = doc.add_object(Object::Dictionary(acro));
+
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", "Catalog");
+        catalog.set("Pages", pages_id);
+        catalog.set("Outlines", outlines_id);
+        catalog.set("AcroForm", acro_id);
+        let catalog_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", catalog_id);
+
+        let mut info = Dictionary::new();
+        info.set("Title", Object::string_literal("Fixture Doc"));
+        info.set("Author", Object::string_literal("OffPDF"));
+        let info_id = doc.add_object(Object::Dictionary(info));
+        doc.trailer.set("Info", info_id);
+
+        doc.save(path).expect("write catalog fixture");
+    }
+
+    fn test_qpdf() -> Option<std::path::PathBuf> {
+        for c in [
+            "/opt/homebrew/bin/qpdf",
+            "/usr/local/bin/qpdf",
+            "/opt/local/bin/qpdf",
+            "/usr/bin/qpdf",
+        ] {
+            if Path::new(c).exists() {
+                return Some(std::path::PathBuf::from(c));
+            }
+        }
+        std::process::Command::new("qpdf")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|_| std::path::PathBuf::from("qpdf"))
+    }
+
+    #[test]
+    fn export_preserves_catalog_data_on_full_range_source() {
+        let Some(qpdf) = test_qpdf() else {
+            eprintln!("skip: qpdf not available");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "offpdf-edit-catalog-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let src = root.join("src.pdf");
+        let dest = root.join("out.pdf");
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        write_catalog_fixture(&src);
+        let orig_bytes = std::fs::read(&src).unwrap();
+
+        let font = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
+        let groups = [g(src.to_str().unwrap(), "1")];
+        export_edit_pdf_with_runner(
+            &groups,
+            dest.to_str().unwrap(),
+            &sample_text_doc(),
+            &font,
+            &work,
+            |args| {
+                assert!(!args.iter().any(|a| a == "--empty"), "argv={args:?}");
+                assert_eq!(args[0], src.to_str().unwrap());
+                let out = std::process::Command::new(&qpdf)
+                    .args(args)
+                    .output()
+                    .map_err(|e| AppError::io("qpdf failed to start", e))?;
+                let code = out.status.code();
+                if out.status.success() || code == Some(3) {
+                    Ok(())
+                } else {
+                    Err(AppError::engine_failed(String::from_utf8_lossy(&out.stderr).to_string()))
+                }
+            },
+        )
+        .expect("export");
+
+        assert_eq!(std::fs::read(&src).unwrap(), orig_bytes);
+
+        let out = Document::load(&dest).expect("load dest");
+        let info = match out.trailer.get(b"Info").ok() {
+            Some(Object::Reference(id)) => out.get_dictionary(*id).ok().cloned(),
+            Some(Object::Dictionary(d)) => Some(d.clone()),
+            _ => None,
+        }
+        .expect("Info dict");
+        let title = match info.get(b"Title").ok() {
+            Some(Object::String(b, _)) => String::from_utf8_lossy(b).into_owned(),
+            _ => String::new(),
+        };
+        assert!(title.contains("Fixture Doc"), "title={title:?}");
+
+        let root_id = out.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        let cat = out.get_dictionary(root_id).unwrap();
+        assert!(cat.get(b"Outlines").is_ok(), "Outlines missing");
+        assert!(cat.get(b"AcroForm").is_ok(), "AcroForm missing");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
