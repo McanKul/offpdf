@@ -60,7 +60,10 @@ Each object has at least:
 
 - `id` — stable string (UI uses `crypto.randomUUID()`)
 - `kind` — `"text" | "image" | "rect" | "line" | "ink"`
-- `pageIndex` — 0-based index within the editor session
+- `pageIndex` — 0-based index within the editor session (assembled workspace
+  order). Identity across add/remove/reorder is `${file.uid}#${page}` from
+  `useCombinedDoc`; remap `pageIndex` by those keys. Do not store `pageKey` in
+  the document.
 - `rect` — `{ x, y, w, h }` in unrotated PDF points
 - `keepAspect` — optional; Square/Circle tools set this so resize and W×H stay 1:1
 
@@ -75,6 +78,13 @@ job.
 - Move/resize uses `BEGIN_GESTURE` → many `UPDATE`s → `END_GESTURE` so one drag
   undoes as a single step.
 - History depth is capped (`MAX_HISTORY = 100`).
+- Adding a PDF (keys only grow) remaps indices if needed and **keeps undo**.
+- Removing a PDF with no edits on its pages remaps survivors and keeps undo.
+- Removing a PDF that still has objects **or undo history** on its pages prompts
+  first; cancel leaves workspace and edits unchanged. Confirm remaps present and
+  **clears undo** (dropped indices). The editor session lives on the page so
+  removing an earlier file cannot unmount and wipe later pages. Do not wipe the
+  session with a concatenated `resetKey`.
 
 ## How export consumes this
 

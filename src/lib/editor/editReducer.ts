@@ -44,6 +44,7 @@ export type EditAction =
   | { type: "UNDO" }
   | { type: "REDO" }
   | { type: "REPLACE"; document: EditDocument }
+  | { type: "REBIND"; present: EditDocument; past: EditDocument[]; future: EditDocument[] }
   | { type: "RESET" };
 
 /** Later objects on the same page paint in front. `null` if the move is a no-op. */
@@ -232,6 +233,15 @@ export function editReducer(state: HistoryState, action: EditAction): HistorySta
 
     case "REPLACE":
       return createHistoryState(action.document);
+
+    case "REBIND":
+      return {
+        present: cloneDocument(action.present),
+        past: action.past.map(cloneDocument),
+        future: action.future.map(cloneDocument),
+        gestureActive: false,
+        gestureCommitted: false,
+      };
 
     case "RESET":
       return createHistoryState();

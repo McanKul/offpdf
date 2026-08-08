@@ -109,6 +109,21 @@ describe("editReducer", () => {
     expect(s.past.length).toBeLessThanOrEqual(MAX_HISTORY);
   });
 
+  it("REBIND keeps provided history snapshots", () => {
+    let s = createHistoryState();
+    s = editReducer(s, { type: "ADD", object: rect("a") });
+    s = editReducer(s, {
+      type: "REBIND",
+      present: { version: 1, objects: [rect("a", 0)], selectedIds: ["a"] },
+      past: [{ version: 1, objects: [], selectedIds: [] }],
+      future: [],
+    });
+    expect(s.present.objects[0].id).toBe("a");
+    expect(canUndo(s)).toBe(true);
+    s = editReducer(s, { type: "UNDO" });
+    expect(s.present.objects).toHaveLength(0);
+  });
+
   it("REPLACE resets history", () => {
     let s = createHistoryState();
     s = editReducer(s, { type: "ADD", object: rect("a") });

@@ -15,7 +15,7 @@ export { CombinedPreview } from "./CombinedPreview";
 export { PageEditor } from "./PageEditor";
 export { RefLightbox } from "./RefLightbox";
 export { PdfSearch } from "./PdfSearch";
-export { useCombinedDoc, buildGroups, buildPicks } from "./useCombinedDoc";
+export { useCombinedDoc, buildGroups, buildPicks, pageKeysForFiles } from "./useCombinedDoc";
 export { useRefThumbnails } from "./useRefThumbnails";
 export { LargeFileWarning } from "./LargeFileWarning";
 export { useFileSelection } from "./useFileSelection";

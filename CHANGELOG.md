@@ -16,6 +16,7 @@ All notable project changes should be documented here.
 - Edit PDF: the never-overwrite guard compares file identity (not just path), and save writes to a sibling temp file then renames it into place so a hard-linked output path cannot truncate the original.
 - Edit PDF: preview and export share one geometry model — qpdf overlay aligns to TrimBox (then CropBox/MediaBox), `/UserUnit` is honored, and images on 90°/270° pages keep the same aspect as the preview.
 - Edit PDF: preview and save share the same image limits (20 MB, 4096 px on a side). Oversized files are rejected from headers before decode; the same image used twice is embedded once; a document-wide byte/pixel budget applies; save can cancel between images.
+- Edit PDF: adding or removing a workspace PDF remaps edits by page identity instead of clearing the canvas. Removing a PDF that still has edits asks first.
 - Page preview uses a grab cursor for drag-to-pan instead of a zoom-in magnifier. Zoom stays on the toolbar, keyboard shortcuts, and Ctrl/Cmd + wheel.
 
 ## 0.2.2

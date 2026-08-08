@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ToolPage, ToolSection } from "@/components/tools/ToolPage";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Icon } from "@/components/ui/Icon";
+import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import {
   WorkspaceFilePicker,
@@ -10,8 +11,10 @@ import {
   LargeFileWarning,
   useCombinedDoc,
   buildGroups,
+  pageKeysForFiles,
   PdfEditorCanvas,
 } from "@/components/pdf";
+import { useEditSession } from "@/components/pdf/editor";
 import { useJob, JobStatus, useDiskGuard } from "@/components/jobs";
 import { editPdfOverlays } from "@/lib/tauriCommands";
 import { getTool } from "@/lib/tools";
@@ -19,7 +22,13 @@ import { estimateRequiredBytes, validateOutputName, joinPath } from "@/lib/valid
 import { stripExt } from "@/lib/formatBytes";
 import { useSettingsStore } from "@/state/settingsStore";
 import { useWorkspace } from "@/state/workspaceStore";
-import { createEmptyDocument, toExportDocument, type EditDocument } from "@/lib/editor";
+import {
+  planKeyRebind,
+  rebindNeedsConfirm,
+  resolveViewPageIndex,
+  samePageKeys,
+  toExportDocument,
+} from "@/lib/editor";
 import { isTauriRuntime } from "@/lib/tauriEnv";
 import { Alert } from "@/components/ui/Alert";
 
@@ -37,19 +46,55 @@ export function EditPdfPage() {
   const [folder, setFolder] = useState<string | null>(lastFolder);
   const [name, setName] = useState("edited.pdf");
   const [pageIndex, setPageIndex] = useState(0);
-  const [doc, setDoc] = useState<EditDocument>(createEmptyDocument());
+  const [discardPrompt, setDiscardPrompt] = useState<{ count: number; historyOnly: boolean } | null>(null);
+  const discardResolve = useRef<((ok: boolean) => void) | undefined>(undefined);
+  const prevKeyRef = useRef<string | undefined>(undefined);
+  const prevKeysRef = useRef<string[]>([]);
+  const pageKeys = useMemo(() => refs.map((r) => r.key), [refs]);
+  let viewIndex = pageIndex;
+  if (!samePageKeys(prevKeysRef.current, pageKeys)) {
+    viewIndex = resolveViewPageIndex(pageKeys, pageIndex, prevKeyRef.current);
+    prevKeysRef.current = pageKeys;
+  }
+  if (viewIndex !== pageIndex) setPageIndex(viewIndex);
+  prevKeyRef.current = pageKeys[viewIndex];
+
+  const session = useEditSession(pageKeys);
+  const doc = session.document;
 
   const first = files[0];
   useEffect(() => {
     if (first) setName(`${stripExt(first.name)}-edited.pdf`);
   }, [first?.path]);
 
-  useEffect(() => {
-    if (pageIndex >= refs.length) setPageIndex(Math.max(0, refs.length - 1));
-  }, [refs.length, pageIndex]);
+  useEffect(
+    () => () => {
+      discardResolve.current?.(false);
+      discardResolve.current = undefined;
+    },
+    [],
+  );
 
-  const resetKey = refs.map((r) => r.key).join("|");
-  const current = refs[pageIndex];
+  const askDiscard = (count: number, historyOnly: boolean) =>
+    new Promise<boolean>((resolve) => {
+      discardResolve.current = resolve;
+      setDiscardPrompt({ count, historyOnly });
+    });
+
+  const closeDiscard = (ok: boolean) => {
+    setDiscardPrompt(null);
+    discardResolve.current?.(ok);
+    discardResolve.current = undefined;
+  };
+
+  const onBeforeRemove = async (index: number) => {
+    const nextKeys = pageKeysForFiles(files.filter((_, i) => i !== index));
+    const plan = planKeyRebind(session.document, session.past, session.future, pageKeys, nextKeys);
+    if (!plan || !rebindNeedsConfirm(plan)) return true;
+    return askDiscard(plan.droppedIds.length, plan.droppedIds.length === 0 && plan.historyDropped);
+  };
+
+  const current = refs[viewIndex];
 
   const start = async () => {
     if (refs.length === 0) return toast({ title: "Add a PDF first", variant: "error" });
@@ -74,7 +119,7 @@ export function EditPdfPage() {
   return (
     <ToolPage tool={tool}>
       <ToolSection label="Documents">
-        <WorkspaceFilePicker selectable={false} />
+        <WorkspaceFilePicker selectable={false} onBeforeRemove={onBeforeRemove} />
         {files.length > 0 && (
           <div className="mt">
             <LargeFileWarning files={files} />
@@ -86,16 +131,15 @@ export function EditPdfPage() {
         <Alert variant="warning">Open the desktop app to edit pages and save a new PDF.</Alert>
       )}
 
-      {current && inTauri && current && (
+      {refs.length > 0 && inTauri && current && (
         <ToolSection label="Edit" sublabel="Existing page content stays as-is. Draw on top, then save a new file.">
           <PdfEditorCanvas
             sourcePath={current.path}
             sourcePage={current.page}
-            pageIndex={pageIndex}
+            pageIndex={viewIndex}
             pageCount={refs.length}
-            resetKey={resetKey}
+            session={session}
             onPageChange={setPageIndex}
-            onChange={setDoc}
           />
         </ToolSection>
       )}
@@ -115,6 +159,30 @@ export function EditPdfPage() {
 
       <JobStatus job={job} />
       {disk.modal}
+      <Modal
+        open={discardPrompt !== null}
+        onClose={() => closeDiscard(false)}
+        title="Discard edits on this PDF?"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => closeDiscard(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={() => closeDiscard(true)}>
+              Remove PDF
+            </Button>
+          </>
+        }
+      >
+        {discardPrompt?.historyOnly ? (
+          <p>Removing this PDF discards undo history for edits on its pages.</p>
+        ) : (
+          <p>
+            Removing this PDF discards {discardPrompt?.count} edit
+            {discardPrompt?.count === 1 ? "" : "s"} on its pages.
+          </p>
+        )}
+      </Modal>
     </ToolPage>
   );
 }

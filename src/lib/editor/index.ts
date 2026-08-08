@@ -91,3 +91,12 @@ export {
   toCssHex,
   rgbToHex,
 } from "./serialize";
+
+export {
+  remapEditDocument,
+  planKeyRebind,
+  rebindNeedsConfirm,
+  resolveViewPageIndex,
+  samePageKeys,
+} from "./remapPages";
+export type { KeyRebindPlan } from "./remapPages";

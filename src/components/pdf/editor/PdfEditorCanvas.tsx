@@ -11,7 +11,7 @@ import { useToast } from "@/components/ui/Toast";
 import { pagePdf, pickImageFile, previewImage } from "@/lib/tauriCommands";
 import { toAppError } from "@/lib/types";
 import { base64ToBytes } from "@/lib/pdfjs";
-import type { EditDocument, EditObject, ShapeStyle } from "@/lib/editor";
+import type { EditObject, ShapeStyle } from "@/lib/editor";
 import {
   cloneObject,
   isClosedShapeObject,
@@ -26,7 +26,7 @@ import { EditorOverlay, type EditorTool } from "./EditorOverlay";
 import { ObjectList } from "./ObjectList";
 import { ObjectInspector, type ColorPickTarget } from "./ObjectInspector";
 import { ShapePicker, SHAPE_TOOLS } from "./ShapePicker";
-import { useEditSession } from "./useEditSession";
+import type { EditSession } from "./useEditSession";
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 4;
@@ -62,9 +62,8 @@ export function PdfEditorCanvas({
   sourcePage,
   pageIndex,
   pageCount,
-  resetKey,
+  session,
   onPageChange,
-  onChange,
 }: {
   sourcePath: string;
   /** 1-based page number inside `sourcePath` (pagePdf). */
@@ -72,12 +71,9 @@ export function PdfEditorCanvas({
   /** 0-based index in the combined editor session. */
   pageIndex: number;
   pageCount: number;
-  /** Change this when the workspace document identity changes. */
-  resetKey?: string;
+  session: EditSession;
   onPageChange?: (pageIndex: number) => void;
-  onChange?: (doc: EditDocument) => void;
 }) {
-  const session = useEditSession(onChange, resetKey);
   const { toast } = useToast();
   const [zoom, setZoom] = useState(1);
   const [bytes, setBytes] = useState<Uint8Array | null>(null);

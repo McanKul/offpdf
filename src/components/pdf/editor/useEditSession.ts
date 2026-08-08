@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef } from "react";
 import {
   canRedo,
   canUndo,
@@ -11,6 +11,7 @@ import {
   makeRectObject,
   makeTextObject,
   mapPointsToRect,
+  planKeyRebind,
   type ClosedShapeKind,
   type EditDocument,
   type EditObject,
@@ -28,21 +29,38 @@ function newId(): string {
 }
 
 export function useEditSession(
+  pageKeys: string[] = [],
   onChange?: (doc: EditDocument) => void,
-  resetKey?: string,
 ) {
   const [state, dispatch] = useReducer(editReducer, undefined, () => createHistoryState());
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const prevKeysRef = useRef<string[]>(pageKeys.slice());
+  const pageKeysRef = useRef(pageKeys);
+  pageKeysRef.current = pageKeys;
+  const keysSig = pageKeys.join("\0");
 
   useEffect(() => {
     onChangeRef.current?.(state.present);
   }, [state.present]);
 
-  useEffect(() => {
-    if (resetKey === undefined) return;
-    dispatch({ type: "RESET" });
-  }, [resetKey]);
+  useLayoutEffect(() => {
+    const nextKeys = pageKeysRef.current.slice();
+    const oldKeys = prevKeysRef.current;
+    const plan = planKeyRebind(
+      stateRef.current.present,
+      stateRef.current.past,
+      stateRef.current.future,
+      oldKeys,
+      nextKeys,
+    );
+    prevKeysRef.current = nextKeys;
+    if (!plan) return;
+    dispatch({ type: "REBIND", present: plan.present, past: plan.past, future: plan.future });
+    onChangeRef.current?.(plan.present);
+  }, [keysSig]);
 
   const addRect = useCallback((pageIndex: number, rect: PdfRect) => {
     dispatch({ type: "ADD", object: makeRectObject(newId(), pageIndex, rect) });
@@ -199,6 +217,8 @@ export function useEditSession(
     document: state.present as EditDocument,
     objects: state.present.objects as EditObject[],
     selectedIds: state.present.selectedIds,
+    past: state.past as EditDocument[],
+    future: state.future as EditDocument[],
     canUndo: canUndo(state),
     canRedo: canRedo(state),
     addRect,
@@ -222,3 +242,5 @@ export function useEditSession(
     nudgeSelected,
   };
 }
+
+export type EditSession = ReturnType<typeof useEditSession>;
