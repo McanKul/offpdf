@@ -6,6 +6,7 @@ use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
 use crate::pdf_engine::crop;
 use crate::utils::process::run_qpdf;
+use crate::utils::safe_output;
 use crate::utils::temp;
 use lopdf::Document;
 use serde::Deserialize;
@@ -798,13 +799,6 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
     Ok(())
 }
 
-fn same_file(a: &str, b: &str) -> bool {
-    match (Path::new(a).canonicalize(), Path::new(b).canonicalize()) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => a == b,
-    }
-}
-
 /// Per-page geometry read from the original sources (not a `--empty` rebuild).
 #[derive(Debug, Clone, Copy)]
 struct OverlayPageGeom {
@@ -960,24 +954,47 @@ pub(crate) fn export_edit_pdf_with_runner<F>(
     document: &EditDocumentIn,
     font_path: &Path,
     work: &Path,
+    unique: &str,
     mut run: F,
 ) -> Result<Vec<String>, AppError>
 where
     F: FnMut(&[String]) -> Result<(), AppError>,
 {
     validate_doc(document)?;
+    let dest = Path::new(output);
+    for g in groups {
+        if safe_output::same_file_identity(Path::new(&g.path), dest) {
+            return Err(AppError::new(
+                "OVERWRITE",
+                "Choose a new file name",
+                "OffPDF never overwrites the original PDF.",
+            )
+            .with_suggestion("Pick a different name or folder."));
+        }
+    }
+    let tmp = safe_output::sibling_temp_path(dest, unique)?;
+    let tmp_str = tmp.to_string_lossy().to_string();
     let overlay = work.join("overlay.pdf");
     let overlay_str = overlay.to_string_lossy().to_string();
-    let (geoms, counts) = collect_source_pages(groups)?;
-    if geoms.is_empty() {
-        return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
+    let result = (|| -> Result<Vec<String>, AppError> {
+        let (geoms, counts) = collect_source_pages(groups)?;
+        if geoms.is_empty() {
+            return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
+        }
+        let font_bytes = std::fs::read(font_path).map_err(|e| AppError::io("Could not read the editor font.", e))?;
+        let font = FontInfo::parse(font_bytes)?;
+        write_overlay_pdf(&overlay_str, &geoms, document, &font)?;
+        let args = build_edit_overlay_args(groups, &counts, &overlay_str, &tmp_str)?;
+        run(&args)?;
+        safe_output::replace_file(&tmp, dest)?;
+        Ok(vec![output.to_string()])
+    })();
+    // On success the temp was renamed away. On failure leave a dest-sibling
+    // tmp in place so a failed Windows replace still has a recoverable file.
+    if result.is_ok() && tmp.exists() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    let font_bytes = std::fs::read(font_path).map_err(|e| AppError::io("Could not read the editor font.", e))?;
-    let font = FontInfo::parse(font_bytes)?;
-    write_overlay_pdf(&overlay_str, &geoms, document, &font)?;
-    let args = build_edit_overlay_args(groups, &counts, &overlay_str, output)?;
-    run(&args)?;
-    Ok(vec![output.to_string()])
+    result
 }
 
 pub fn edit_pdf_overlays(
@@ -993,7 +1010,7 @@ pub fn edit_pdf_overlays(
     }
     for g in groups {
         super::require_input(&g.path)?;
-        if same_file(&g.path, output) {
+        if safe_output::same_file_identity(Path::new(&g.path), Path::new(output)) {
             return Err(AppError::new(
                 "OVERWRITE",
                 "Choose a new file name",
@@ -1013,7 +1030,7 @@ pub fn edit_pdf_overlays(
         if handle.is_cancelled() {
             return Err(AppError::cancelled());
         }
-        export_edit_pdf_with_runner(groups, output, document, &font_path, &work, |args| {
+        export_edit_pdf_with_runner(groups, output, document, &font_path, &work, job_id, |args| {
             run_qpdf(app, handle, job_id, args, "Saving", None)
         })
     })();
@@ -1651,6 +1668,7 @@ mod tests {
             &sample_text_doc(),
             &font,
             &work,
+            "catalog",
             |args| {
                 assert!(!args.iter().any(|a| a == "--empty"), "argv={args:?}");
                 assert_eq!(args[0], src.to_str().unwrap());
@@ -1687,7 +1705,56 @@ mod tests {
         let cat = out.get_dictionary(root_id).unwrap();
         assert!(cat.get(b"Outlines").is_ok(), "Outlines missing");
         assert!(cat.get(b"AcroForm").is_ok(), "AcroForm missing");
+        assert!(std::fs::read_dir(dest.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .all(|e| !e.file_name().to_string_lossy().ends_with(".pdf.tmp")));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn export_rejects_hard_linked_destination() {
+        let Some(qpdf) = test_qpdf() else {
+            eprintln!("skip: qpdf not available");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "offpdf-edit-hl-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let src = root.join("src.pdf");
+        let dest = root.join("alias.pdf");
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        write_catalog_fixture(&src);
+        if std::fs::hard_link(&src, &dest).is_err() {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let before = std::fs::read(&src).unwrap();
+        let font = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
+        let err = export_edit_pdf_with_runner(
+            &[g(src.to_str().unwrap(), "1")],
+            dest.to_str().unwrap(),
+            &sample_text_doc(),
+            &font,
+            &work,
+            "hl",
+            |args| {
+                let _ = qpdf;
+                let _ = args;
+                Ok(())
+            },
+        )
+        .expect_err("hard-linked dest must be rejected");
+        assert_eq!(err.code, "OVERWRITE");
+        assert_eq!(std::fs::read(&src).unwrap(), before);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

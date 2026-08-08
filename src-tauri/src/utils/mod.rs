@@ -3,3 +3,4 @@
 pub mod disk;
 pub mod temp;
 pub mod process;
+pub mod safe_output;
