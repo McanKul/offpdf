@@ -49,7 +49,8 @@ export {
 } from "./coords";
 
 export type { PdfBoxQuad } from "./visibleBox";
-export { visiblePageBox, quadToBox, boxToQuad } from "./visibleBox";
+export { visiblePageBox, alignPageBox, quadToBox, boxToQuad } from "./visibleBox";
+export { imageCssRect, placeImagePdfRect } from "./placeImage";
 
 export type { HistoryState, EditAction, LayerDir } from "./editReducer";
 export {

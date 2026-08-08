@@ -1,8 +1,8 @@
 /**
  * Viewport CSS pixel ↔ unrotated PDF point transforms for the editor canvas.
  *
- * Stored geometry is always in unrotated PDF user space (origin = lower-left of
- * the visible page box). /Rotate only affects display mapping.
+ * Stored geometry is absolute unrotated PDF user space. Preview mapping
+ * subtracts `geometry.box` (pdf.js visible box). /Rotate only affects display.
  *
  * Pure functions — no DOM, no pdf.js — so unit tests stay hermetic.
  */

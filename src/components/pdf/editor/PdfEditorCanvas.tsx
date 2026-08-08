@@ -12,13 +12,12 @@ import { base64ToBytes } from "@/lib/pdfjs";
 import type { EditDocument, EditObject, ShapeStyle } from "@/lib/editor";
 import {
   cloneObject,
-  displayedSize,
   isClosedShapeObject,
   makeMapping,
   offsetObject,
   pdfRectToViewport,
+  placeImagePdfRect,
   rgbToHex,
-  viewportToPdf,
 } from "@/lib/editor";
 import { PageSurface, type PageLayout } from "./PageSurface";
 import { EditorOverlay, type EditorTool } from "./EditorOverlay";
@@ -173,22 +172,15 @@ export function PdfEditorCanvas({
       const path = await pickImageFile();
       if (!path) return;
       const preview = await previewImage(path);
-      const disp = displayedSize(layout.geometry);
-      const mapping = makeMapping(layout.geometry, layout.cssWidth, layout.cssHeight);
-      const natW = preview.width;
-      const natH = preview.height;
-      const maxW = disp.w * 0.45;
-      const scale = natW > 0 ? Math.min(1, maxW / natW) : 1;
-      const w = Math.max(24, natW * scale);
-      const h = Math.max(24, natH * scale);
-      let cx = layout.geometry.box.x + (layout.geometry.box.w - w) / 2;
-      let cy = layout.geometry.box.y + (layout.geometry.box.h - h) / 2;
-      if (atCss) {
-        const pt = viewportToPdf(atCss, mapping);
-        cx = pt.x - w / 2;
-        cy = pt.y - h / 2;
-      }
-      session.addImage(pageIndex, { x: cx, y: cy, w, h }, path, preview.dataUrl);
+      const rect = placeImagePdfRect(
+        layout.geometry,
+        layout.cssWidth,
+        layout.cssHeight,
+        preview.width,
+        preview.height,
+        atCss,
+      );
+      session.addImage(pageIndex, rect, path, preview.dataUrl);
       setTool("select");
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Could not add that image.");

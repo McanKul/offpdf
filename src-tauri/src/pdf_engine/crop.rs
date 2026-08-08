@@ -60,27 +60,86 @@ pub(crate) fn media_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
     inherited_box(doc, page_id, b"MediaBox").unwrap_or([0.0, 0.0, 612.0, 792.0])
 }
 
-/// Visible page box = CropBox ∩ MediaBox (else MediaBox). Matches the editor
-/// canvas contract so overlay placement agrees with the preview.
+fn intersect_box(inner: [f64; 4], media: [f64; 4]) -> [f64; 4] {
+    let ix0 = inner[0].max(media[0]);
+    let iy0 = inner[1].max(media[1]);
+    let ix1 = inner[2].min(media[2]);
+    let iy1 = inner[3].min(media[3]);
+    if ix1 - ix0 > 1.0 && iy1 - iy0 > 1.0 {
+        [ix0, iy0, ix1, iy1]
+    } else {
+        media
+    }
+}
+
+/// Visible page box = CropBox ∩ MediaBox (else MediaBox). Matches pdf.js paint.
 pub(crate) fn visible_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
     let mb = media_box(doc, page_id);
     match inherited_box(doc, page_id, b"CropBox") {
-        Some(cb) => {
-            let ix0 = cb[0].max(mb[0]);
-            let iy0 = cb[1].max(mb[1]);
-            let ix1 = cb[2].min(mb[2]);
-            let iy1 = cb[3].min(mb[3]);
-            if ix1 - ix0 > 1.0 && iy1 - iy0 > 1.0 {
-                [ix0, iy0, ix1, iy1]
-            } else {
-                mb
-            }
-        }
+        Some(cb) => intersect_box(cb, mb),
         None => mb,
     }
 }
 
-/// Displayed width/height after /Rotate (points). Overlay pages use this size.
+/// Box on the page dict only (qpdf overlay does not inherit `/TrimBox`).
+fn page_dict_box(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f64; 4]> {
+    let Ok(dict) = doc.get_dictionary(page_id) else {
+        return None;
+    };
+    let Ok(obj) = dict.get(key) else {
+        return None;
+    };
+    let resolved = if let Ok(r) = obj.as_reference() {
+        doc.get_object(r).ok()
+    } else {
+        Some(obj)
+    };
+    let arr = resolved.and_then(|o| o.as_array().ok())?;
+    if arr.len() != 4 {
+        return None;
+    }
+    let mut v = [0.0; 4];
+    for (i, e) in arr.iter().enumerate() {
+        v[i] = num(e, doc)?;
+    }
+    Some([v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3])])
+}
+
+/// qpdf overlay alignment: raw **page** TrimBox (not inherited, not clipped to
+/// Media) → inherited CropBox → MediaBox. Matches `getTrimBox()` used by `--overlay`.
+pub(crate) fn align_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
+    if let Some(trim) = page_dict_box(doc, page_id, b"TrimBox") {
+        return trim;
+    }
+    inherited_box(doc, page_id, b"CropBox").unwrap_or_else(|| media_box(doc, page_id))
+}
+
+/// Page `/UserUnit` (default 1). Not inherited.
+pub(crate) fn page_user_unit(doc: &Document, page_id: ObjectId) -> f64 {
+    let Ok(dict) = doc.get_dictionary(page_id) else {
+        return 1.0;
+    };
+    let Ok(obj) = dict.get(b"UserUnit") else {
+        return 1.0;
+    };
+    let resolved = if let Ok(r) = obj.as_reference() {
+        doc.get_object(r).ok()
+    } else {
+        Some(obj)
+    };
+    let n = resolved.and_then(|o| match o {
+        Object::Integer(i) => Some(*i as f64),
+        Object::Real(r) => Some(*r as f64),
+        _ => None,
+    });
+    match n {
+        Some(v) if v.is_finite() && v > 0.0 && v < 10_000.0 => v,
+        _ => 1.0,
+    }
+}
+
+/// Displayed width/height after /Rotate from the **visible** box. Stamp and
+/// watermark overlays use this; Edit PDF overlay uses the align box instead.
 pub(crate) fn displayed_size(doc: &Document, page_id: ObjectId) -> (f64, f64) {
     let b = visible_box(doc, page_id);
     let (w, h) = (b[2] - b[0], b[3] - b[1]);
@@ -204,4 +263,113 @@ pub fn crop(
 
     let _ = std::fs::remove_dir_all(&work);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::{Dictionary, Document, Object, Stream};
+
+    fn rect_obj(b: [i64; 4]) -> Object {
+        Object::Array(b.into_iter().map(Object::Integer).collect())
+    }
+
+    fn one_page(
+        pages_extra: &[(&[u8], Object)],
+        page_extra: &[(&[u8], Object)],
+    ) -> (Document, ObjectId) {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let content_id = doc.add_object(Object::Stream(Stream::new(Dictionary::new(), Vec::new())));
+
+        let mut page = Dictionary::new();
+        page.set("Type", "Page");
+        page.set("Parent", pages_id);
+        page.set("Contents", content_id);
+        for (k, v) in page_extra {
+            page.set(k.to_vec(), v.clone());
+        }
+        let page_id = doc.add_object(Object::Dictionary(page));
+
+        let mut pages = Dictionary::new();
+        pages.set("Type", "Pages");
+        pages.set("Kids", vec![page_id.into()]);
+        pages.set("Count", 1);
+        for (k, v) in pages_extra {
+            pages.set(k.to_vec(), v.clone());
+        }
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", "Catalog");
+        catalog.set("Pages", pages_id);
+        let cat_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", cat_id);
+        (doc, page_id)
+    }
+
+    #[test]
+    fn parent_trim_is_ignored_align_follows_crop() {
+        let (doc, pid) = one_page(
+            &[
+                (b"MediaBox", rect_obj([0, 0, 612, 792])),
+                (b"TrimBox", rect_obj([0, 0, 612, 792])),
+            ],
+            &[(b"CropBox", rect_obj([72, 72, 540, 720]))],
+        );
+        assert_eq!(visible_box(&doc, pid), [72.0, 72.0, 540.0, 720.0]);
+        assert_eq!(align_box(&doc, pid), [72.0, 72.0, 540.0, 720.0]);
+    }
+
+    #[test]
+    fn page_trim_differs_from_crop() {
+        let (doc, pid) = one_page(
+            &[(b"MediaBox", rect_obj([0, 0, 612, 792]))],
+            &[
+                (b"CropBox", rect_obj([72, 72, 540, 720])),
+                (b"TrimBox", rect_obj([0, 0, 612, 792])),
+            ],
+        );
+        assert_eq!(visible_box(&doc, pid), [72.0, 72.0, 540.0, 720.0]);
+        assert_eq!(align_box(&doc, pid), [0.0, 0.0, 612.0, 792.0]);
+    }
+
+    #[test]
+    fn no_trim_align_equals_visible() {
+        let (doc, pid) = one_page(
+            &[(b"MediaBox", rect_obj([0, 0, 612, 792]))],
+            &[(b"CropBox", rect_obj([72, 72, 540, 720]))],
+        );
+        assert_eq!(align_box(&doc, pid), visible_box(&doc, pid));
+    }
+
+    #[test]
+    fn page_trim_outside_media_is_not_clipped() {
+        let (doc, pid) = one_page(
+            &[(b"MediaBox", rect_obj([0, 0, 612, 792]))],
+            &[(b"TrimBox", rect_obj([-10, -10, 700, 700]))],
+        );
+        assert_eq!(align_box(&doc, pid), [-10.0, -10.0, 700.0, 700.0]);
+    }
+
+    #[test]
+    fn user_unit_on_page_only() {
+        let (doc, pid) = one_page(
+            &[(b"MediaBox", rect_obj([0, 0, 612, 792]))],
+            &[(b"UserUnit", Object::Real(2.0))],
+        );
+        assert!((page_user_unit(&doc, pid) - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn user_unit_on_parent_is_not_inherited() {
+        let (doc, pid) = one_page(
+            &[
+                (b"MediaBox", rect_obj([0, 0, 612, 792])),
+                (b"UserUnit", Object::Real(2.0)),
+            ],
+            &[],
+        );
+        assert!((page_user_unit(&doc, pid) - 1.0).abs() < 1e-6);
+    }
 }

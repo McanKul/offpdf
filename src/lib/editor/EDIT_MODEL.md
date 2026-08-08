@@ -23,7 +23,7 @@ invent a second coordinate system.
 
 | Space | Origin | Units | Stored? |
 | --- | --- | --- | --- |
-| PDF page space | Lower-left of the **visible page box** (CropBox ∩ MediaBox, else MediaBox), unrotated | PDF points | **Yes** — `EditObject.rect` |
+| PDF page space | Absolute unrotated user space. Preview mapping subtracts the **visible** box (CropBox ∩ MediaBox). Export maps through the **align** box (TrimBox → CropBox → MediaBox, matching qpdf overlay). `/UserUnit` is copied onto overlay pages. | PDF points | **Yes** — `EditObject.rect` |
 | Display page space | Lower-left of the page after applying `/Rotate` | points | Internal only |
 | CSS / viewport | Top-left of the rendered page element | CSS pixels | Transient UI |
 
@@ -42,7 +42,9 @@ displayedSize(geometry) → { w, h }
 ```
 
 `ViewportMapping` is `{ cssWidth, cssHeight, geometry }` where `geometry`
-includes `box`, `rotate`, and `pageIndex`.
+includes `box` (pdf.js visible view), optional `userUnit`, `rotate`, and `pageIndex`.
+Export align (raw page TrimBox, not inherited and not clipped to Media → Crop → Media)
+is computed in Rust to match qpdf; the preview never observes TrimBox.
 
 ## EditDocument
 
@@ -77,9 +79,10 @@ job.
 ## How export consumes this
 
 1. Read `EditDocument.objects` for the chosen pages.
-2. Map each `rect` / point from unrotated PDF space through the visible box
-   (`CropBox ∩ MediaBox`) and `/Rotate` into **displayed overlay space**
-   (same size as stamp/watermark overlays).
+2. Map each `rect` / point from unrotated PDF space through the **align box**
+   (TrimBox → CropBox → MediaBox) and `/Rotate` into displayed overlay space.
+   Overlay pages copy dest `/UserUnit` and set matching Media/Crop/Trim boxes
+   so qpdf maps 1:1. Preview still paints CropBox; stored coords stay absolute.
 3. Build a hand-rolled overlay PDF (embedded Noto Sans, vector ops, image
    XObjects) and `qpdf --overlay` it onto the **primary source**, not an empty
    rebuild. A single full-range file is `original --overlay overlay -- dest`

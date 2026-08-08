@@ -165,6 +165,8 @@ pub enum EditObjectIn {
         opacity: Option<f64>,
         #[serde(default, rename = "objectRotate")]
         object_rotate: f64,
+        #[serde(default, rename = "keepAspect")]
+        keep_aspect: Option<bool>,
     },
     Line {
         #[serde(rename = "pageIndex")]
@@ -802,8 +804,19 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
 /// Per-page geometry read from the original sources (not a `--empty` rebuild).
 #[derive(Debug, Clone, Copy)]
 struct OverlayPageGeom {
-    vis: [f64; 4],
+    align: [f64; 4],
     rotate: i64,
+    user_unit: f64,
+}
+
+/// Center a raster of `iw×ih` inside overlay AABB `(x,y,w,h)` (SVG `meet`).
+pub(crate) fn image_meet_blit(x: f64, y: f64, w: f64, h: f64, iw: f64, ih: f64) -> (f64, f64, f64, f64) {
+    let iw = iw.max(1.0);
+    let ih = ih.max(1.0);
+    let s = (w / iw).min(h / ih);
+    let dw = iw * s;
+    let dh = ih * s;
+    (x + (w - dw) / 2.0, y + (h - dh) / 2.0, dw, dh)
 }
 
 fn displayed_wh(vis: [f64; 4], rotate: i64) -> (f64, f64) {
@@ -899,8 +912,9 @@ fn collect_source_pages(groups: &[PageGroup]) -> Result<(Vec<OverlayPageGeom>, V
                 )
             })?;
             geoms.push(OverlayPageGeom {
-                vis: crop::visible_box(doc, id),
+                align: crop::align_box(doc, id),
                 rotate: crop::page_rotation(doc, id),
+                user_unit: crop::page_user_unit(doc, id),
             });
         }
     }
@@ -1191,7 +1205,8 @@ fn write_overlay_pdf(
 
     let mut content_ids = Vec::with_capacity(n);
     for (pi, geom) in geoms.iter().enumerate() {
-        let vis = geom.vis;
+        // Overlay coords are relative to qpdf's alignment box (Trim→Crop→Media).
+        let vis = geom.align;
         let rotate = geom.rotate;
         let mut content = String::new();
         for (oi, obj) in document.objects.iter().enumerate() {
@@ -1322,10 +1337,20 @@ fn write_overlay_pdf(
                     }
                     content.push_str("ET\n");
                 }
-                EditObjectIn::Image { rect, .. } => {
+                EditObjectIn::Image { rect, keep_aspect, .. } => {
                     if let Some(ii) = image_for_obj[oi] {
                         let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
-                        content.push_str(&format!("q\n{w:.2} 0 0 {h:.2} {x:.2} {y:.2} cm\n/Im{ii} Do\nQ\n"));
+                        let rast = &rasters[ii];
+                        let meet = keep_aspect.unwrap_or(true);
+                        if meet {
+                            let (dx, dy, dw, dh) =
+                                image_meet_blit(x, y, w, h, rast.w as f64, rast.h as f64);
+                            content.push_str(&format!(
+                                "q\n{dw:.2} 0 0 {dh:.2} {dx:.2} {dy:.2} cm\n/Im{ii} Do\nQ\n"
+                            ));
+                        } else {
+                            content.push_str(&format!("q\n{w:.2} 0 0 {h:.2} {x:.2} {y:.2} cm\n/Im{ii} Do\nQ\n"));
+                        }
                     }
                 }
                 EditObjectIn::Line {
@@ -1380,7 +1405,7 @@ fn write_overlay_pdf(
 
     let mut out_page_ids = Vec::with_capacity(n);
     for (pi, geom) in geoms.iter().enumerate() {
-        let (pw, ph) = displayed_wh(geom.vis, geom.rotate);
+        let (pw, ph) = displayed_wh(geom.align, geom.rotate);
         let mut xo = String::new();
         for (oi, obj) in document.objects.iter().enumerate() {
             if obj.page_index() as usize != pi {
@@ -1394,9 +1419,15 @@ fn write_overlay_pdf(
         for op100 in gs_ids.keys() {
             gs_res.push_str(&format!("/GS{op100} {} 0 R ", gs_ids[op100]));
         }
+        let uu = if (geom.user_unit - 1.0).abs() > 1e-6 {
+            format!(" /UserUnit {:.4}", geom.user_unit)
+        } else {
+            String::new()
+        };
         let pg = b.begin();
         b.s(&format!(
-            "{pg} 0 obj\n<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 {pw:.2} {ph:.2}] \
+            "{pg} 0 obj\n<< /Type /Page /Parent {pages_id} 0 R \
+             /MediaBox [0 0 {pw:.2} {ph:.2}] /CropBox [0 0 {pw:.2} {ph:.2}] /TrimBox [0 0 {pw:.2} {ph:.2}]{uu} \
              /Resources << /Font << /F1 {type0} 0 R >> /ExtGState << {gs_res}>> /XObject << {xo}>> >> \
              /Contents {} 0 R >>\nendobj\n",
             content_ids[pi]
@@ -1436,6 +1467,28 @@ mod tests {
         let (x, y, w, h) = pdf_rect_to_overlay(&r, vis, 0);
         assert!((x - 0.0).abs() < 1e-6);
         assert!((y - 0.0).abs() < 1e-6);
+        assert!((w - 100.0).abs() < 1e-6);
+        assert!((h - 50.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn image_meet_letterboxes_wide_raster_in_tall_aabb() {
+        let (dx, dy, dw, dh) = image_meet_blit(0.0, 0.0, 100.0, 200.0, 200.0, 100.0);
+        assert!((dw - 100.0).abs() < 1e-6);
+        assert!((dh - 50.0).abs() < 1e-6);
+        assert!((dx - 0.0).abs() < 1e-6);
+        assert!((dy - 75.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn overlay_rect_against_full_trim_keeps_crop_offset() {
+        // Visible crop origin (72,72) on a full-page TrimBox must stay at (72,72)
+        // in overlay space so qpdf 1:1 maps onto dest TrimBox.
+        let align = [0.0, 0.0, 612.0, 792.0];
+        let r = PdfRectIn { x: 72.0, y: 72.0, w: 100.0, h: 50.0 };
+        let (x, y, w, h) = pdf_rect_to_overlay(&r, align, 0);
+        assert!((x - 72.0).abs() < 1e-6);
+        assert!((y - 72.0).abs() < 1e-6);
         assert!((w - 100.0).abs() < 1e-6);
         assert!((h - 50.0).abs() < 1e-6);
     }

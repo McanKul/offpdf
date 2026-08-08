@@ -7,8 +7,8 @@
  * See EDIT_MODEL.md for the full contract.
  */
 
-/** Visible page box in unrotated PDF user space (points). Origin is the
- * lower-left of the effective crop/media box. */
+/** Axis-aligned box in unrotated PDF user space (points). Preview `geometry.box`
+ * is the pdf.js visible window; export align is computed in Rust. */
 export interface PageBox {
   x: number;
   y: number;
@@ -19,16 +19,18 @@ export interface PageBox {
 export type PageRotation = 0 | 90 | 180 | 270;
 
 export interface PageGeometry {
-  /** Effective crop/media box used for placement. */
+  /** Visible box (pdf.js `view` / Crop ∩ Media) — preview mapping only. */
   box: PageBox;
+  /** Page /UserUnit (default 1). Preview CSS already includes this via pdf.js. */
+  userUnit?: number;
   /** Page /Rotate (0 | 90 | 180 | 270). */
   rotate: PageRotation;
   /** 0-based page index within this editor session. */
   pageIndex: number;
 }
 
-/** Axis-aligned box in unrotated PDF page space (points, origin bottom-left of
- * the page box). */
+/** Axis-aligned box in absolute unrotated PDF user space (points). Preview
+ * mapping subtracts `geometry.box`; export maps through Rust align. */
 export interface PdfRect {
   x: number;
   y: number;

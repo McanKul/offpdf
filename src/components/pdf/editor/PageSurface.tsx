@@ -11,7 +11,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { pdfjsLib, PDF_OPTS } from "@/lib/pdfjs";
 import {
   normalizePageRotation,
-  visiblePageBox,
+  quadToBox,
   type PageGeometry,
   type PageRotation,
 } from "@/lib/editor";
@@ -88,24 +88,22 @@ export function PageSurface({
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const page = await (doc as any).getPage(1);
           const rotate = normalizePageRotation(page.rotate ?? 0) as PageRotation;
-          const media = (page.mediaBox ?? page.view) as number[];
-          const crop = (page.cropBox ?? null) as number[] | null;
-          const mediaQ: [number, number, number, number] = [
-            media[0] ?? 0,
-            media[1] ?? 0,
-            media[2] ?? 612,
-            media[3] ?? 792,
-          ];
-          const cropQ =
-            crop && crop.length === 4
-              ? ([crop[0], crop[1], crop[2], crop[3]] as [number, number, number, number])
-              : null;
-          const box = visiblePageBox(mediaQ, cropQ);
+          // pdf.js `view` is already Crop ∩ Media. TrimBox is not on the proxy;
+          // export align is computed in Rust to match qpdf.
+          const view = (page.view ?? page.mediaBox ?? [0, 0, 612, 792]) as number[];
+          const box = quadToBox([
+            view[0] ?? 0,
+            view[1] ?? 0,
+            view[2] ?? 612,
+            view[3] ?? 792,
+          ]);
+          const userUnitRaw = Number(page.userUnit ?? 1);
+          const userUnit = Number.isFinite(userUnitRaw) && userUnitRaw > 0 ? userUnitRaw : 1;
           if (!(box.w > 0 && box.h > 0)) {
             onFailRef.current("Page has an invalid size.");
             return;
           }
-          geometryRef.current = { box, rotate, pageIndex };
+          geometryRef.current = { box, userUnit, rotate, pageIndex };
           setReady(true);
         } catch (e) {
           const msg = e instanceof Error ? e.message : "Could not open the page.";

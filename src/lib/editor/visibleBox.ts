@@ -1,6 +1,7 @@
 /**
  * Visible page box = CropBox ∩ MediaBox (else MediaBox).
- * Must match Rust `crop::visible_box` so preview and overlay export agree.
+ * Matches Rust `crop::visible_box`. Preview uses pdf.js `page.view` (same
+ * window). Export overlay alignment is Rust `align_box` (page Trim → Crop → Media).
  */
 
 import type { PageBox } from "./types";
@@ -20,17 +21,35 @@ export function boxToQuad(b: PageBox): PdfBoxQuad {
   return [b.x, b.y, b.x + b.w, b.y + b.h];
 }
 
-/** Intersect crop with media; fall back to media if the intersection is tiny. */
-export function visiblePageBox(media: PdfBoxQuad, crop?: PdfBoxQuad | null): PageBox {
-  const mb = quadToBox(media);
-  if (!crop) return mb;
-  const cb = quadToBox(crop);
-  const x0 = Math.max(mb.x, cb.x);
-  const y0 = Math.max(mb.y, cb.y);
-  const x1 = Math.min(mb.x + mb.w, cb.x + cb.w);
-  const y1 = Math.min(mb.y + mb.h, cb.y + cb.h);
+function intersectOrMedia(inner: PageBox, mb: PageBox): PageBox {
+  const x0 = Math.max(mb.x, inner.x);
+  const y0 = Math.max(mb.y, inner.y);
+  const x1 = Math.min(mb.x + mb.w, inner.x + inner.w);
+  const y1 = Math.min(mb.y + mb.h, inner.y + inner.h);
   if (x1 - x0 > 1 && y1 - y0 > 1) {
     return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
   }
   return mb;
+}
+
+/** Intersect crop with media; fall back to media if the intersection is tiny. */
+export function visiblePageBox(media: PdfBoxQuad, crop?: PdfBoxQuad | null): PageBox {
+  const mb = quadToBox(media);
+  if (!crop) return mb;
+  return intersectOrMedia(quadToBox(crop), mb);
+}
+
+/**
+ * qpdf overlay alignment model: raw page TrimBox (not inherited, not clipped
+ * to Media) → CropBox → MediaBox. Preview does not see Trim (pdf.js); live
+ * export uses Rust `align_box`.
+ */
+export function alignPageBox(
+  media: PdfBoxQuad,
+  crop?: PdfBoxQuad | null,
+  trim?: PdfBoxQuad | null,
+): PageBox {
+  if (trim) return quadToBox(trim);
+  if (crop) return quadToBox(crop);
+  return quadToBox(media);
 }
