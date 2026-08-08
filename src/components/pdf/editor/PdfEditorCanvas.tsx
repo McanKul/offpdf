@@ -7,7 +7,9 @@ import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { Spinner } from "@/components/ui/Spinner";
 import { Alert } from "@/components/ui/Alert";
+import { useToast } from "@/components/ui/Toast";
 import { pagePdf, pickImageFile, previewImage } from "@/lib/tauriCommands";
+import { toAppError } from "@/lib/types";
 import { base64ToBytes } from "@/lib/pdfjs";
 import type { EditDocument, EditObject, ShapeStyle } from "@/lib/editor";
 import {
@@ -76,6 +78,7 @@ export function PdfEditorCanvas({
   onChange?: (doc: EditDocument) => void;
 }) {
   const session = useEditSession(onChange, resetKey);
+  const { toast } = useToast();
   const [zoom, setZoom] = useState(1);
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -183,7 +186,8 @@ export function PdfEditorCanvas({
       session.addImage(pageIndex, rect, path, preview.dataUrl);
       setTool("select");
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : "Could not add that image.");
+      const err = toAppError(e);
+      toast({ title: err.title, description: err.message, variant: "error" });
     }
   };
 

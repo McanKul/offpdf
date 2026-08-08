@@ -4,7 +4,7 @@
 
 use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
-use crate::pdf_engine::crop;
+use crate::pdf_engine::{crop, edit_image};
 use crate::utils::process::run_qpdf;
 use crate::utils::safe_output;
 use crate::utils::temp;
@@ -12,14 +12,13 @@ use lopdf::Document;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::Manager;
 use ttf_parser::{Face, GlyphId};
 
 const MAX_OBJECTS: usize = 500;
 const MAX_INK_POINTS: usize = 8_000;
-const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
-const MAX_IMAGE_EDGE: u32 = 4_096;
 const MAX_TEXT_CHARS: usize = 8_000;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -712,63 +711,6 @@ fn find_font_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, AppError
     )
 }
 
-struct Raster {
-    w: u32,
-    h: u32,
-    rgb: Vec<u8>,
-    alpha: Option<Vec<u8>>,
-}
-
-fn load_image_rgb(path: &str) -> Result<Raster, AppError> {
-    let meta = std::fs::metadata(path).map_err(|_| {
-        AppError::new("IMAGE_MISSING", "Image not found", "An image used in the edit could not be read.")
-            .with_suggestion("Choose the image again.")
-    })?;
-    if meta.len() > MAX_IMAGE_BYTES {
-        return Err(AppError::new(
-            "IMAGE_TOO_LARGE",
-            "Image is too large",
-            "Use a PNG or JPEG smaller than 20 MB.",
-        ));
-    }
-    let bytes = std::fs::read(path).map_err(|e| AppError::io("Could not read the image.", e))?;
-    if !(bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || bytes.starts_with(&[0xFF, 0xD8, 0xFF])) {
-        return Err(AppError::new(
-            "IMAGE_TYPE",
-            "Unsupported image",
-            "Only PNG and JPEG images can be added.",
-        ));
-    }
-    let img = image::load_from_memory(&bytes).map_err(|_| {
-        AppError::new("IMAGE_BAD", "Could not read the image", "The file does not look like a valid PNG or JPEG.")
-    })?;
-    if img.width() > MAX_IMAGE_EDGE || img.height() > MAX_IMAGE_EDGE {
-        return Err(AppError::new(
-            "IMAGE_TOO_LARGE",
-            "Image is too large",
-            format!("Images can be at most {MAX_IMAGE_EDGE} pixels on a side."),
-        ));
-    }
-    let rgba = img.to_rgba8();
-    let (w, h) = rgba.dimensions();
-    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
-    let mut alpha = Vec::with_capacity((w * h) as usize);
-    let mut has_alpha = false;
-    for px in rgba.pixels() {
-        rgb.extend_from_slice(&px.0[0..3]);
-        alpha.push(px.0[3]);
-        if px.0[3] < 255 {
-            has_alpha = true;
-        }
-    }
-    Ok(Raster {
-        w,
-        h,
-        rgb,
-        alpha: if has_alpha { Some(alpha) } else { None },
-    })
-}
-
 fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
     if doc.version != 1 {
         return Err(AppError::new(
@@ -969,6 +911,7 @@ pub(crate) fn export_edit_pdf_with_runner<F>(
     font_path: &Path,
     work: &Path,
     unique: &str,
+    cancel: Option<&AtomicBool>,
     mut run: F,
 ) -> Result<Vec<String>, AppError>
 where
@@ -997,7 +940,7 @@ where
         }
         let font_bytes = std::fs::read(font_path).map_err(|e| AppError::io("Could not read the editor font.", e))?;
         let font = FontInfo::parse(font_bytes)?;
-        write_overlay_pdf(&overlay_str, &geoms, document, &font)?;
+        write_overlay_pdf(&overlay_str, &geoms, document, &font, cancel)?;
         let args = build_edit_overlay_args(groups, &counts, &overlay_str, &tmp_str)?;
         run(&args)?;
         safe_output::replace_file(&tmp, dest)?;
@@ -1044,13 +987,50 @@ pub fn edit_pdf_overlays(
         if handle.is_cancelled() {
             return Err(AppError::cancelled());
         }
-        export_edit_pdf_with_runner(groups, output, document, &font_path, &work, job_id, |args| {
-            run_qpdf(app, handle, job_id, args, "Saving", None)
-        })
+        export_edit_pdf_with_runner(
+            groups,
+            output,
+            document,
+            &font_path,
+            &work,
+            job_id,
+            Some(&handle.cancelled),
+            |args| run_qpdf(app, handle, job_id, args, "Saving", None),
+        )
     })();
 
     let _ = std::fs::remove_dir_all(&work);
     result
+}
+
+fn collect_unique_rasters(
+    objects: &[EditObjectIn],
+    mut check: impl FnMut() -> Result<(), AppError>,
+) -> Result<(Vec<edit_image::Raster>, Vec<Option<usize>>), AppError> {
+    let mut rasters: Vec<edit_image::Raster> = Vec::new();
+    let mut image_for_obj: Vec<Option<usize>> = vec![None; objects.len()];
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut unique_bytes = 0u64;
+    let mut unique_pixels = 0u64;
+    for (i, o) in objects.iter().enumerate() {
+        if let EditObjectIn::Image { path, .. } = o {
+            check()?;
+            let key = edit_image::dedupe_key(path);
+            if let Some(&idx) = seen.get(&key) {
+                image_for_obj[i] = Some(idx);
+                continue;
+            }
+            let rast = edit_image::load_image_rgb(path)?;
+            unique_bytes += rast.source_len;
+            unique_pixels += rast.w as u64 * rast.h as u64;
+            edit_image::check_doc_budget(unique_bytes, unique_pixels)?;
+            seen.insert(key, rasters.len());
+            image_for_obj[i] = Some(rasters.len());
+            rasters.push(rast);
+            check()?;
+        }
+    }
+    Ok((rasters, image_for_obj))
 }
 
 fn write_overlay_pdf(
@@ -1058,6 +1038,7 @@ fn write_overlay_pdf(
     geoms: &[OverlayPageGeom],
     document: &EditDocumentIn,
     font: &FontInfo,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(), AppError> {
     let n = geoms.len();
     if n == 0 {
@@ -1077,14 +1058,8 @@ fn write_overlay_pdf(
     used.sort_by_key(|(g, _)| *g);
     used.dedup_by_key(|(g, _)| *g);
 
-    let mut rasters: Vec<Raster> = Vec::new();
-    let mut image_for_obj: Vec<Option<usize>> = vec![None; document.objects.len()];
-    for (i, o) in document.objects.iter().enumerate() {
-        if let EditObjectIn::Image { path, .. } = o {
-            image_for_obj[i] = Some(rasters.len());
-            rasters.push(load_image_rgb(path)?);
-        }
-    }
+    let (rasters, image_for_obj) =
+        collect_unique_rasters(&document.objects, || edit_image::check_cancelled(cancel))?;
 
     let mut opacities: Vec<i32> = document
         .objects
@@ -1607,6 +1582,192 @@ mod tests {
         }
     }
 
+    fn letter_geom() -> OverlayPageGeom {
+        OverlayPageGeom {
+            align: [0.0, 0.0, 612.0, 792.0],
+            rotate: 0,
+            user_unit: 1.0,
+        }
+    }
+
+    fn test_font() -> FontInfo {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
+        FontInfo::parse(std::fs::read(path).expect("bundled font")).unwrap()
+    }
+
+    fn img_obj(path: &str, x: f64) -> EditObjectIn {
+        EditObjectIn::Image {
+            page_index: 0,
+            rect: PdfRectIn {
+                x,
+                y: 400.0,
+                w: 120.0,
+                h: 80.0,
+            },
+            path: path.to_string(),
+            opacity: None,
+            object_rotate: 0.0,
+            keep_aspect: Some(true),
+        }
+    }
+
+    fn write_tiny_png(path: &Path, rgb: [u8; 3]) {
+        image::RgbImage::from_pixel(8, 8, image::Rgb(rgb))
+            .save(path)
+            .unwrap();
+    }
+
+    fn tmp_root(prefix: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn overlay_dedupes_same_image_path_to_one_xobject() {
+        let root = tmp_root("offpdf-edit-dedupe");
+        let png = root.join("a.png");
+        write_tiny_png(&png, [200, 10, 10]);
+        let overlay = root.join("overlay.pdf");
+        let path = png.to_str().unwrap();
+        let doc = EditDocumentIn {
+            version: 1,
+            objects: vec![img_obj(path, 72.0), img_obj(path, 220.0)],
+        };
+        write_overlay_pdf(
+            overlay.to_str().unwrap(),
+            &[letter_geom()],
+            &doc,
+            &test_font(),
+            None,
+        )
+        .unwrap();
+        let bytes = std::fs::read(&overlay).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(text.matches("/Subtype /Image").count(), 1);
+        assert_eq!(text.matches("/Im0 Do").count(), 2);
+        assert!(!text.contains("/Im1 Do"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn overlay_embeds_distinct_images_separately() {
+        let root = tmp_root("offpdf-edit-twoimg");
+        let a = root.join("a.png");
+        let b = root.join("b.png");
+        write_tiny_png(&a, [200, 10, 10]);
+        write_tiny_png(&b, [10, 10, 200]);
+        let overlay = root.join("overlay.pdf");
+        let doc = EditDocumentIn {
+            version: 1,
+            objects: vec![
+                img_obj(a.to_str().unwrap(), 72.0),
+                img_obj(b.to_str().unwrap(), 220.0),
+            ],
+        };
+        write_overlay_pdf(
+            overlay.to_str().unwrap(),
+            &[letter_geom()],
+            &doc,
+            &test_font(),
+            None,
+        )
+        .unwrap();
+        let bytes = std::fs::read(&overlay).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(text.matches("/Subtype /Image").count(), 2);
+        assert_eq!(text.matches("/Im0 Do").count(), 1);
+        assert_eq!(text.matches("/Im1 Do").count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn overlay_rejects_oversized_jpeg_header() {
+        let root = tmp_root("offpdf-edit-bigimg");
+        let jpg = root.join("big.jpg");
+        let mut b = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08];
+        b.extend_from_slice(&6000u16.to_be_bytes());
+        b.extend_from_slice(&4000u16.to_be_bytes());
+        b.extend_from_slice(&[3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+        std::fs::write(&jpg, &b).unwrap();
+        let overlay = root.join("overlay.pdf");
+        let doc = EditDocumentIn {
+            version: 1,
+            objects: vec![img_obj(jpg.to_str().unwrap(), 72.0)],
+        };
+        let err = write_overlay_pdf(
+            overlay.to_str().unwrap(),
+            &[letter_geom()],
+            &doc,
+            &test_font(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "IMAGE_TOO_LARGE");
+        assert!(!overlay.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn overlay_cancel_at_entry_returns_cancelled() {
+        let root = tmp_root("offpdf-edit-cancel-entry");
+        let png = root.join("a.png");
+        write_tiny_png(&png, [10, 200, 10]);
+        let overlay = root.join("overlay.pdf");
+        let path = png.to_str().unwrap();
+        let doc = EditDocumentIn {
+            version: 1,
+            objects: vec![img_obj(path, 72.0), img_obj("/does/not/matter.png", 220.0)],
+        };
+        let flag = AtomicBool::new(true);
+        let err = write_overlay_pdf(
+            overlay.to_str().unwrap(),
+            &[letter_geom()],
+            &doc,
+            &test_font(),
+            Some(&flag),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "CANCELLED");
+        assert!(!overlay.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn overlay_cancel_after_first_embed_skips_next_image() {
+        let root = tmp_root("offpdf-edit-cancel-mid");
+        let a = root.join("a.png");
+        write_tiny_png(&a, [10, 200, 10]);
+        let missing = root.join("missing.png");
+        let doc = EditDocumentIn {
+            version: 1,
+            objects: vec![
+                img_obj(a.to_str().unwrap(), 72.0),
+                img_obj(missing.to_str().unwrap(), 220.0),
+            ],
+        };
+        let mut checks = 0u32;
+        let err = collect_unique_rasters(&doc.objects, || {
+            checks += 1;
+            if checks >= 2 {
+                Err(AppError::cancelled())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(err.code, "CANCELLED");
+        assert_eq!(checks, 2, "must cancel on the post-embed check, not at entry");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn write_catalog_fixture(path: &Path) {
         use lopdf::{Dictionary, Object, Stream};
         let mut doc = Document::with_version("1.5");
@@ -1722,6 +1883,7 @@ mod tests {
             &font,
             &work,
             "catalog",
+            None,
             |args| {
                 assert!(!args.iter().any(|a| a == "--empty"), "argv={args:?}");
                 assert_eq!(args[0], src.to_str().unwrap());
@@ -1799,6 +1961,7 @@ mod tests {
             &font,
             &work,
             "hl",
+            None,
             |args| {
                 let _ = qpdf;
                 let _ = args;

@@ -95,29 +95,12 @@ pub async fn preview_image(path: String) -> Result<ImagePreview, AppError> {
 }
 
 fn preview_image_sync(path: &str) -> Result<ImagePreview, AppError> {
-    let meta = std::fs::metadata(path).map_err(|e| AppError::io("Could not read the image.", e))?;
-    if meta.len() > 20 * 1024 * 1024 {
-        return Err(AppError::new(
-            "IMAGE_TOO_LARGE",
-            "Image is too large",
-            "Use a PNG or JPEG smaller than 20 MB.",
-        ));
-    }
-    let bytes = std::fs::read(path).map_err(|e| AppError::io("Could not read the image.", e))?;
-    if !(bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || bytes.starts_with(&[0xFF, 0xD8, 0xFF])) {
-        return Err(AppError::new(
-            "IMAGE_TYPE",
-            "Unsupported image",
-            "Only PNG and JPEG images can be added.",
-        ));
-    }
-    let img = image::load_from_memory(&bytes).map_err(|_| {
-        AppError::new("IMAGE_BAD", "Could not read the image", "The file does not look like a valid PNG or JPEG.")
-    })?;
+    let inspected = crate::pdf_engine::edit_image::inspect_image(path)?;
+    let img = crate::pdf_engine::edit_image::decode_bounded(&inspected.bytes)?;
     let w0 = img.width().max(1);
     let h0 = img.height().max(1);
     let max_edge = 800u32;
-    let img = if w0.max(h0) > max_edge {
+    let img = if img.width().max(img.height()) > max_edge {
         img.thumbnail(max_edge, max_edge)
     } else {
         img
