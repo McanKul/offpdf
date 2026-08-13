@@ -1,56 +1,51 @@
 # Roadmap
 
 OffPDF is a free, open-source, offline-first desktop app. The roadmap prioritizes
-trust, reliable packaging, and performance on large PDFs.
+reliable local processing, clear packaging, and a contributor-friendly project.
 
-## Current Focus
+## Current release
 
-- Public repository cleanup and contributor-ready documentation.
-- Signed and notarized macOS builds.
-- Windows installer that works for non-technical users and includes the core
-  runtime pieces offline.
-- Windows test artifacts from GitHub Actions for early installation testing.
-- GitHub Releases with checksums as the canonical binary distribution channel.
-- A simple `offpdf.com` landing page with one clear download button per
-  platform.
+- **v0.2.2** is the latest public release, distributed through GitHub Releases
+  and [offpdf.com](https://offpdf.com).
+- The Windows x64 installer bundles qpdf, Poppler, Tesseract, and LibreOffice so
+  the supported workflows run offline. The installer is not code-signed yet.
+- The Apple Silicon macOS build is signed and notarized. It bundles qpdf,
+  Poppler, and Tesseract; LibreOffice remains optional for Office and PDF/A work.
+- The app currently includes 22 tools for organizing, converting, optimizing,
+  securing, and repairing PDFs.
 
-## Current Capabilities
+## Current focus
 
-- Merge, split, organize, rotate, delete, crop, stamp, watermark, number, and
-  compare PDFs.
-- Create poster/tile print layouts for large drawings.
-- Convert Office/HTML files to PDF and export PDFs to Office formats.
-- Export PDF pages to images.
-- Make scanned PDFs searchable with OCR.
-- Convert to PDF/A for archiving.
-- Compress PDFs with either text-preserving cleanup or target-size rasterization.
-- Protect, unlock, and repair PDFs locally.
+- Stabilize the visual editor and make exported edits match the on-screen preview.
+- Improve automated coverage for complex PDF geometry, rotation, and page boxes.
+- Make releases easier to trust and install, starting with Windows code signing.
+- Give new contributors smaller, clearly scoped issues with reproducible tests.
 
-## Known Limitations
+## Near term
 
-- Release builds are not signed or notarized yet.
-- Core tools need `qpdf`; render-heavy tools need poppler; OCR needs Tesseract;
-  Office/PDF-A tools need LibreOffice.
-- Engine binaries are not committed to the repository. Release packaging still
-  needs a clean per-platform bundling flow.
-- Lossy compression rasterizes pages, so selectable text is not preserved in
-  that mode. Use the text-preserving option when text selection matters.
-- Complex Office/PDF conversions are best effort because they depend on
-  LibreOffice's import/export behavior.
+- Publish explicit checksum files with releases.
+- Reduce the Windows package size without weakening offline functionality.
+- Add official Intel Mac and Linux packages.
+- Improve OCR language selection and optional language-pack guidance.
+- Expand editor support for annotations, links, and common form workflows.
+- Improve accessibility across keyboard navigation, focus states, and screen-reader labels.
+
+## Known limitations
+
+- Windows may display a SmartScreen warning because the installer is unsigned.
+- There are no official Intel Mac or Linux packages yet.
+- Office conversion and PDF/A require LibreOffice; it is not bundled on macOS.
+- Lossy compression rasterizes pages. Use text-preserving compression when text
+  selection matters.
+- Complex Office conversions are best effort and may not reproduce every layout.
 - Auto-update is intentionally not enabled.
-
-## Near Term
-
-- Finalize app metadata, icons, and public branding under OffPDF.
-- Bundle `qpdf` and poppler per platform and document how release artifacts are assembled.
-- Add GitHub Actions for build checks and release artifact generation.
-- Add checksums to every release.
-- Prepare the first public alpha release.
 
 ## Later
 
-- Bundle or document optional engine packs for Tesseract and LibreOffice.
-- Improve OCR language selection and install guidance.
-- Add more robust PDF/A validation after export.
 - Add optional, clearly disclosed update checks behind an offline-first setting.
-- Build `offpdf.com` download flows that hide GitHub complexity from end users.
+- Broaden platform packaging and package-manager distribution.
+- Add more advanced editing workflows where they can remain reliable and local.
+
+Priorities can change as real bug reports and contributor feedback arrive. See
+the [open issues](https://github.com/McanKul/offpdf/issues) for work that is
+already scoped.

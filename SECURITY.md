@@ -3,25 +3,25 @@
 OffPDF handles local documents, so security and privacy reports are taken
 seriously.
 
-## Supported Versions
+## Supported versions
 
-OffPDF is currently pre-release. Security fixes target the latest public source
-on the default branch until stable release channels exist.
+Security fixes target the latest published release and the current default
+branch.
 
-## Reporting A Vulnerability
+## Reporting a vulnerability
 
-Please do not post exploit details in a public issue.
+Please do not post exploit details or sensitive sample documents in a public
+issue. Email **kul3562@gmail.com** with the subject `OffPDF security report`.
 
-Use GitHub Security Advisories once the public repository is available. Until
-then, contact the maintainer privately through [offpdf.com](https://offpdf.com)
-or the maintainer profile.
+A useful report includes:
 
-Useful reports include:
-
-- A short description of the issue.
-- Steps to reproduce.
-- A minimal sample file if the issue requires one and it can be shared safely.
+- A short description of the issue and its potential impact.
+- The smallest set of steps needed to reproduce it.
 - The operating system and OffPDF version or commit.
+- A minimal synthetic sample file, if one is necessary and safe to share.
+
+Do not send a private or confidential document. A redacted or newly generated
+fixture is strongly preferred.
 
 ## Scope
 
@@ -32,4 +32,4 @@ Security-sensitive areas include:
 - Temporary file cleanup.
 - Packaged third-party binaries.
 - Dependency vulnerabilities.
-- Anything that could break the offline/no-upload privacy promise.
+- Anything that could break the offline, no-upload privacy promise.
