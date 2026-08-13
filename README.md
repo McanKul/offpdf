@@ -1,111 +1,113 @@
-# OffPDF
+<p align="center">
+  <img src="./docs/assets/offpdf-mark.svg" width="96" height="96" alt="OffPDF logo">
+</p>
 
-Free, open-source, offline-first desktop PDF tools.
+<h1 align="center">OffPDF</h1>
 
-Website: [offpdf.com](https://offpdf.com)
+<p align="center">
+  <strong>Private PDF tools that run entirely on your computer.</strong><br>
+  22 tools · No uploads · No account · No telemetry · Works offline
+</p>
 
-OffPDF is a Tauri v2 desktop app for working with PDFs without uploads, cloud
-accounts, telemetry, or a network connection. Files are processed on the user's
-machine by local engines such as `qpdf`, `pdftoppm`, Tesseract, and LibreOffice.
+<p align="center">
+  <a href="https://github.com/McanKul/offpdf/releases/latest"><img src="https://img.shields.io/github/v/release/McanKul/offpdf?label=release" alt="Latest release"></a>
+  <a href="https://github.com/McanKul/offpdf/actions/workflows/ci.yml"><img src="https://github.com/McanKul/offpdf/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/McanKul/offpdf" alt="MIT license"></a>
+</p>
 
-The guiding promise is simple:
+<p align="center">
+  <strong><a href="https://github.com/McanKul/offpdf/releases/latest">Download the latest release</a></strong>
+  · <a href="https://offpdf.com">Visit offpdf.com</a>
+  · <a href="./CONTRIBUTING.md">Contribute</a>
+</p>
 
-> Your PDF files never leave your computer.
+<p align="center">
+  <img src="./docs/assets/offpdf-home.png" width="1060" alt="OffPDF desktop app showing its local PDF tools">
+</p>
 
-## Features
+> **Your files never leave your computer.** OffPDF processes documents locally
+> and always writes the result to a new file, leaving the original untouched.
 
-OffPDF currently ships 18 tools, grouped the same way as the app UI.
+OffPDF is a free, MIT-licensed desktop toolbox for everyday PDF work. It uses
+local engines such as qpdf, Poppler, Tesseract, and LibreOffice, with no cloud
+service in the middle.
 
-| Category | Tools |
-| --- | --- |
-| Organize | Merge PDFs, Split PDF, Organize pages, Page numbers, Watermark, Crop pages, Stamp / Sign, Poster / tile print, Compare PDFs |
-| Convert | Office / HTML to PDF, PDF to Office, PDF to images, OCR, PDF/A |
-| Optimize and secure | Compress PDF, Protect PDF, Unlock PDF, Repair PDF |
+## Why OffPDF?
 
-The original file is never overwritten. Every operation writes a new output file.
+- **Private by design.** No uploads, accounts, analytics, telemetry, or remote API.
+- **Useful offline.** Install it once and keep working without a connection.
+- **One focused toolbox.** Organize, convert, compress, OCR, protect, and repair PDFs.
+- **Open and inspectable.** The app and its privacy model are available here under MIT.
 
-## Privacy Model
+## 22 PDF tools
 
-- Files are read from disk and written back to disk locally.
-- Only file paths cross the Tauri IPC boundary; PDF bytes are not sent into the
-  webview.
-- There is no account system, telemetry, cloud sync, analytics, or remote API.
-- The production app uses Tauri's local custom protocol and a restrictive CSP.
-- Auto-update is not enabled. If it is added later, it should be optional and
-  clearly disclosed.
-
-See [PRIVACY.md](./PRIVACY.md) for the user-facing privacy statement.
-
-## Distribution Status
-
-OffPDF is still pre-release. The app is suitable for development and testing,
-but broad public distribution should wait until release builds are signed,
-notarized where required, and published with checksums.
-
-Recommended public distribution flow:
-
-- Publish binaries through GitHub Releases.
-- Point the `offpdf.com` download buttons to the latest signed release assets.
-- Keep release notes and checksums in the release page.
-- Do not require end users to understand GitHub; the website should expose one
-  clear download button per platform.
-
-## Local Engines
-
-OffPDF uses external engines instead of implementing full PDF parsing itself.
-
-| Engine | Used for | Required |
+| Organize | Convert | Optimize & secure |
 | --- | --- | --- |
-| `qpdf` | merge, split, organize, encrypt, decrypt, repair, lossless optimize | Core PDF operations |
-| `pdftoppm` / poppler | previews, rendering, image export, visual comparison, lossy compression | Preview/render-heavy tools |
-| Tesseract | OCR/searchable PDFs | OCR only |
-| LibreOffice | Office conversion and PDF/A export | Office/PDF-A tools |
+| Merge PDFs | Office / HTML to PDF | Compress PDF |
+| Split PDF | PDF to Office | Protect PDF |
+| Organize pages | PDF to images | Unlock PDF |
+| Page numbers | OCR (make searchable) | Repair PDF |
+| Watermark | PDF/A (archive) | Edit metadata |
+| Crop pages | PDF to text | |
+| Stamp / Sign | | |
+| Poster / tile print | | |
+| N-up / Booklet | | |
+| Compare PDFs | | |
+| Remove blank pages | | |
 
-During development, these tools can be installed on the system `PATH`. Release
-builds should bundle the required platform binaries where licensing permits.
-Build artifacts and downloaded engine binaries should not be committed to the
-repository.
+## Downloads
 
-## Prerequisites
+| Platform | Package | Status |
+| --- | --- | --- |
+| Windows x64 | [Download v0.2.2 setup](https://github.com/McanKul/offpdf/releases/download/v0.2.2/OffPDF_0.2.2_x64-setup.exe) | Available; currently unsigned, so SmartScreen may warn |
+| macOS 11+ · Apple Silicon | [Download v0.2.2 DMG](https://github.com/McanKul/offpdf/releases/download/v0.2.2/OffPDF_0.2.2_aarch64.dmg) | Signed and notarized |
+| Intel Mac / Linux | [Build from source](#development) | No published package yet |
+
+The Windows installer is large because it includes the local engines needed to
+keep its core workflows offline. The macOS build bundles qpdf, Poppler, and
+Tesseract; LibreOffice is optional and only needed for Office and PDF/A tools.
+
+All published binaries are available on the
+[Releases page](https://github.com/McanKul/offpdf/releases).
+
+## Privacy model
+
+- Documents are processed by local binaries on your machine.
+- Preview, search, and editing may pass locally generated page data, thumbnails,
+  or extracted text to the bundled interface. This data stays inside the app.
+- There is no account system, cloud sync, analytics, telemetry, or remote API.
+- The production app uses Tauri's local custom protocol and a restrictive CSP.
+- Auto-update is not enabled.
+
+See [PRIVACY.md](./PRIVACY.md) for the plain-language privacy statement.
+
+## Development
+
+### Prerequisites
 
 - Node.js 18+
 - Rust via `rustup`
-- Tauri v2 platform prerequisites
-- `qpdf` on `PATH` for core PDF operations
-- Optional: poppler, Tesseract, LibreOffice for the tools listed above
-
-Platform hints:
+- [Tauri v2 platform prerequisites](https://v2.tauri.app/start/prerequisites/)
+- `qpdf` for core PDF operations
+- Optional: Poppler, Tesseract, and LibreOffice for the tools listed below
 
 ```bash
 # macOS
 brew install qpdf poppler tesseract
 brew install --cask libreoffice
 
-# Debian/Ubuntu
+# Debian / Ubuntu
 sudo apt install qpdf poppler-utils tesseract-ocr libreoffice
 ```
 
-## Development
-
-Install dependencies:
+Install dependencies and run the desktop app:
 
 ```bash
 npm install
-```
-
-Run the desktop app with hot reload:
-
-```bash
 npm run tauri:dev
 ```
 
-Run the frontend only:
-
-```bash
-npm run dev
-```
-
-Build and test:
+Run the checks used by CI:
 
 ```bash
 npm run build
@@ -118,30 +120,17 @@ Create a desktop bundle:
 npm run tauri:build
 ```
 
-### Windows Test Builds
+### Local engines
 
-Maintainers can create unsigned Windows test installers from GitHub Actions:
+| Engine | Used for |
+| --- | --- |
+| `qpdf` | Merge, split, organize, encrypt, decrypt, repair, and lossless optimization |
+| Poppler (`pdftoppm`, `pdftotext`) | Previews, image export, comparison, text export, and lossy compression |
+| Tesseract | OCR and searchable PDFs |
+| LibreOffice | Office conversion and PDF/A export |
 
-1. Open the **Windows Build** workflow.
-2. Run it manually with the default engine versions, or pass pinned qpdf/poppler versions.
-3. Download the `offpdf-windows-*` artifact.
-
-The workflow downloads the official qpdf Windows `msvc64` zip and the
-poppler-windows release zip. It copies `qpdf.exe`, `pdftoppm.exe`,
-`pdftotext.exe`, their DLLs, and poppler data into Tauri resources, then runs
-`npm run tauri:build`.
-Those binaries are bundled into the installer but are not committed to git.
-The NSIS installer targets the current user so early testers do not need
-administrator privileges just to install OffPDF.
-
-On macOS, a headless shell may fail during the `.dmg` step because the Tauri DMG
-script needs a real GUI session. To build only the `.app` bundle:
-
-```bash
-npm run tauri build -- --bundles app
-```
-
-## Project Structure
+<details>
+<summary><strong>Project structure</strong></summary>
 
 ```text
 .
@@ -154,41 +143,30 @@ npm run tauri build -- --bundles app
 |   `-- styles/
 |-- src-tauri/           # Rust backend and Tauri configuration
 |   |-- src/
-|   |   |-- commands/    # Tauri command handlers
+|   |   |-- commands/    # command handlers
 |   |   |-- pdf_engine/  # engine resolution and PDF operations
-|   |   |-- utils/       # disk, temp, process helpers
-|   |   `-- lib.rs
-|   |-- binaries/        # optional bundled engines, not committed
+|   |   `-- utils/       # disk, temp, and process helpers
 |   `-- tauri.conf.json
-`-- public/pdfjs/        # local pdf.js assets
+`-- public/pdfjs/        # bundled pdf.js assets
 ```
 
-## Release Notes For Maintainers
-
-- Keep the app fully usable offline.
-- Keep build outputs, signing keys, certificates, and downloaded engine binaries
-  out of git.
-- Prefer local subprocess execution with argument arrays. Avoid shell string
-  interpolation for user-provided file paths.
-- Review licenses before adding PDF engines or bundling third-party binaries.
-- Generated icons live in `src-tauri/icons/`; regenerate them from a 1024x1024
-  source image with:
-
-```bash
-npm run tauri icon path/to/source-1024.png
-```
+</details>
 
 ## Contributing
 
-Issues and pull requests are welcome. Please read
-[CONTRIBUTING.md](./CONTRIBUTING.md) before opening larger changes.
+Bug reports, feature ideas, documentation improvements, translations, and code
+contributions are welcome. Read [CONTRIBUTING.md](./CONTRIBUTING.md) before
+opening a larger change, and check the
+[open issues](https://github.com/McanKul/offpdf/issues) for current work.
 
-Security-sensitive issues should follow [SECURITY.md](./SECURITY.md).
+Please report security-sensitive issues privately as described in
+[SECURITY.md](./SECURITY.md).
 
-## Roadmap
+## Project status
 
-See [ROADMAP.md](./ROADMAP.md).
+OffPDF is under active development. See the [roadmap](./ROADMAP.md) for current
+priorities and known platform limitations.
 
 ## License
 
-MIT - see [LICENSE](./LICENSE).
+[MIT](./LICENSE)

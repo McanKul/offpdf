@@ -22,18 +22,21 @@ The app's Content-Security-Policy restricts everything to local origins only.
 
 ## How your files are processed
 
-PDF operations run entirely on your machine by spawning a local `qpdf` binary.
-Files are read and written directly on disk. Only file *paths* are passed between
-the user interface and the backend — your file bytes are never sent across that
-boundary or loaded into the UI.
+PDF operations run entirely on your machine using local engines such as qpdf,
+Poppler, Tesseract, and LibreOffice. Core operations read from and write to disk
+without uploading anything.
+
+For previews, search, and editing, the bundled interface may receive locally
+generated thumbnails, extracted text, or one extracted PDF page. This data stays
+inside the app and is never transmitted to OffPDF or any third party.
 
 ## What IS stored locally
 
 OffPDF stores a small amount of preference and convenience data **on your
 computer only**. This **never includes PDF content**:
 
-- **Recent-jobs metadata** — e.g. which tool was run and the result status, so
-  you can see your recent activity.
+- **Recent-jobs metadata** — e.g. which tool was run, the result status, and
+  local output paths, so you can see and reopen recent results.
 - **Last output folder** — so the next save defaults to a sensible location.
 - **Theme** — your light/dark preference.
 

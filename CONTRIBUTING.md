@@ -33,8 +33,9 @@ npm test
 ## Engineering Guidelines
 
 - Prefer existing UI and command patterns.
-- Pass file paths to the Rust backend; do not move PDF bytes through the
-  webview.
+- Prefer file paths for core operations. If a preview or editor needs document
+  data in the interface, keep it local and limit it to the smallest page-level
+  payload required.
 - Spawn local tools with argument arrays, not shell strings.
 - Keep temporary files in the app temp area and clean them up after jobs.
 - Make errors actionable for non-technical users.

@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#080b12"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="56" y1="48" x2="146" y2="144" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#2563eb" stop-opacity=".42"/>
+      <stop offset="1" stop-color="#2dd4bf" stop-opacity=".08"/>
+    </linearGradient>
+    <clipPath id="shot">
+      <rect x="720" y="104" width="500" height="432" rx="18"/>
+    </clipPath>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="24" stdDeviation="24" flood-color="#000" flood-opacity=".45"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <circle cx="122" cy="86" r="270" fill="url(#glow)" opacity=".45"/>
+  <circle cx="1188" cy="590" r="330" fill="#0f766e" opacity=".10"/>
+
+  <g transform="translate(64 54)">
+    <rect width="82" height="82" rx="21" fill="url(#brand)"/>
+    <text x="41" y="53" fill="#fff" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="800" text-anchor="middle">OP</text>
+    <text x="106" y="54" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="38" font-weight="750">OffPDF</text>
+  </g>
+
+  <text x="64" y="238" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="56" font-weight="760">
+    <tspan x="64" dy="0">Your PDFs stay</tspan>
+    <tspan x="64" dy="66">on your computer.</tspan>
+  </text>
+
+  <text x="64" y="392" fill="#aeb8c8" font-family="Arial, Helvetica, sans-serif" font-size="24">
+    <tspan x="64" dy="0">22 open-source desktop tools.</tspan>
+    <tspan x="64" dy="35">No upload, account, or telemetry.</tspan>
+  </text>
+
+  <g transform="translate(64 488)" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700">
+    <rect width="128" height="44" rx="22" fill="#163357" stroke="#2563eb" stroke-opacity=".6"/>
+    <text x="64" y="28" fill="#bfdbfe" text-anchor="middle">22 tools</text>
+    <rect x="140" width="112" height="44" rx="22" fill="#10372f" stroke="#2dd4bf" stroke-opacity=".5"/>
+    <text x="196" y="28" fill="#99f6e4" text-anchor="middle">Offline</text>
+    <rect x="264" width="86" height="44" rx="22" fill="#252938" stroke="#64748b" stroke-opacity=".5"/>
+    <text x="307" y="28" fill="#dbe3ef" text-anchor="middle">MIT</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="700" y="84" width="540" height="472" rx="24" fill="#f8fafc" stroke="#334155" stroke-width="2"/>
+    <circle cx="727" cy="108" r="6" fill="#fb7185"/>
+    <circle cx="747" cy="108" r="6" fill="#fbbf24"/>
+    <circle cx="767" cy="108" r="6" fill="#34d399"/>
+    <g clip-path="url(#shot)">
+      <image href="offpdf-home.png" x="720" y="126" width="500" height="339" preserveAspectRatio="xMidYMin meet"/>
+    </g>
+  </g>
+
+  <text x="64" y="592" fill="#748196" font-family="Arial, Helvetica, sans-serif" font-size="18">offpdf.com  ·  github.com/McanKul/offpdf</text>
+</svg>
