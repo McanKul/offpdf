@@ -732,6 +732,57 @@ fn integ_t1v_dest_page_cm_no_translation() {
     fx.cleanup();
 }
 
+/// R1: Rotate 90 + Trim ⊂ Crop must map against visible (Crop∩Media), not Trim size.
+#[test]
+fn integ_r1_rotate_90_trim_inside_crop_uses_visible() {
+    let Some(fx) = Harness::new("r1-rot90-trim") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_letter_page(
+        &fx.src,
+        &[
+            (b"CropBox", box_obj([0, 0, 612, 792])),
+            (b"TrimBox", box_obj([100, 100, 400, 500])),
+            (b"Rotate", Object::Integer(90)),
+        ],
+    );
+    fx.export(&filled_rect(72.0, 72.0, 20.0, 10.0)).expect("export");
+
+    // Independent of pdf_rect_to_overlay: Rotate 90 of (72,72,20,10)
+    // against visible 612×792 → (72, 612-72-20, 10, 20).
+    const EXPECTED: &str = "72.00 520.00 10.00 20.00 re";
+    // Same stamp against Trim 300×400 → (72, 300-72-20, 10, 20).
+    const WRONG_TRIM: &str = "72.00 208.00 10.00 20.00 re";
+    let overlay = dump_streams(&fx.overlay_pdf());
+    let dest_ops = dump_streams(&fx.dest);
+    assert!(
+        overlay.contains(EXPECTED),
+        "overlay must rotate against visible 612×792, not Trim 300×400; expected {EXPECTED}; re={}",
+        listed_re_ops(&overlay)
+    );
+    assert!(
+        dest_ops.contains(EXPECTED),
+        "dest must rotate against visible 612×792, not Trim 300×400; expected {EXPECTED}; re={}",
+        listed_re_ops(&dest_ops)
+    );
+    assert!(
+        !overlay.contains(WRONG_TRIM) && !dest_ops.contains(WRONG_TRIM),
+        "must not use Trim-sized rotation {WRONG_TRIM}; overlay re={} dest re={}",
+        listed_re_ops(&overlay),
+        listed_re_ops(&dest_ops)
+    );
+
+    let dest_page = first_page_dict(&Document::load(&fx.dest).unwrap());
+    let rot = match dest_page.get(b"Rotate") {
+        Ok(Object::Integer(i)) => *i,
+        _ => 0,
+    };
+    assert_eq!(rot, 90, "page /Rotate should survive overlay");
+    assert_dest_boxes_trim_inside_crop(&fx.dest);
+    fx.cleanup();
+}
+
 #[test]
 fn integ_user_unit_10000_copied_not_clamped() {
     let Some(fx) = Harness::new("userunit-10000") else {

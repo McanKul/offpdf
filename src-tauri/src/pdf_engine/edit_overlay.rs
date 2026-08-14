@@ -1360,12 +1360,14 @@ fn write_overlay_pdf(
     let mut content_ids = Vec::with_capacity(n);
     for (pi, geom) in geoms.iter().enumerate() {
         // Dest user space (origin 0): rotate=0 keeps (120,120) as 120,120 instead
-        // of subtracting Trim origin. Rotation still uses dest unrotated size.
+        // of subtracting Trim origin. Rotation uses the visible (Crop∩Media)
+        // unrotated size, not Trim — Trim⊂Crop + /Rotate 90/270 would otherwise
+        // map stamps against the smaller box.
         let vis = [
             0.0,
             0.0,
-            geom.align[2] - geom.align[0],
-            geom.align[3] - geom.align[1],
+            geom.visible[2] - geom.visible[0],
+            geom.visible[3] - geom.visible[1],
         ];
         let rotate = geom.rotate;
         let mut content = String::new();
