@@ -20,6 +20,7 @@ import {
   pdfRectToViewport,
   placeImagePdfRect,
   rgbToHex,
+  stageJustify,
 } from "@/lib/editor";
 import { PageSurface, type PageLayout } from "./PageSurface";
 import { EditorOverlay, type EditorTool } from "./EditorOverlay";
@@ -129,7 +130,7 @@ export function PdfEditorCanvas({
       .then((b64) => {
         if (!active) return;
         if (!b64) {
-          setLoadError("Could not open this page. Check that qpdf is installed.");
+          setLoadError("Could not open this page.");
           setLoading(false);
           return;
         }
@@ -516,7 +517,7 @@ export function PdfEditorCanvas({
         </aside>
 
         <div
-          className={`pdf-editor__stage${colorPick ? " is-eyedrop" : ""}${panMode ? " is-hand" : ""}${panning ? " is-panning" : ""}`}
+          className={`pdf-editor__stage${colorPick ? " is-eyedrop" : ""}${panMode ? " is-hand" : ""}${panning ? " is-panning" : ""}${stageJustify(layout?.cssWidth ?? 0, fitWidth) === "start" ? " is-start" : ""}`}
           ref={stageRef}
           onPointerDown={onStagePointerDown}
           onPointerMove={onStagePointerMove}

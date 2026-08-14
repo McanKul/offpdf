@@ -138,6 +138,27 @@ fn dump_streams(path: &Path) -> String {
     out
 }
 
+/// Content-stream `re` operators only (keeps failure messages readable).
+fn listed_re_ops(blob: &str) -> String {
+    let mut ops = Vec::new();
+    for (i, _) in blob.match_indices(" re") {
+        let start = blob[..i].rfind(|c: char| c == '\n' || c == '\r').map(|j| j + 1).unwrap_or(0);
+        let frag = blob[start..i + 3].trim();
+        if frag
+            .split_whitespace()
+            .take(4)
+            .all(|t| t.parse::<f64>().is_ok())
+        {
+            ops.push(frag.to_string());
+        }
+    }
+    if ops.is_empty() {
+        "<no re ops>".into()
+    } else {
+        ops.join(" | ")
+    }
+}
+
 fn first_page_dict(doc: &Document) -> Dictionary {
     let pages = doc.get_pages();
     let id = *pages.get(&1).expect("page 1");
@@ -550,5 +571,201 @@ fn integ_oversized_jpeg_is_rejected_without_dest() {
     let err = fx.export(&doc).expect_err("oversized must fail");
     assert_eq!(err.code, "IMAGE_TOO_LARGE");
     assert!(!fx.dest.exists(), "dest must not be created on image reject");
+    fx.cleanup();
+}
+
+fn write_letter_trim_inside_crop(path: &Path) {
+    write_letter_page(
+        path,
+        &[
+            (b"CropBox", box_obj([0, 0, 612, 792])),
+            (b"TrimBox", box_obj([100, 100, 400, 500])),
+        ],
+    );
+}
+
+fn assert_dest_boxes_trim_inside_crop(dest: &Path) {
+    let page = first_page_dict(&Document::load(dest).unwrap());
+    assert_box_near(&page, b"MediaBox", [0.0, 0.0, 612.0, 792.0]);
+    assert_box_near(&page, b"CropBox", [0.0, 0.0, 612.0, 792.0]);
+    assert_box_near(&page, b"TrimBox", [100.0, 100.0, 400.0, 500.0]);
+}
+
+/// Page `/Contents` only — qpdf compositor (`cm` + `Do`), not form XObject bodies.
+fn first_page_contents(path: &Path) -> String {
+    let mut doc = Document::load(path).expect("load dest");
+    let _ = doc.decompress();
+    let id = *doc.get_pages().get(&1).expect("page 1");
+    let page = doc.get_dictionary(id).expect("page dict");
+    let contents = page.get(b"Contents").ok().cloned();
+    let mut refs = Vec::new();
+    match contents {
+        Some(Object::Reference(r)) => refs.push(r),
+        Some(Object::Array(a)) => {
+            for o in a {
+                if let Object::Reference(r) = o {
+                    refs.push(r);
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut out = String::new();
+    for r in refs {
+        if let Ok(Object::Stream(s)) = doc.get_object(r) {
+            let bytes = s.get_plain_content().unwrap_or_else(|_| s.content.clone());
+            out.push_str(&String::from_utf8_lossy(&bytes));
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// `a b c d e f cm` matrices from a content stream (whitespace-tokenized).
+fn parse_cm_ops(blob: &str) -> Vec<[f64; 6]> {
+    let tokens: Vec<&str> = blob.split_whitespace().collect();
+    let mut out = Vec::new();
+    for i in 0..tokens.len() {
+        if tokens[i] != "cm" || i < 6 {
+            continue;
+        }
+        let parsed = [
+            tokens[i - 6].parse::<f64>(),
+            tokens[i - 5].parse::<f64>(),
+            tokens[i - 4].parse::<f64>(),
+            tokens[i - 3].parse::<f64>(),
+            tokens[i - 2].parse::<f64>(),
+            tokens[i - 1].parse::<f64>(),
+        ];
+        if let [Ok(a), Ok(b), Ok(c), Ok(d), Ok(e), Ok(f)] = parsed {
+            out.push([a, b, c, d, e, f]);
+        }
+    }
+    out
+}
+
+#[test]
+fn integ_trim_inside_crop_stamp_inside_trim_unshifted() {
+    let Some(fx) = Harness::new("trim-in") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_letter_trim_inside_crop(&fx.src);
+    fx.export(&filled_rect(120.0, 120.0, 20.0, 10.0)).expect("export");
+
+    let overlay = dump_streams(&fx.overlay_pdf());
+    let dest = dump_streams(&fx.dest);
+    assert!(
+        overlay.contains("120.00 120.00 20.00 10.00 re"),
+        "overlay must keep dest user-space (120,120), not shift by Trim origin −100; re={}",
+        listed_re_ops(&overlay)
+    );
+    assert!(
+        dest.contains("120.00 120.00 20.00 10.00 re"),
+        "dest must keep the rect at (120,120) in dest user space, not −100; re={}",
+        listed_re_ops(&dest)
+    );
+    assert_dest_boxes_trim_inside_crop(&fx.dest);
+    fx.cleanup();
+}
+
+#[test]
+fn integ_trim_inside_crop_stamp_outside_trim_survives() {
+    let Some(fx) = Harness::new("trim-out") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_letter_trim_inside_crop(&fx.src);
+    fx.export(&filled_rect(72.0, 72.0, 20.0, 10.0)).expect("export");
+
+    let dest = dump_streams(&fx.dest);
+    assert!(
+        dest.contains("72.00 72.00 20.00 10.00 re"),
+        "Crop-visible stamp outside Trim must survive on dest at (72,72); re={}",
+        listed_re_ops(&dest)
+    );
+    assert_dest_boxes_trim_inside_crop(&fx.dest);
+    fx.cleanup();
+}
+
+/// T1v: dest page-level `cm` must not translate the source page under the stamp.
+#[test]
+fn integ_t1v_dest_page_cm_no_translation() {
+    let Some(fx) = Harness::new("t1v") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_letter_trim_inside_crop(&fx.src);
+    fx.export(&filled_rect(120.0, 120.0, 20.0, 10.0)).expect("export");
+
+    let overlay = dump_streams(&fx.overlay_pdf());
+    let dest = dump_streams(&fx.dest);
+    assert!(
+        overlay.contains("120.00 120.00 20.00 10.00 re"),
+        "overlay must keep dest user-space (120,120); re={}",
+        listed_re_ops(&overlay)
+    );
+    assert!(
+        dest.contains("120.00 120.00 20.00 10.00 re"),
+        "dest must keep the rect at (120,120) in dest user space; re={}",
+        listed_re_ops(&dest)
+    );
+
+    let compositor = first_page_contents(&fx.dest);
+    assert!(
+        compositor.contains("cm") && compositor.contains("Do"),
+        "dest page /Contents must be the qpdf compositor (cm + Do), not a form body: {compositor:?}"
+    );
+    let cms = parse_cm_ops(&compositor);
+    assert!(
+        !cms.is_empty(),
+        "dest page compositor has Do but no parseable `a b c d e f cm`: {compositor:?}"
+    );
+    for m in &cms {
+        let [_, _, _, _, e, f] = *m;
+        assert!(
+            e.abs() < 0.5 && f.abs() < 0.5,
+            "dest page-level cm must not translate the source page (human dest had `1 0 0 1 56 96 cm` before /Fx0 Do); got e={e} f={f} matrix={m:?} compositor={compositor}"
+        );
+    }
+    assert_dest_boxes_trim_inside_crop(&fx.dest);
+    fx.cleanup();
+}
+
+#[test]
+fn integ_user_unit_10000_copied_not_clamped() {
+    let Some(fx) = Harness::new("userunit-10000") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_letter_page(&fx.src, &[(b"UserUnit", Object::Real(10000.0))]);
+    fx.export(&filled_rect(72.0, 100.0, 50.0, 20.0)).expect("export");
+
+    let dest_doc = Document::load(&fx.dest).expect("load dest");
+    let dest_page = first_page_dict(&dest_doc);
+    assert!(
+        (page_user_unit(&dest_page) - 10000.0).abs() < 1.0,
+        "dest UserUnit must remain 10000, got {}",
+        page_user_unit(&dest_page)
+    );
+
+    let overlay_doc = Document::load(&fx.overlay_pdf()).expect("load overlay");
+    let overlay_page = first_page_dict(&overlay_doc);
+    assert!(
+        (page_user_unit(&overlay_page) - 10000.0).abs() < 1.0,
+        "overlay page dict must copy UserUnit 10000, got {}",
+        page_user_unit(&overlay_page)
+    );
+
+    let overlay = dump_streams(&fx.overlay_pdf());
+    let dest_ops = dump_streams(&fx.dest);
+    assert!(
+        overlay.contains("72.00 100.00 50.00 20.00 re"),
+        "overlay rect must stay in raw user units, not divided by UserUnit: {overlay}"
+    );
+    assert!(
+        dest_ops.contains("72.00 100.00 50.00 20.00 re"),
+        "dest rect must stay in raw user units, not divided by UserUnit: {dest_ops}"
+    );
     fx.cleanup();
 }

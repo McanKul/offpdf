@@ -133,7 +133,7 @@ pub(crate) fn page_user_unit(doc: &Document, page_id: ObjectId) -> f64 {
         _ => None,
     });
     match n {
-        Some(v) if v.is_finite() && v > 0.0 && v < 10_000.0 => v,
+        Some(v) if v.is_finite() && v > 0.0 => v,
         _ => 1.0,
     }
 }
@@ -371,5 +371,31 @@ mod tests {
             &[],
         );
         assert!((page_user_unit(&doc, pid) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn user_unit_10000_real_is_accepted() {
+        let (doc, pid) = one_page(
+            &[(b"MediaBox", rect_obj([0, 0, 612, 792]))],
+            &[(b"UserUnit", Object::Real(10000.0))],
+        );
+        assert!(
+            (page_user_unit(&doc, pid) - 10000.0).abs() < 1e-6,
+            "UserUnit 10000 Real must not clamp to 1, got {}",
+            page_user_unit(&doc, pid)
+        );
+    }
+
+    #[test]
+    fn user_unit_10000_integer_is_accepted() {
+        let (doc, pid) = one_page(
+            &[(b"MediaBox", rect_obj([0, 0, 612, 792]))],
+            &[(b"UserUnit", Object::Integer(10000))],
+        );
+        assert!(
+            (page_user_unit(&doc, pid) - 10000.0).abs() < 1e-6,
+            "UserUnit 10000 Integer must not clamp to 1, got {}",
+            page_user_unit(&doc, pid)
+        );
     }
 }

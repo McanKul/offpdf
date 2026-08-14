@@ -23,10 +23,12 @@ import { stripExt } from "@/lib/formatBytes";
 import { useSettingsStore } from "@/state/settingsStore";
 import { useWorkspace } from "@/state/workspaceStore";
 import {
+  clampPageIndex,
   planKeyRebind,
   rebindNeedsConfirm,
   resolveViewPageIndex,
   samePageKeys,
+  shouldShowEditCanvas,
   toExportDocument,
 } from "@/lib/editor";
 import { isTauriRuntime } from "@/lib/tauriEnv";
@@ -56,6 +58,7 @@ export function EditPdfPage() {
     viewIndex = resolveViewPageIndex(pageKeys, pageIndex, prevKeyRef.current);
     prevKeysRef.current = pageKeys;
   }
+  viewIndex = clampPageIndex(viewIndex, refs.length);
   if (viewIndex !== pageIndex) setPageIndex(viewIndex);
   prevKeyRef.current = pageKeys[viewIndex];
 
@@ -95,6 +98,7 @@ export function EditPdfPage() {
   };
 
   const current = refs[viewIndex];
+  const editCanvas = shouldShowEditCanvas(files.length, refs.length, inTauri);
 
   const start = async () => {
     if (refs.length === 0) return toast({ title: "Add a PDF first", variant: "error" });
@@ -131,7 +135,7 @@ export function EditPdfPage() {
         <Alert variant="warning">Open the desktop app to edit pages and save a new PDF.</Alert>
       )}
 
-      {refs.length > 0 && inTauri && current && (
+      {editCanvas === "edit" && refs.length > 0 && (
         <ToolSection label="Edit" sublabel="Existing page content stays as-is. Draw on top, then save a new file.">
           <PdfEditorCanvas
             sourcePath={current.path}
@@ -141,6 +145,12 @@ export function EditPdfPage() {
             session={session}
             onPageChange={setPageIndex}
           />
+        </ToolSection>
+      )}
+
+      {editCanvas === "no-pages" && (
+        <ToolSection label="Edit">
+          <Alert variant="warning">This PDF is loaded but has no editable pages.</Alert>
         </ToolSection>
       )}
 

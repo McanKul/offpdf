@@ -1419,6 +1419,9 @@ button {
   justify-content: center;
   align-items: flex-start;
 }
+.pdf-editor__stage.is-start {
+  justify-content: flex-start;
+}
 .pdf-editor__status {
   display: flex;
   align-items: center;

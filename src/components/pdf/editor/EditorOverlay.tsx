@@ -11,6 +11,7 @@ import {
   isClosedShapeObject,
   isNoneFill,
   makeMapping,
+  moveSelectedRects,
   normalizeDeg,
   pdfRectToViewport,
   pdfToViewport,
@@ -335,10 +336,16 @@ export function EditorOverlay({
       const curPt = viewportToPdf(local, mapping);
       const dx = curPt.x - startPt.x;
       const dy = curPt.y - startPt.y;
-      for (const id of drag.ids) {
-        const start = drag.starts[id];
+      const fromStarts = objects.map((o) => {
+        const start = drag.starts[o.id];
+        return start ? ({ ...o, rect: { ...start } } as EditObject) : o;
+      });
+      const moved = moveSelectedRects(fromStarts, drag.ids, pageIndex, dx, dy);
+      for (const o of moved) {
+        const start = drag.starts[o.id];
         if (!start) continue;
-        onUpdateRect(id, { ...start, x: start.x + dx, y: start.y + dy });
+        if (o.rect.x === start.x && o.rect.y === start.y) continue;
+        onUpdateRect(o.id, o.rect);
       }
       return;
     }

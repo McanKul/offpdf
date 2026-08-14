@@ -100,3 +100,9 @@ export {
   samePageKeys,
 } from "./remapPages";
 export type { KeyRebindPlan } from "./remapPages";
+
+export { stageJustify } from "./stageLayout";
+export { moveSelectedRects } from "./moveSelection";
+export { shouldShowEditCanvas } from "./editVisibility";
+export type { EditCanvasVisibility } from "./editVisibility";
+export { clampPageIndex } from "./pageIndex";

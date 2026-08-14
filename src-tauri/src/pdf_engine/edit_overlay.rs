@@ -8,7 +8,7 @@ use crate::pdf_engine::{crop, edit_image};
 use crate::utils::process::run_qpdf;
 use crate::utils::safe_output;
 use crate::utils::temp;
-use lopdf::Document;
+use lopdf::{Document, Object};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -267,7 +267,12 @@ impl EditObjectIn {
                 let max_x = mapped.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
                 let min_y = mapped.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
                 let max_y = mapped.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
-                (min_x, min_y, (max_x - min_x).max(0.5), (max_y - min_y).max(0.5))
+                (
+                    min_x,
+                    min_y,
+                    (max_x - min_x).max(0.5),
+                    (max_y - min_y).max(0.5),
+                )
             }
             Self::Rect { rect, .. }
             | Self::Ellipse { rect, .. }
@@ -362,7 +367,12 @@ pub fn pdf_rect_to_overlay(rect: &PdfRectIn, vis: [f64; 4], rotate: i64) -> (f64
     let max_x = mapped.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
     let min_y = mapped.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
     let max_y = mapped.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
-    (min_x, min_y, (max_x - min_x).max(0.5), (max_y - min_y).max(0.5))
+    (
+        min_x,
+        min_y,
+        (max_x - min_x).max(0.5),
+        (max_y - min_y).max(0.5),
+    )
 }
 
 pub fn pdf_point_to_overlay(x: f64, y: f64, vis: [f64; 4], rotate: i64) -> (f64, f64) {
@@ -398,7 +408,13 @@ fn fill_is_none(fill: Option<&str>) -> bool {
     }
 }
 
-fn paint_path(content: &mut String, fill: Option<&str>, stroke: Option<&str>, stroke_width: Option<f64>, path: &str) {
+fn paint_path(
+    content: &mut String,
+    fill: Option<&str>,
+    stroke: Option<&str>,
+    stroke_width: Option<f64>,
+    path: &str,
+) {
     let fill_none = fill_is_none(fill);
     let (sr, sg, sb) = parse_hex(stroke, (0.067, 0.094, 0.153));
     let sw = stroke_width.unwrap_or(1.5).clamp(0.2, 24.0);
@@ -521,7 +537,10 @@ fn hexagon_pts(x: f64, y: f64, w: f64, h: f64) -> Vec<(f64, f64)> {
     (0..6)
         .map(|i| {
             let a = std::f64::consts::PI / 3.0 * i as f64 + std::f64::consts::PI / 6.0;
-            (x + w / 2.0 + (w / 2.0) * a.cos(), y + h / 2.0 + (h / 2.0) * a.sin())
+            (
+                x + w / 2.0 + (w / 2.0) * a.cos(),
+                y + h / 2.0 + (h / 2.0) * a.sin(),
+            )
         })
         .collect()
 }
@@ -624,7 +643,11 @@ struct FontInfo {
 impl FontInfo {
     fn parse(data: Vec<u8>) -> Result<Self, AppError> {
         let face = Face::parse(&data, 0).map_err(|_| {
-            AppError::new("BAD_FONT", "Editor font unreadable", "The bundled font is damaged.")
+            AppError::new(
+                "BAD_FONT",
+                "Editor font unreadable",
+                "The bundled font is damaged.",
+            )
         })?;
         let bb = face.global_bounding_box();
         Ok(Self {
@@ -691,7 +714,9 @@ fn find_font_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, AppError
     if let Ok(res) = app.path().resource_dir() {
         for p in [
             res.join("fonts").join("NotoSans-Regular.ttf"),
-            res.join("resources").join("fonts").join("NotoSans-Regular.ttf"),
+            res.join("resources")
+                .join("fonts")
+                .join("NotoSans-Regular.ttf"),
         ] {
             if p.exists() {
                 return Ok(p);
@@ -705,10 +730,12 @@ fn find_font_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, AppError
     if dev.exists() {
         return Ok(dev);
     }
-    Err(
-        AppError::new("NO_FONT", "Editor font missing", "The bundled Noto Sans font could not be found.")
-            .with_suggestion("Reinstall OffPDF."),
+    Err(AppError::new(
+        "NO_FONT",
+        "Editor font missing",
+        "The bundled Noto Sans font could not be found.",
     )
+    .with_suggestion("Reinstall OffPDF."))
 }
 
 fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
@@ -720,7 +747,11 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
         ));
     }
     if doc.objects.is_empty() {
-        return Err(AppError::new("NO_EDITS", "Nothing to save", "Add text, an image or a shape before saving."));
+        return Err(AppError::new(
+            "NO_EDITS",
+            "Nothing to save",
+            "Add text, an image or a shape before saving.",
+        ));
     }
     if doc.objects.len() > MAX_OBJECTS {
         return Err(AppError::new(
@@ -732,10 +763,18 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
     for o in &doc.objects {
         match o {
             EditObjectIn::Text { content, .. } if content.chars().count() > MAX_TEXT_CHARS => {
-                return Err(AppError::new("TEXT_TOO_LONG", "Text is too long", "Shorten the text box and try again."));
+                return Err(AppError::new(
+                    "TEXT_TOO_LONG",
+                    "Text is too long",
+                    "Shorten the text box and try again.",
+                ));
             }
             EditObjectIn::Ink { points, .. } if points.len() > MAX_INK_POINTS => {
-                return Err(AppError::new("INK_TOO_LONG", "Drawing is too complex", "Use a shorter stroke."));
+                return Err(AppError::new(
+                    "INK_TOO_LONG",
+                    "Drawing is too complex",
+                    "Use a shorter stroke.",
+                ));
             }
             _ => {}
         }
@@ -746,13 +785,128 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
 /// Per-page geometry read from the original sources (not a `--empty` rebuild).
 #[derive(Debug, Clone, Copy)]
 struct OverlayPageGeom {
+    /// qpdf overlay align box (raw page Trim → Crop → Media).
     align: [f64; 4],
+    /// Crop ∩ Media (else Media). Overlay Media/Crop/Trim use this so qpdf
+    /// `getTrimBox()` is the full visible page (no Trim⊂Media centering).
+    visible: [f64; 4],
     rotate: i64,
     user_unit: f64,
 }
 
+fn boxes_near(a: [f64; 4], b: [f64; 4]) -> bool {
+    a.iter().zip(b.iter()).all(|(x, y)| (x - y).abs() < 0.5)
+}
+
+fn pdf_rect_obj(b: [f64; 4]) -> Object {
+    Object::Array(vec![
+        Object::Real(b[0] as f32),
+        Object::Real(b[1] as f32),
+        Object::Real(b[2] as f32),
+        Object::Real(b[3] as f32),
+    ])
+}
+
+fn set_page_trim(
+    doc: &mut Document,
+    page_id: lopdf::ObjectId,
+    b: [f64; 4],
+) -> Result<(), AppError> {
+    let dict = doc
+        .get_object_mut(page_id)
+        .and_then(|o| o.as_dict_mut())
+        .map_err(|e| AppError::engine_failed(format!("Could not update page boxes: {e}")))?;
+    dict.set(b"TrimBox".to_vec(), pdf_rect_obj(b));
+    Ok(())
+}
+
+/// Working copy whose TrimBox equals the visible box so qpdf `--overlay`
+/// `getTrimBox()` is the full visible page. Never writes `src`.
+fn write_visible_trim_copy(src: &Path, dest: &Path) -> Result<(), AppError> {
+    let mut doc = Document::load(src)
+        .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
+    let page_ids: Vec<_> = doc.get_pages().values().cloned().collect();
+    for id in page_ids {
+        let vis = crop::visible_box(&doc, id);
+        set_page_trim(&mut doc, id, vis)?;
+    }
+    doc.save(dest)
+        .map_err(|e| AppError::io("Could not write a temporary PDF.", e))?;
+    Ok(())
+}
+
+/// Point `--overlay` at working copies when Trim ⊂ visible. Unchanged sources
+/// keep their original path (identity overlay argv stays the user file).
+fn remap_groups_to_visible_trim(
+    groups: &[PageGroup],
+    work: &Path,
+) -> Result<(Vec<PageGroup>, bool), AppError> {
+    let mut copies: HashMap<String, String> = HashMap::new();
+    let mut any = false;
+    let mut n_copies = 0usize;
+    let mut out = Vec::with_capacity(groups.len());
+    for g in groups {
+        if !copies.contains_key(&g.path) {
+            let doc = Document::load(&g.path)
+                .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
+            let needs = doc
+                .get_pages()
+                .values()
+                .any(|&id| !boxes_near(crop::align_box(&doc, id), crop::visible_box(&doc, id)));
+            if needs {
+                let dest = work.join(format!("src-{n_copies}.pdf"));
+                n_copies += 1;
+                write_visible_trim_copy(Path::new(&g.path), &dest)?;
+                copies.insert(g.path.clone(), dest.to_string_lossy().into_owned());
+                any = true;
+            } else {
+                copies.insert(g.path.clone(), g.path.clone());
+            }
+        }
+        out.push(PageGroup {
+            path: copies.get(&g.path).expect("path just inserted").clone(),
+            pages: g.pages.clone(),
+        });
+    }
+    Ok((out, any))
+}
+
+/// Write original TrimBoxes (`OverlayPageGeom.align`) back onto dest pages.
+fn restore_dest_trim_boxes(dest: &Path, geoms: &[OverlayPageGeom]) -> Result<(), AppError> {
+    let mut doc = Document::load(dest)
+        .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
+    let page_map = doc.get_pages();
+    for (i, geom) in geoms.iter().enumerate() {
+        let p = (i as u32) + 1;
+        let id = *page_map
+            .get(&p)
+            .ok_or_else(|| AppError::engine_failed(format!("Page {p} is not in the saved PDF.")))?;
+        set_page_trim(&mut doc, id, geom.align)?;
+    }
+    let side = dest.with_file_name(format!(
+        "{}.boxes",
+        dest.file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default()
+    ));
+    doc.save(&side)
+        .map_err(|e| AppError::io("Could not write the output file.", e))?;
+    safe_output::replace_file(&side, dest)
+}
+
+fn fmt_pdf_box(b: [f64; 4]) -> String {
+    format!("{:.2} {:.2} {:.2} {:.2}", b[0], b[1], b[2], b[3])
+}
+
 /// Center a raster of `iw×ih` inside overlay AABB `(x,y,w,h)` (SVG `meet`).
-pub(crate) fn image_meet_blit(x: f64, y: f64, w: f64, h: f64, iw: f64, ih: f64) -> (f64, f64, f64, f64) {
+pub(crate) fn image_meet_blit(
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    iw: f64,
+    ih: f64,
+) -> (f64, f64, f64, f64) {
     let iw = iw.max(1.0);
     let ih = ih.max(1.0);
     let s = (w / iw).min(h / ih);
@@ -831,7 +985,9 @@ fn expand_page_spec(spec: &str, n: u32) -> Result<Vec<u32>, AppError> {
     Ok(out)
 }
 
-fn collect_source_pages(groups: &[PageGroup]) -> Result<(Vec<OverlayPageGeom>, Vec<u32>), AppError> {
+fn collect_source_pages(
+    groups: &[PageGroup],
+) -> Result<(Vec<OverlayPageGeom>, Vec<u32>), AppError> {
     let mut docs: HashMap<String, Document> = HashMap::new();
     let mut geoms = Vec::new();
     let mut counts = Vec::with_capacity(groups.len());
@@ -855,6 +1011,7 @@ fn collect_source_pages(groups: &[PageGroup]) -> Result<(Vec<OverlayPageGeom>, V
             })?;
             geoms.push(OverlayPageGeom {
                 align: crop::align_box(doc, id),
+                visible: crop::visible_box(doc, id),
                 rotate: crop::page_rotation(doc, id),
                 user_unit: crop::page_user_unit(doc, id),
             });
@@ -938,11 +1095,21 @@ where
         if geoms.is_empty() {
             return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
         }
-        let font_bytes = std::fs::read(font_path).map_err(|e| AppError::io("Could not read the editor font.", e))?;
+        let font_bytes = std::fs::read(font_path)
+            .map_err(|e| AppError::io("Could not read the editor font.", e))?;
         let font = FontInfo::parse(font_bytes)?;
         write_overlay_pdf(&overlay_str, &geoms, document, &font, cancel)?;
-        let args = build_edit_overlay_args(groups, &counts, &overlay_str, &tmp_str)?;
+        let (mapped, restore_trim) = remap_groups_to_visible_trim(groups, work)?;
+        let args = build_edit_overlay_args(&mapped, &counts, &overlay_str, &tmp_str)?;
         run(&args)?;
+        if restore_trim {
+            restore_dest_trim_boxes(&tmp, &geoms)?;
+            // lopdf xref can look damaged; qpdf rewrite before the atomic replace.
+            let cleaned = work.join("dest-boxes.pdf");
+            let cleaned_str = cleaned.to_string_lossy().to_string();
+            run(&[tmp_str.clone(), cleaned_str.clone()])?;
+            safe_output::replace_file(&cleaned, &tmp)?;
+        }
         safe_output::replace_file(&tmp, dest)?;
         Ok(vec![output.to_string()])
     })();
@@ -980,7 +1147,8 @@ pub fn edit_pdf_overlays(
     validate_doc(document)?;
 
     let work = temp::root(app)?.join("work").join(job_id);
-    std::fs::create_dir_all(&work).map_err(|e| AppError::io("Could not create a temp directory.", e))?;
+    std::fs::create_dir_all(&work)
+        .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
     let font_path = find_font_path(app)?;
 
     let result = (|| -> Result<Vec<String>, AppError> {
@@ -1131,7 +1299,10 @@ fn write_overlay_pdf(
     }
     cmap.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
     let touni = b.begin();
-    b.s(&format!("{touni} 0 obj\n<< /Length {} >>\nstream\n{cmap}endstream\nendobj\n", cmap.len()));
+    b.s(&format!(
+        "{touni} 0 obj\n<< /Length {} >>\nstream\n{cmap}endstream\nendobj\n",
+        cmap.len()
+    ));
 
     let type0 = b.begin();
     b.s(&format!(
@@ -1143,7 +1314,9 @@ fn write_overlay_pdf(
     for op100 in &opacities {
         let id = b.begin();
         let ca = (*op100 as f64) / 100.0;
-        b.s(&format!("{id} 0 obj\n<< /Type /ExtGState /ca {ca:.2} /CA {ca:.2} >>\nendobj\n"));
+        b.s(&format!(
+            "{id} 0 obj\n<< /Type /ExtGState /ca {ca:.2} /CA {ca:.2} >>\nendobj\n"
+        ));
         gs_ids.insert(*op100, id);
     }
 
@@ -1155,7 +1328,9 @@ fn write_overlay_pdf(
             b.s(&format!(
                 "{sid} 0 obj\n<< /Type /XObject /Subtype /Image /Width {} /Height {} \
                  /ColorSpace /DeviceGray /BitsPerComponent 8 /Length {} >>\nstream\n",
-                rast.w, rast.h, a.len()
+                rast.w,
+                rast.h,
+                a.len()
             ));
             b.bytes(a);
             b.s("\nendstream\nendobj\n");
@@ -1164,11 +1339,15 @@ fn write_overlay_pdf(
             None
         };
         let iid = b.begin();
-        let smask = smask_id.map(|s| format!(" /SMask {s} 0 R")).unwrap_or_default();
+        let smask = smask_id
+            .map(|s| format!(" /SMask {s} 0 R"))
+            .unwrap_or_default();
         b.s(&format!(
             "{iid} 0 obj\n<< /Type /XObject /Subtype /Image /Width {} /Height {} \
              /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {}{smask} >>\nstream\n",
-            rast.w, rast.h, rast.rgb.len()
+            rast.w,
+            rast.h,
+            rast.rgb.len()
         ));
         b.bytes(&rast.rgb);
         b.s("\nendstream\nendobj\n");
@@ -1180,8 +1359,14 @@ fn write_overlay_pdf(
 
     let mut content_ids = Vec::with_capacity(n);
     for (pi, geom) in geoms.iter().enumerate() {
-        // Overlay coords are relative to qpdf's alignment box (Trim→Crop→Media).
-        let vis = geom.align;
+        // Dest user space (origin 0): rotate=0 keeps (120,120) as 120,120 instead
+        // of subtracting Trim origin. Rotation still uses dest unrotated size.
+        let vis = [
+            0.0,
+            0.0,
+            geom.align[2] - geom.align[0],
+            geom.align[3] - geom.align[1],
+        ];
         let rotate = geom.rotate;
         let mut content = String::new();
         for (oi, obj) in document.objects.iter().enumerate() {
@@ -1190,7 +1375,11 @@ fn write_overlay_pdf(
             }
             let op100 = (obj.opacity() * 100.0).round() as i32;
             content.push_str(&format!("q\n/GS{op100} gs\n"));
-            let rotated = push_object_rotate(&mut content, obj.object_rotate(), obj.overlay_aabb(vis, rotate));
+            let rotated = push_object_rotate(
+                &mut content,
+                obj.object_rotate(),
+                obj.overlay_aabb(vis, rotate),
+            );
             match obj {
                 EditObjectIn::Rect {
                     rect,
@@ -1216,7 +1405,13 @@ fn write_overlay_pdf(
                     ..
                 } => {
                     let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
-                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &ellipse_path(x, y, w, h));
+                    paint_path(
+                        &mut content,
+                        fill.as_deref(),
+                        stroke.as_deref(),
+                        *stroke_width,
+                        &ellipse_path(x, y, w, h),
+                    );
                 }
                 EditObjectIn::Triangle {
                     rect,
@@ -1227,7 +1422,13 @@ fn write_overlay_pdf(
                 } => {
                     let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
                     let pts = triangle_pts(x, y, w, h);
-                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &polygon_path(&pts));
+                    paint_path(
+                        &mut content,
+                        fill.as_deref(),
+                        stroke.as_deref(),
+                        *stroke_width,
+                        &polygon_path(&pts),
+                    );
                 }
                 EditObjectIn::Star {
                     rect,
@@ -1238,7 +1439,13 @@ fn write_overlay_pdf(
                 } => {
                     let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
                     let pts = star_pts(x, y, w, h);
-                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &polygon_path(&pts));
+                    paint_path(
+                        &mut content,
+                        fill.as_deref(),
+                        stroke.as_deref(),
+                        *stroke_width,
+                        &polygon_path(&pts),
+                    );
                 }
                 EditObjectIn::RoundRect {
                     rect,
@@ -1248,7 +1455,13 @@ fn write_overlay_pdf(
                     ..
                 } => {
                     let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
-                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &round_rect_path(x, y, w, h));
+                    paint_path(
+                        &mut content,
+                        fill.as_deref(),
+                        stroke.as_deref(),
+                        *stroke_width,
+                        &round_rect_path(x, y, w, h),
+                    );
                 }
                 EditObjectIn::Hexagon {
                     rect,
@@ -1259,7 +1472,13 @@ fn write_overlay_pdf(
                 } => {
                     let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
                     let pts = hexagon_pts(x, y, w, h);
-                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &polygon_path(&pts));
+                    paint_path(
+                        &mut content,
+                        fill.as_deref(),
+                        stroke.as_deref(),
+                        *stroke_width,
+                        &polygon_path(&pts),
+                    );
                 }
                 EditObjectIn::Bubble {
                     rect,
@@ -1269,7 +1488,13 @@ fn write_overlay_pdf(
                     ..
                 } => {
                     let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
-                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &bubble_path(x, y, w, h));
+                    paint_path(
+                        &mut content,
+                        fill.as_deref(),
+                        stroke.as_deref(),
+                        *stroke_width,
+                        &bubble_path(x, y, w, h),
+                    );
                 }
                 EditObjectIn::Arrow {
                     rect,
@@ -1280,7 +1505,13 @@ fn write_overlay_pdf(
                 } => {
                     let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
                     let pts = arrow_pts(x, y, w, h);
-                    paint_path(&mut content, fill.as_deref(), stroke.as_deref(), *stroke_width, &polygon_path(&pts));
+                    paint_path(
+                        &mut content,
+                        fill.as_deref(),
+                        stroke.as_deref(),
+                        *stroke_width,
+                        &polygon_path(&pts),
+                    );
                 }
                 EditObjectIn::Text {
                     rect,
@@ -1312,7 +1543,9 @@ fn write_overlay_pdf(
                     }
                     content.push_str("ET\n");
                 }
-                EditObjectIn::Image { rect, keep_aspect, .. } => {
+                EditObjectIn::Image {
+                    rect, keep_aspect, ..
+                } => {
                     if let Some(ii) = image_for_obj[oi] {
                         let (x, y, w, h) = pdf_rect_to_overlay(rect, vis, rotate);
                         let rast = &rasters[ii];
@@ -1324,7 +1557,9 @@ fn write_overlay_pdf(
                                 "q\n{dw:.2} 0 0 {dh:.2} {dx:.2} {dy:.2} cm\n/Im{ii} Do\nQ\n"
                             ));
                         } else {
-                            content.push_str(&format!("q\n{w:.2} 0 0 {h:.2} {x:.2} {y:.2} cm\n/Im{ii} Do\nQ\n"));
+                            content.push_str(&format!(
+                                "q\n{w:.2} 0 0 {h:.2} {x:.2} {y:.2} cm\n/Im{ii} Do\nQ\n"
+                            ));
                         }
                     }
                 }
@@ -1354,7 +1589,8 @@ fn write_overlay_pdf(
                     if points.len() >= 2 {
                         let (sr, sg, sb) = parse_hex(stroke.as_deref(), (0.067, 0.094, 0.153));
                         let sw = stroke_width.unwrap_or(2.5).clamp(0.2, 24.0);
-                        content.push_str(&format!("{sr:.3} {sg:.3} {sb:.3} RG\n{sw:.2} w 1 J 1 j\n"));
+                        content
+                            .push_str(&format!("{sr:.3} {sg:.3} {sb:.3} RG\n{sw:.2} w 1 J 1 j\n"));
                         for (i, p) in points.iter().enumerate() {
                             let (x, y) = pdf_point_to_overlay(p.x, p.y, vis, rotate);
                             if i == 0 {
@@ -1374,13 +1610,26 @@ fn write_overlay_pdf(
         }
 
         let cid = b.begin();
-        b.s(&format!("{cid} 0 obj\n<< /Length {} >>\nstream\n{content}endstream\nendobj\n", content.len()));
+        b.s(&format!(
+            "{cid} 0 obj\n<< /Length {} >>\nstream\n{content}endstream\nendobj\n",
+            content.len()
+        ));
         content_ids.push(cid);
     }
 
     let mut out_page_ids = Vec::with_capacity(n);
     for (pi, geom) in geoms.iter().enumerate() {
-        let (pw, ph) = displayed_wh(geom.align, geom.rotate);
+        let rot = ((geom.rotate % 360) + 360) % 360;
+        let (media, crop, trim) = if rot == 0 {
+            // Same visible box as the dest working copy Trim so qpdf maps 1:1.
+            // Content is dest user space (absolute PDF coords), not Trim-origin.
+            let v = geom.visible;
+            (v, v, v)
+        } else {
+            let (pw, ph) = displayed_wh(geom.visible, geom.rotate);
+            let b = [0.0, 0.0, pw, ph];
+            (b, b, b)
+        };
         let mut xo = String::new();
         for (oi, obj) in document.objects.iter().enumerate() {
             if obj.page_index() as usize != pi {
@@ -1402,9 +1651,12 @@ fn write_overlay_pdf(
         let pg = b.begin();
         b.s(&format!(
             "{pg} 0 obj\n<< /Type /Page /Parent {pages_id} 0 R \
-             /MediaBox [0 0 {pw:.2} {ph:.2}] /CropBox [0 0 {pw:.2} {ph:.2}] /TrimBox [0 0 {pw:.2} {ph:.2}]{uu} \
+             /MediaBox [{}] /CropBox [{}] /TrimBox [{}]{uu} \
              /Resources << /Font << /F1 {type0} 0 R >> /ExtGState << {gs_res}>> /XObject << {xo}>> >> \
              /Contents {} 0 R >>\nendobj\n",
+            fmt_pdf_box(media),
+            fmt_pdf_box(crop),
+            fmt_pdf_box(trim),
             content_ids[pi]
         ));
         out_page_ids.push(pg);
@@ -1412,14 +1664,23 @@ fn write_overlay_pdf(
 
     let pages = b.begin();
     debug_assert_eq!(pages, pages_id);
-    let kids = out_page_ids.iter().map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
-    b.s(&format!("{pages} 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {n} >>\nendobj\n"));
+    let kids = out_page_ids
+        .iter()
+        .map(|id| format!("{id} 0 R"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    b.s(&format!(
+        "{pages} 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {n} >>\nendobj\n"
+    ));
 
     let catalog = b.begin();
-    b.s(&format!("{catalog} 0 obj\n<< /Type /Catalog /Pages {pages} 0 R >>\nendobj\n"));
+    b.s(&format!(
+        "{catalog} 0 obj\n<< /Type /Catalog /Pages {pages} 0 R >>\nendobj\n"
+    ));
 
     let bytes = b.finish(catalog);
-    std::fs::write(overlay_path, &bytes).map_err(|e| AppError::output_not_writable(&format!("{overlay_path} ({e})")))?;
+    std::fs::write(overlay_path, &bytes)
+        .map_err(|e| AppError::output_not_writable(&format!("{overlay_path} ({e})")))?;
     Ok(())
 }
 
@@ -1431,14 +1692,25 @@ mod tests {
 
     #[test]
     fn display_rotate_90_swaps_axes() {
-        assert_eq!(unrotated_to_display(0.0, 0.0, 612.0, 792.0, 90), (0.0, 612.0));
-        assert_eq!(unrotated_to_display(612.0, 0.0, 612.0, 792.0, 90), (0.0, 0.0));
+        assert_eq!(
+            unrotated_to_display(0.0, 0.0, 612.0, 792.0, 90),
+            (0.0, 612.0)
+        );
+        assert_eq!(
+            unrotated_to_display(612.0, 0.0, 612.0, 792.0, 90),
+            (0.0, 0.0)
+        );
     }
 
     #[test]
     fn overlay_rect_at_rotate_0_keeps_origin() {
         let vis = [72.0, 72.0, 540.0, 720.0];
-        let r = PdfRectIn { x: 72.0, y: 72.0, w: 100.0, h: 50.0 };
+        let r = PdfRectIn {
+            x: 72.0,
+            y: 72.0,
+            w: 100.0,
+            h: 50.0,
+        };
         let (x, y, w, h) = pdf_rect_to_overlay(&r, vis, 0);
         assert!((x - 0.0).abs() < 1e-6);
         assert!((y - 0.0).abs() < 1e-6);
@@ -1460,7 +1732,12 @@ mod tests {
         // Visible crop origin (72,72) on a full-page TrimBox must stay at (72,72)
         // in overlay space so qpdf 1:1 maps onto dest TrimBox.
         let align = [0.0, 0.0, 612.0, 792.0];
-        let r = PdfRectIn { x: 72.0, y: 72.0, w: 100.0, h: 50.0 };
+        let r = PdfRectIn {
+            x: 72.0,
+            y: 72.0,
+            w: 100.0,
+            h: 50.0,
+        };
         let (x, y, w, h) = pdf_rect_to_overlay(&r, align, 0);
         assert!((x - 72.0).abs() < 1e-6);
         assert!((y - 72.0).abs() < 1e-6);
@@ -1476,7 +1753,8 @@ mod tests {
 
     #[test]
     fn turkish_glyphs_exist_in_bundled_font() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
         let data = std::fs::read(path).expect("bundled font");
         let font = FontInfo::parse(data).unwrap();
         for ch in "GİZLİ ŞğıİıĞğ".chars() {
@@ -1486,7 +1764,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty() {
-        let d = EditDocumentIn { version: 1, objects: vec![] };
+        let d = EditDocumentIn {
+            version: 1,
+            objects: vec![],
+        };
         assert!(validate_doc(&d).is_err());
     }
 
@@ -1510,26 +1791,40 @@ mod tests {
 
     #[test]
     fn overlay_args_identity_skips_empty_and_pages() {
-        let args = build_edit_overlay_args(&[g("/a.pdf", "1-5")], &[5], "/ov.pdf", "/out.pdf").unwrap();
-        assert_eq!(args, vec!["/a.pdf", "--overlay", "/ov.pdf", "--", "/out.pdf"]);
+        let args =
+            build_edit_overlay_args(&[g("/a.pdf", "1-5")], &[5], "/ov.pdf", "/out.pdf").unwrap();
+        assert_eq!(
+            args,
+            vec!["/a.pdf", "--overlay", "/ov.pdf", "--", "/out.pdf"]
+        );
         assert!(!args.iter().any(|a| a == "--empty"));
         assert!(!args.iter().any(|a| a == "--pages"));
     }
 
     #[test]
     fn overlay_args_1_z_is_identity() {
-        let args = build_edit_overlay_args(&[g("/a.pdf", "1-z")], &[12], "/ov.pdf", "/out.pdf").unwrap();
+        let args =
+            build_edit_overlay_args(&[g("/a.pdf", "1-z")], &[12], "/ov.pdf", "/out.pdf").unwrap();
         assert!(!args.iter().any(|a| a == "--pages"));
         assert_eq!(args[0], "/a.pdf");
     }
 
     #[test]
     fn overlay_args_subset_uses_dot_pages() {
-        let args = build_edit_overlay_args(&[g("/a.pdf", "2,4")], &[5], "/ov.pdf", "/out.pdf").unwrap();
+        let args =
+            build_edit_overlay_args(&[g("/a.pdf", "2,4")], &[5], "/ov.pdf", "/out.pdf").unwrap();
         assert_eq!(
             args,
             vec![
-                "/a.pdf", "--pages", ".", "2,4", "--", "--overlay", "/ov.pdf", "--", "/out.pdf"
+                "/a.pdf",
+                "--pages",
+                ".",
+                "2,4",
+                "--",
+                "--overlay",
+                "/ov.pdf",
+                "--",
+                "/out.pdf"
             ]
         );
         assert!(!args.iter().any(|a| a == "--empty"));
@@ -1547,7 +1842,16 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "/a.pdf", "--pages", ".", "1-2", "/b.pdf", "1", "--", "--overlay", "/ov.pdf", "--",
+                "/a.pdf",
+                "--pages",
+                ".",
+                "1-2",
+                "/b.pdf",
+                "1",
+                "--",
+                "--overlay",
+                "/ov.pdf",
+                "--",
                 "/out.pdf"
             ]
         );
@@ -1585,13 +1889,15 @@ mod tests {
     fn letter_geom() -> OverlayPageGeom {
         OverlayPageGeom {
             align: [0.0, 0.0, 612.0, 792.0],
+            visible: [0.0, 0.0, 612.0, 792.0],
             rotate: 0,
             user_unit: 1.0,
         }
     }
 
     fn test_font() -> FontInfo {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
         FontInfo::parse(std::fs::read(path).expect("bundled font")).unwrap()
     }
 
@@ -1764,7 +2070,10 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(err.code, "CANCELLED");
-        assert_eq!(checks, 2, "must cancel on the post-embed check, not at entry");
+        assert_eq!(
+            checks, 2,
+            "must cancel on the post-embed check, not at entry"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1874,7 +2183,8 @@ mod tests {
         write_catalog_fixture(&src);
         let orig_bytes = std::fs::read(&src).unwrap();
 
-        let font = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
+        let font =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
         let groups = [g(src.to_str().unwrap(), "1")];
         export_edit_pdf_with_runner(
             &groups,
@@ -1895,7 +2205,9 @@ mod tests {
                 if out.status.success() || code == Some(3) {
                     Ok(())
                 } else {
-                    Err(AppError::engine_failed(String::from_utf8_lossy(&out.stderr).to_string()))
+                    Err(AppError::engine_failed(
+                        String::from_utf8_lossy(&out.stderr).to_string(),
+                    ))
                 }
             },
         )
@@ -1953,7 +2265,8 @@ mod tests {
             return;
         }
         let before = std::fs::read(&src).unwrap();
-        let font = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
+        let font =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fonts/NotoSans-Regular.ttf");
         let err = export_edit_pdf_with_runner(
             &[g(src.to_str().unwrap(), "1")],
             dest.to_str().unwrap(),
