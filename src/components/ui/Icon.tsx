@@ -53,7 +53,31 @@ export type IconName =
   | "lock"
   | "arrowRight"
   | "undo"
-  | "sparkles";
+  | "sparkles"
+  | "eyedropper"
+  | "chevronUp"
+  | "chevronsUp"
+  | "chevronsDown"
+  | "mousePointer"
+  | "hand"
+  | "type"
+  | "square"
+  | "rectangle"
+  | "squareFill"
+  | "slash"
+  | "pencil"
+  | "alignLeft"
+  | "alignCenter"
+  | "alignRight"
+  | "copy"
+  | "clipboard"
+  | "circle"
+  | "ellipse"
+  | "triangle"
+  | "star"
+  | "roundSquare"
+  | "hexagon"
+  | "bubble";
 
 const PATHS: Record<IconName, JSX.Element> = {
   merge: (
@@ -276,7 +300,98 @@ const PATHS: Record<IconName, JSX.Element> = {
     </>
   ),
   chevronDown: <path d="m6 9 6 6 6-6" />,
+  chevronUp: <path d="m18 15-6-6-6 6" />,
   chevronRight: <path d="m9 6 6 6-6 6" />,
+  chevronsUp: (
+    <>
+      <path d="m17 18-5-5-5 5" />
+      <path d="m17 11-5-5-5 5" />
+    </>
+  ),
+  chevronsDown: (
+    <>
+      <path d="m7 6 5 5 5-5" />
+      <path d="m7 13 5 5 5-5" />
+    </>
+  ),
+  eyedropper: (
+    <>
+      <path d="m2 22 5-5" />
+      <path d="M18.4 3.6a2.1 2.1 0 0 1 3 3L10 18H7v-3L18.4 3.6z" />
+      <path d="m14 8 3 3" />
+    </>
+  ),
+  mousePointer: <path d="M5 4 14 21l1.5-6.5L22 13z" />,
+  hand: (
+    <>
+      <path d="M18 11V6a2 2 0 0 0-4 0v1" />
+      <path d="M14 10V4a2 2 0 0 0-4 0v2" />
+      <path d="M10 10.5V6a2 2 0 0 0-4 0v8" />
+      <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
+    </>
+  ),
+  type: (
+    <>
+      <path d="M4 7V5h16v2" />
+      <path d="M12 5v14" />
+      <path d="M9 19h6" />
+    </>
+  ),
+  square: <rect x="5" y="5" width="14" height="14" rx="1.5" />,
+  rectangle: <rect x="3" y="7" width="18" height="10" rx="1.5" />,
+  squareFill: <rect x="5" y="5" width="14" height="14" rx="1.5" fill="currentColor" stroke="currentColor" />,
+  slash: <path d="M5 19 19 5" />,
+  pencil: (
+    <>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 1 1 3 3L8 18l-4 1 1-4z" />
+    </>
+  ),
+  alignLeft: (
+    <>
+      <path d="M4 6h16" />
+      <path d="M4 12h10" />
+      <path d="M4 18h14" />
+    </>
+  ),
+  alignCenter: (
+    <>
+      <path d="M4 6h16" />
+      <path d="M7 12h10" />
+      <path d="M6 18h12" />
+    </>
+  ),
+  alignRight: (
+    <>
+      <path d="M4 6h16" />
+      <path d="M10 12h10" />
+      <path d="M6 18h14" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </>
+  ),
+  clipboard: (
+    <>
+      <path d="M9 5h6" />
+      <path d="M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2" />
+      <rect x="6" y="4" width="12" height="16" rx="2" />
+    </>
+  ),
+  circle: <circle cx="12" cy="12" r="8" />,
+  ellipse: <ellipse cx="12" cy="12" rx="9" ry="5.5" />,
+  triangle: <path d="M12 4 20 19H4z" />,
+  star: (
+    <path d="M12 3.2 14.6 9l6.2.6-4.7 4 1.4 6.1L12 16.6 6.5 19.7l1.4-6.1L3.2 9.6 9.4 9z" />
+  ),
+  roundSquare: <rect x="5" y="5" width="14" height="14" rx="4" />,
+  hexagon: <path d="M8 4h8l5 8-5 8H8l-5-8z" />,
+  bubble: (
+    <path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-5l-3.5 3v-3H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" />
+  ),
   alertTriangle: (
     <>
       <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />

@@ -88,6 +88,15 @@ export const TOOLS: ToolMeta[] = [
     category: "Organize",
   },
   {
+    id: "editPdf",
+    name: "Edit PDF",
+    description: "Add text, images and shapes to a PDF.",
+    longDescription: "Add text, images and shapes to a PDF, then save a new copy.",
+    icon: "fileText",
+    path: "/tools/edit-pdf",
+    category: "Organize",
+  },
+  {
     id: "poster",
     name: "Poster / tile print",
     description: "Split a big plan (A1/A0) into A4 sheets you can print at home.",
@@ -130,9 +139,9 @@ export const TOOLS: ToolMeta[] = [
   {
     id: "pdfToOffice",
     name: "PDF to Office",
-    description: "Convert a PDF to editable Word, PowerPoint or Excel.",
+    description: "Convert a PDF to editable Word or PowerPoint.",
     longDescription:
-      "Convert the combined document to an editable Office file (Word, PowerPoint or Excel) using LibreOffice. Best effort — complex layouts may not be reproduced exactly.",
+      "Convert the combined document to an editable Office file (Word or PowerPoint) using LibreOffice. Best effort — complex layouts may not be reproduced exactly.",
     icon: "fileText",
     path: "/tools/pdf-to-office",
     category: "Convert",

@@ -223,13 +223,31 @@ export function RefLightbox({
             {ref.fileName} · page {index + 1} of {list.length}
           </span>
           <div className="row" style={{ flex: "none", gap: 6 }}>
-            <button className="btn btn--ghost btn--sm" title="Zoom out (-)" disabled={zoom <= MIN_ZOOM} onClick={() => setZoom((z) => clamp(z - STEP))}>
+            <button
+              className="btn btn--ghost btn--sm"
+              title="Zoom out (-)"
+              aria-label="Zoom out"
+              disabled={zoom <= MIN_ZOOM}
+              onClick={() => setZoom((z) => clamp(z - STEP))}
+            >
               <Icon name="minus" size={15} />
             </button>
-            <button className="btn btn--ghost btn--sm" title="Reset (0)" onClick={() => setZoom(1)} style={{ minWidth: 52 }}>
+            <button
+              className="btn btn--ghost btn--sm"
+              title="Reset (0)"
+              aria-label={`Reset zoom, current zoom ${pct}%`}
+              onClick={() => setZoom(1)}
+              style={{ minWidth: 52 }}
+            >
               {pct}%
             </button>
-            <button className="btn btn--ghost btn--sm" title="Zoom in (+)" disabled={zoom >= MAX_ZOOM} onClick={() => setZoom((z) => clamp(z + STEP))}>
+            <button
+              className="btn btn--ghost btn--sm"
+              title="Zoom in (+)"
+              aria-label="Zoom in"
+              disabled={zoom >= MAX_ZOOM}
+              onClick={() => setZoom((z) => clamp(z + STEP))}
+            >
               <Icon name="plus" size={15} />
             </button>
           </div>
@@ -269,7 +287,14 @@ export function RefLightbox({
           {sideTab === "pages" ? (
             <div className="reader__strip">
               {list.map((r, i) => (
-                <button key={r.key} className={`reader__thumb ${i === index ? "is-active" : ""}`} onClick={() => setIndex(i)} title={`Page ${i + 1}`}>
+                <button
+                  key={r.key}
+                  className={`reader__thumb ${i === index ? "is-active" : ""}`}
+                  onClick={() => setIndex(i)}
+                  title={`Page ${i + 1}`}
+                  aria-label={`Page ${i + 1}`}
+                  aria-current={i === index ? "page" : undefined}
+                >
                   {thumbs.get(r.key) ? (
                     <img src={thumbs.get(r.key)} alt="" draggable={false} />
                   ) : (
@@ -308,6 +333,7 @@ export function RefLightbox({
               onKeyDown={(e) => {
                 if (e.key === "Enter") gotoMatch(e.shiftKey ? -1 : 1);
               }}
+              aria-label="Find in document"
               placeholder="Find in document…"
               spellCheck={false}
             />
@@ -316,14 +342,14 @@ export function RefLightbox({
                 {matches.length === 0 ? "0 / 0" : `${matchPos + 1} / ${matches.length}`}
               </span>
             )}
-            <button className="btn btn--ghost btn--sm" title="Previous match (Shift+Enter)" disabled={matches.length === 0} onClick={() => gotoMatch(-1)}>
+            <button className="btn btn--ghost btn--sm" title="Previous match (Shift+Enter)" aria-label="Previous match" disabled={matches.length === 0} onClick={() => gotoMatch(-1)}>
               <Icon name="chevronRight" size={14} style={{ transform: "rotate(180deg)" }} />
             </button>
-            <button className="btn btn--ghost btn--sm" title="Next match (Enter)" disabled={matches.length === 0} onClick={() => gotoMatch(1)}>
+            <button className="btn btn--ghost btn--sm" title="Next match (Enter)" aria-label="Next match" disabled={matches.length === 0} onClick={() => gotoMatch(1)}>
               <Icon name="chevronRight" size={14} />
             </button>
             {query && (
-              <button className="btn btn--ghost btn--sm" title="Clear" onClick={() => setQuery("")}>
+              <button className="btn btn--ghost btn--sm" title="Clear" aria-label="Clear search" onClick={() => setQuery("")}>
                 <Icon name="x" size={14} />
               </button>
             )}
@@ -332,7 +358,7 @@ export function RefLightbox({
           <div
             ref={scroller}
             className="reader__canvas"
-            style={{ cursor: zoom > 1 ? (panning ? "grabbing" : "grab") : "zoom-in", alignItems: zoom > 1 ? "flex-start" : "center" }}
+            style={{ cursor: panning ? "grabbing" : "grab", alignItems: zoom > 1 ? "flex-start" : "center" }}
             onWheel={(e) => {
               if (e.ctrlKey || e.metaKey) {
                 e.preventDefault();

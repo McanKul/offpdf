@@ -1,4 +1,4 @@
-name: Windows Release
+name: Windows Build Verification
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: windows-release-${{ github.ref }}
@@ -29,7 +29,8 @@ concurrency:
 
 jobs:
   windows-x64:
-    name: Build and release Windows installer
+    name: Build and smoke-test Windows installer (not published)
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development'
     runs-on: windows-latest
     timeout-minutes: 120
 
@@ -49,6 +50,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Smoke test HEIC and HEIF conversion
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib heic_and_heif_complete_the_jpeg_and_pdf_pipeline
+
       - name: Bundle qpdf for Windows
         shell: pwsh
         run: ./scripts/prepare-qpdf-windows.ps1 -Version "${{ github.event.inputs.qpdf_version }}"
@@ -65,24 +69,16 @@ jobs:
         shell: pwsh
         run: ./scripts/prepare-libreoffice-windows.ps1 -Version "${{ github.event.inputs.libreoffice_version }}"
 
-      - name: Build and release Windows installer
+      - name: Build Windows installer for smoke testing
         uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: OffPDF v__VERSION__
-          releaseBody: |
-            OffPDF build for Windows (x64).
-
-            Note: this installer is not code-signed yet, so Windows SmartScreen
-            may show an "unknown publisher" warning. Click "More info" then
-            "Run anyway" to install.
-
-            LibreOffice is bundled and only required for Office conversion tools.
-          releaseDraft: true
-          prerelease: false
           args: --bundles nsis
+
+      - name: Enforce Windows signing gate
+        shell: pwsh
+        run: |
+          Write-Host 'This workflow validates the Windows bundle locally only.'
+          Write-Host 'Do not publish it until the Authenticode signing workflow is enabled.'
 
       - name: Smoke test installed application
         shell: pwsh

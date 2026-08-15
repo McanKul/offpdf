@@ -5,10 +5,12 @@ import { pickPdfFile, pickPdfFiles } from "@/lib/tauriCommands";
 import { toAppError } from "@/lib/types";
 import { useToast } from "@/components/ui/Toast";
 import { SUPPORTED_RE } from "@/lib/fileTypes";
+import { isTauriRuntime } from "@/lib/tauriEnv";
 
 /**
  * Click to open the native file dialog, or drag-and-drop PDFs onto it.
- * Only file *paths* are produced; bytes never enter the webview.
+ * The native picker requires the desktop app because a browser cannot expose
+ * local file paths to OffPDF.
  */
 export function Dropzone({
   multiple,
@@ -25,33 +27,51 @@ export function Dropzone({
 }) {
   const [dragging, setDragging] = useState(false);
   const { toast } = useToast();
+  const inTauri = isTauriRuntime();
 
   // Native OS drag-and-drop (Tauri delivers real file paths).
   useEffect(() => {
+    if (!inTauri) return;
     let unlisten: (() => void) | undefined;
     let active = true;
     (async () => {
-      const fn = await getCurrentWebview().onDragDropEvent((event) => {
-        const p = event.payload;
-        if (p.type === "enter" || p.type === "over") setDragging(true);
-        else if (p.type === "leave") setDragging(false);
-        else if (p.type === "drop") {
-          setDragging(false);
-          const paths = p.paths.filter((x) => SUPPORTED_RE.test(x));
-          if (paths.length > 0) onFiles(multiple ? paths : paths.slice(-1));
-          else toast({ title: "Only PDF, image, or Office files are supported", variant: "error" });
-        }
-      });
-      if (active) unlisten = fn;
-      else fn();
+      try {
+        const fn = await getCurrentWebview().onDragDropEvent((event) => {
+          const p = event.payload;
+          if (p.type === "enter" || p.type === "over") setDragging(true);
+          else if (p.type === "leave") setDragging(false);
+          else if (p.type === "drop") {
+            setDragging(false);
+            const paths = p.paths.filter((x) => SUPPORTED_RE.test(x));
+            if (paths.length > 0) onFiles(multiple ? paths : paths.slice(-1));
+            else
+              toast({
+                title: "Only PDF, image, or Office files are supported",
+                variant: "error",
+              });
+          }
+        });
+        if (active) unlisten = fn;
+        else fn();
+      } catch {
+        // Not in a Tauri webview, or drag-drop unavailable — click still works in-app.
+      }
     })();
     return () => {
       active = false;
       unlisten?.();
     };
-  }, [multiple, onFiles, toast]);
+  }, [inTauri, multiple, onFiles, toast]);
 
   const openDialog = async () => {
+    if (!inTauri) {
+      toast({
+        title: "Use the desktop app",
+        description: "File selection is available in the OffPDF desktop app.",
+        variant: "error",
+      });
+      return;
+    }
     try {
       if (multiple) {
         const paths = await pickPdfFiles();
@@ -61,7 +81,11 @@ export function Dropzone({
         if (path) onFiles([path]);
       }
     } catch (e) {
-      toast({ title: "Could not open file picker", description: toAppError(e).message, variant: "error" });
+      toast({
+        title: "Could not open file picker",
+        description: toAppError(e).message,
+        variant: "error",
+      });
     }
   };
 
@@ -97,7 +121,10 @@ export function Dropzone({
         {title ?? "Drop PDFs, images or Office files here, or click to browse"}
       </div>
       <div className="dropzone__hint">
-        {hint ?? "PDF, images (PNG/JPG…), Word/Excel/PowerPoint — processed locally, never uploaded."}
+        {inTauri
+          ? (hint ??
+            "PDF, images (PNG/JPG…), Word/Excel/PowerPoint — processed locally, never uploaded.")
+          : "Open this page in the OffPDF desktop app to choose local files."}
       </div>
     </div>
   );

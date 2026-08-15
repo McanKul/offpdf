@@ -13,6 +13,17 @@ import { isImagePath, isOfficePath, SUPPORTED_RE } from "@/lib/fileTypes";
 import { toAppError, type FileInfo, type WorkspaceFile } from "@/lib/types";
 
 let uidSeq = 0;
+let imageConversionQueue: Promise<void> = Promise.resolve();
+let activeAddOperations = 0;
+
+function imageToPdfSerial(path: string): Promise<string> {
+  const conversion = imageConversionQueue.then(() => imageToPdf(path));
+  imageConversionQueue = conversion.then(
+    () => undefined,
+    () => undefined,
+  );
+  return conversion;
+}
 
 export interface AddResult {
   added: number;
@@ -52,27 +63,38 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     const notPdf = supported.length < paths.length;
     if (supported.length === 0) return { added: 0, invalid: [], notPdf, errors: [] };
 
+    activeAddOperations += 1;
     set({ loading: true });
     const errors: string[] = [];
     try {
       const existing = new Set(get().files.map((f) => f.path));
-      const infos = await Promise.all(
-        supported.map(async (p) => {
-          try {
-            if (isImagePath(p)) {
-              return await getFileInfo(await imageToPdf(p));
+      const convertedImages = new Map<string, string>();
+      const infos: Array<FileInfo | null> = [];
+
+      // Image decoders can use hundreds of megabytes for a single large photo.
+      // Keep conversions serial, and convert duplicate image paths only once
+      // while still allowing the resulting PDF to be added more than once.
+      for (const p of supported) {
+        try {
+          if (isImagePath(p)) {
+            let pdfPath = convertedImages.get(p);
+            if (!pdfPath) {
+              pdfPath = await imageToPdfSerial(p);
+              convertedImages.set(p, pdfPath);
             }
-            if (isOfficePath(p)) {
-              return await getFileInfo(await officeToPdf(p));
-            }
-            if (existing.has(p)) return null; // already loaded
-            return await getFileInfo(p);
-          } catch (e) {
-            errors.push(`${baseName(p)}: ${toAppError(e).message}`);
-            return null;
+            infos.push(await getFileInfo(pdfPath));
+          } else if (isOfficePath(p)) {
+            infos.push(await getFileInfo(await officeToPdf(p)));
+          } else if (existing.has(p)) {
+            infos.push(null); // already loaded
+          } else {
+            infos.push(await getFileInfo(p));
           }
-        }),
-      );
+        } catch (e) {
+          errors.push(`${baseName(p)}: ${toAppError(e).message}`);
+          infos.push(null);
+        }
+      }
       const valid = infos.filter((i): i is FileInfo => !!i && i.isValidPdf);
       const invalid = infos
         .filter((i): i is FileInfo => !!i && !i.isValidPdf)
@@ -86,13 +108,14 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
         return {
           files,
           activeIndex: wasEmpty && files.length > 0 ? 0 : state.activeIndex,
-          loading: false,
         };
       });
       return { added: valid.length, invalid, notPdf, errors };
     } catch {
-      set({ loading: false });
       return { added: 0, invalid: [], notPdf, errors };
+    } finally {
+      activeAddOperations -= 1;
+      if (activeAddOperations === 0) set({ loading: false });
     }
   },
 

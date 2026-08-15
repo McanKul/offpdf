@@ -67,7 +67,14 @@ function FileChip({
  * lets you add more, remove, and — when `selectable` — pick the active file that
  * single-file tools act on. Loaded files persist across tools.
  */
-export function WorkspaceFilePicker({ selectable = true }: { selectable?: boolean }) {
+export function WorkspaceFilePicker({
+  selectable = true,
+  onBeforeRemove,
+}: {
+  selectable?: boolean;
+  /** Return false to keep the file. May be async (e.g. confirm discard). */
+  onBeforeRemove?: (index: number) => boolean | Promise<boolean>;
+}) {
   const files = useWorkspace((s) => s.files);
   const activeIndex = useWorkspace((s) => s.activeIndex);
   const addPaths = useWorkspace((s) => s.addPaths);
@@ -75,6 +82,13 @@ export function WorkspaceFilePicker({ selectable = true }: { selectable?: boolea
   const setActive = useWorkspace((s) => s.setActive);
   const loading = useWorkspace((s) => s.loading);
   const { toast } = useToast();
+
+  const remove = (index: number) => {
+    void (async () => {
+      if (onBeforeRemove && (await onBeforeRemove(index)) === false) return;
+      removeAt(index);
+    })();
+  };
 
   const add = async (paths: string[]) => {
     const r = await addPaths(paths);
@@ -116,7 +130,7 @@ export function WorkspaceFilePicker({ selectable = true }: { selectable?: boolea
           active={i === activeIndex}
           selectable={selectable}
           onSelect={() => setActive(i)}
-          onRemove={() => removeAt(i)}
+          onRemove={() => remove(i)}
         />
       ))}
       {loading && (

@@ -177,6 +177,28 @@ pub async fn crop_pdf(
 }
 
 #[tauri::command]
+pub async fn edit_pdf_overlays(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, JobRegistry>,
+    job_id: String,
+    output_path: String,
+    groups: Vec<PageGroup>,
+    document: crate::pdf_engine::edit_overlay::EditDocumentIn,
+) -> Result<JobResult, AppError> {
+    let handle = registry.register(&job_id);
+    let app2 = app.clone();
+    let jid = job_id.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::pdf_engine::edit_overlay::edit_pdf_overlays(&app2, &handle, &jid, &groups, &output_path, &document)
+    })
+    .await
+    .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
+    registry.remove(&job_id);
+    let output_paths = res?;
+    Ok(completed(&app, job_id, output_paths))
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn stamp_pdf(
     app: tauri::AppHandle,

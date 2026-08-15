@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Private PDF tools that run entirely on your computer.</strong><br>
-  22 tools · No uploads · No account · No telemetry · Works offline
+  23 tools · No uploads · No account · No telemetry · Works offline
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <strong><a href="https://github.com/McanKul/offpdf/releases/latest">Download the latest release</a></strong>
+  <strong><a href="#downloads">View downloads</a></strong>
   · <a href="https://offpdf.com">Visit offpdf.com</a>
   · <a href="./CONTRIBUTING.md">Contribute</a>
 </p>
@@ -39,7 +39,7 @@ service in the middle.
 - **One focused toolbox.** Organize, convert, compress, OCR, protect, and repair PDFs.
 - **Open and inspectable.** The app and its privacy model are available here under MIT.
 
-## 22 PDF tools
+## 23 PDF tools
 
 | Organize | Convert | Optimize & secure |
 | --- | --- | --- |
@@ -50,6 +50,7 @@ service in the middle.
 | Watermark | PDF/A (archive) | Edit metadata |
 | Crop pages | PDF to text | |
 | Stamp / Sign | | |
+| Edit PDF | | |
 | Poster / tile print | | |
 | N-up / Booklet | | |
 | Compare PDFs | | |
@@ -59,8 +60,8 @@ service in the middle.
 
 | Platform | Package | Status |
 | --- | --- | --- |
-| Windows x64 | [Download v0.2.2 setup](https://github.com/McanKul/offpdf/releases/download/v0.2.2/OffPDF_0.2.2_x64-setup.exe) | Available; currently unsigned, so SmartScreen may warn |
-| macOS 11+ · Apple Silicon | [Download v0.2.2 DMG](https://github.com/McanKul/offpdf/releases/download/v0.2.2/OffPDF_0.2.2_aarch64.dmg) | Signed and notarized |
+| Windows x64 | New package not currently published | v0.3 is withheld while Authenticode signing is prepared; older unsigned builds remain in release history |
+| macOS 11+ · Apple Silicon | [Download from the latest release](https://github.com/McanKul/offpdf/releases/latest) | Signed and notarized |
 | Intel Mac / Linux | [Build from source](#development) | No published package yet |
 
 The Windows installer is large because it includes the local engines needed to
@@ -69,6 +70,9 @@ Tesseract; LibreOffice is optional and only needed for Office and PDF/A tools.
 
 All published binaries are available on the
 [Releases page](https://github.com/McanKul/offpdf/releases).
+
+See the [code signing policy](./CODE_SIGNING_POLICY.md) for how official release
+artifacts are built, approved, and verified.
 
 ## Privacy model
 

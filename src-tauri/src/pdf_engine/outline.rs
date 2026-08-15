@@ -12,22 +12,7 @@ const MAX_OUTLINE_BYTES: u64 = 400 * 1024 * 1024;
 const MAX_ITEMS: usize = 5000;
 
 fn decode_title(obj: &Object) -> String {
-    let bytes = match obj {
-        Object::String(b, _) => b,
-        _ => return String::new(),
-    };
-    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
-        // UTF-16BE
-        let u16s: Vec<u16> = bytes[2..]
-            .chunks(2)
-            .filter(|c| c.len() == 2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
-            .collect();
-        String::from_utf16_lossy(&u16s).trim().to_string()
-    } else {
-        // PDFDocEncoding ≈ Latin-1 for the common range
-        bytes.iter().map(|&b| b as char).collect::<String>().trim().to_string()
-    }
+    lopdf::decode_text_string(obj).unwrap_or_default().trim().to_string()
 }
 
 /// Resolve an outline item's destination to a 1-based page number, if possible.
@@ -112,4 +97,28 @@ pub fn extract(path: &str) -> Result<Vec<OutlineItem>, AppError> {
         walk(&doc, first, 0, &page_no, &mut out);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_title;
+    use lopdf::{Object, StringFormat};
+
+    #[test]
+    fn pdf_doc_encoding_special_bytes() {
+        let per_mille = Object::String(vec![0x8B], StringFormat::Literal);
+        assert_eq!(decode_title(&per_mille), "‰");
+        let euro = Object::String(vec![0xA0], StringFormat::Literal);
+        assert_eq!(decode_title(&euro), "€");
+    }
+
+    #[test]
+    fn utf16be_title_decodes() {
+        let mut bytes = vec![0xFE, 0xFF];
+        for unit in "Başlık".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_be_bytes());
+        }
+        let title = Object::String(bytes, StringFormat::Literal);
+        assert_eq!(decode_title(&title), "Başlık");
+    }
 }

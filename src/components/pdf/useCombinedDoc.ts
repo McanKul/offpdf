@@ -2,7 +2,17 @@
  * file, in file order. Used by the cross-document arrange tools. */
 import { useMemo } from "react";
 import { useWorkspace } from "@/state/workspaceStore";
-import type { PageGroup, PagePick, PageRef } from "@/lib/types";
+import type { PageGroup, PagePick, PageRef, WorkspaceFile } from "@/lib/types";
+
+/** Stable page identity: `${file.uid}#${1-based page}`. */
+export function pageKeysForFiles(files: WorkspaceFile[]): string[] {
+  const keys: string[] = [];
+  for (const f of files) {
+    const n = f.pageCount ?? 0;
+    for (let i = 1; i <= n; i++) keys.push(`${f.uid}#${i}`);
+  }
+  return keys;
+}
 
 export function useCombinedDoc(): PageRef[] {
   const files = useWorkspace((s) => s.files);

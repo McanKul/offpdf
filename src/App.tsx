@@ -29,6 +29,7 @@ import { NupPage } from "@/features/nup/NupPage";
 import { BlankPage } from "@/features/blank/BlankPage";
 import { MetadataPage } from "@/features/metadata/MetadataPage";
 import { TextExportPage } from "@/features/text-export/TextExportPage";
+import { EditPdfPage } from "@/features/edit-pdf/EditPdfPage";
 
 export function App() {
   return (
@@ -60,6 +61,8 @@ export function App() {
               <Route path="/tools/blank-pages" element={<BlankPage />} />
               <Route path="/tools/metadata" element={<MetadataPage />} />
               <Route path="/tools/text-export" element={<TextExportPage />} />
+              <Route path="/tools/edit-pdf" element={<EditPdfPage />} />
+              <Route path="/dev/editor-canvas" element={<Navigate to="/tools/edit-pdf" replace />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/about" element={<AboutPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />

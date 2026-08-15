@@ -12,7 +12,7 @@
 use crate::error::AppError;
 use crate::models::JobHandle;
 use crate::utils::temp;
-use lopdf::{Dictionary, Document, Object};
+use lopdf::{Dictionary, Document, Object, StringFormat};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -36,19 +36,13 @@ const FIELD_KEYS: [&[u8]; 6] = [
     b"Title", b"Author", b"Subject", b"Keywords", b"Creator", b"Producer",
 ];
 
-/// Decode a PDF text string: UTF-16BE when it starts with the FE FF BOM,
-/// otherwise PDFDocEncoding ≈ Latin-1 (same logic as `outline::decode_title`).
+/// Decode a PDF text string via lopdf: UTF-16BE with a BOM, otherwise
+/// PDFDocEncoding.
 pub(crate) fn decode_pdf_string(bytes: &[u8]) -> String {
-    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
-        let u16s: Vec<u16> = bytes[2..]
-            .chunks(2)
-            .filter(|c| c.len() == 2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
-            .collect();
-        String::from_utf16_lossy(&u16s).trim().to_string()
-    } else {
-        bytes.iter().map(|&b| b as char).collect::<String>().trim().to_string()
-    }
+    lopdf::decode_text_string(&Object::String(bytes.to_vec(), StringFormat::Literal))
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// Encode a text value for a PDF string object: plain bytes when pure ASCII,
@@ -234,5 +228,15 @@ mod tests {
     fn latin1_bytes_decode() {
         // PDFDocEncoding ≈ Latin-1: 0xE9 = é
         assert_eq!(decode_pdf_string(&[0x63, 0x61, 0x66, 0xE9]), "café");
+    }
+
+    #[test]
+    fn pdf_doc_encoding_special_bytes() {
+        // 0x8B is U+2030 PER MILLE SIGN, not a control character.
+        assert_eq!(decode_pdf_string(&[0x8B]), "‰");
+        // 0xA0 is U+20AC EURO SIGN, not NBSP.
+        assert_eq!(decode_pdf_string(&[0xA0]), "€");
+        // 0x80 is U+2022 BULLET, another byte that differs from Latin-1.
+        assert_eq!(decode_pdf_string(&[0x80]), "•");
     }
 }
