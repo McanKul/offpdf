@@ -46,10 +46,10 @@ export function validateOutputName(name: string): NameValidation {
   if (RESERVED_WINDOWS_NAMES.test(trimmed)) {
     return { ok: false, error: `“${trimmed}” is a reserved name on Windows.` };
   }
-  if (trimmed.length > 200) {
+  const withExt = /\.pdf$/i.test(trimmed) ? trimmed : `${trimmed}.pdf`;
+  if (withExt.length > 200) {
     return { ok: false, error: "That file name is too long." };
   }
-  const withExt = /\.pdf$/i.test(trimmed) ? trimmed : `${trimmed}.pdf`;
   return { ok: true, value: withExt };
 }
 
