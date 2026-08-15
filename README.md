@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <strong><a href="https://github.com/McanKul/offpdf/releases/latest">Download the latest release</a></strong>
+  <strong><a href="#downloads">View downloads</a></strong>
   · <a href="https://offpdf.com">Visit offpdf.com</a>
   · <a href="./CONTRIBUTING.md">Contribute</a>
 </p>
@@ -60,7 +60,7 @@ service in the middle.
 
 | Platform | Package | Status |
 | --- | --- | --- |
-| Windows x64 | [Download from the latest release](https://github.com/McanKul/offpdf/releases/latest) | Available; currently unsigned, so SmartScreen may warn |
+| Windows x64 | New package not currently published | v0.3 is withheld while Authenticode signing is prepared; older unsigned builds remain in release history |
 | macOS 11+ · Apple Silicon | [Download from the latest release](https://github.com/McanKul/offpdf/releases/latest) | Signed and notarized |
 | Intel Mac / Linux | [Build from source](#development) | No published package yet |
 
@@ -70,6 +70,9 @@ Tesseract; LibreOffice is optional and only needed for Office and PDF/A tools.
 
 All published binaries are available on the
 [Releases page](https://github.com/McanKul/offpdf/releases).
+
+See the [code signing policy](./CODE_SIGNING_POLICY.md) for how official release
+artifacts are built, approved, and verified.
 
 ## Privacy model
 

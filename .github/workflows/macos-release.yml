@@ -39,6 +39,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Smoke test HEIC and HEIF conversion
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib heic_and_heif_complete_the_jpeg_and_pdf_pipeline
+
       - name: Install macOS PDF engines
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
@@ -89,33 +92,7 @@ jobs:
 
       - name: Build signed and notarized DMG
         uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: OffPDF v__VERSION__
-          releaseBody: |
-            OffPDF now includes 23 private PDF tools that run locally without
-            uploads, accounts, or telemetry.
-
-            Highlights:
-            - Edit PDF adds text, images, shapes, lines, and freehand drawings
-              without rasterizing the original document.
-            - Cropped, rotated, and scaled pages preserve source content and
-              overlay placement.
-            - Reader accessibility, output-name validation, and metadata text
-              decoding are improved.
-
-            Thanks to @nonamexishere, @YuukiRitoTeng, @strongdan, and @joyheroes
-            for contributing to this release.
-
-            Packages:
-            - Windows x64 installer (currently unsigned; SmartScreen may warn)
-            - Signed and notarized DMG for Apple Silicon Macs
-
-            See CHANGELOG.md for full details.
-          releaseDraft: true
-          prerelease: false
           args: --target aarch64-apple-darwin --bundles dmg
 
       - name: Verify application signature and notarization ticket
@@ -135,3 +112,43 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app_path"
           spctl --assess --type execute --verbose=2 "$app_path"
           xcrun stapler validate "$app_path"
+
+      - name: Attach verified DMG to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
+          notes_path=".github/release-notes/${tag}.md"
+          dmg_path="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -f "$notes_path"
+          test -n "$dmg_path"
+
+          if gh release view "$tag" --json isDraft >/dev/null 2>&1; then
+            is_draft="$(gh release view "$tag" --json isDraft --jq '.isDraft')"
+            if [[ "$is_draft" != "true" ]]; then
+              echo "Refusing to replace assets on published release $tag." >&2
+              exit 1
+            fi
+            tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha')"
+            if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+              echo "Refusing to attach a build from $GITHUB_SHA to $tag at $tag_sha." >&2
+              exit 1
+            fi
+            gh release upload "$tag" "$dmg_path" --clobber
+            gh release edit "$tag" \
+              --title "OffPDF ${tag}" \
+              --notes-file "$notes_path"
+          else
+            if tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha' 2>/dev/null)"; then
+              if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+                echo "Refusing to create a release for $tag at $tag_sha from $GITHUB_SHA." >&2
+                exit 1
+              fi
+            fi
+            gh release create "$tag" "$dmg_path" \
+              --draft \
+              --target "$GITHUB_SHA" \
+              --title "OffPDF ${tag}" \
+              --notes-file "$notes_path"
+          fi

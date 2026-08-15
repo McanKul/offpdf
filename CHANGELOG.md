@@ -25,10 +25,15 @@ All notable project changes should be documented here.
 - The full-page reader now exposes accessible names for icon-only controls, search, and page thumbnails.
 - Output file names enforce the 200-character limit after adding the `.pdf` extension.
 - Metadata and bookmark titles decode PDFDocEncoding punctuation and symbols correctly.
+- HEIC/HEIF imports validate compressed size and image dimensions before native decoding, avoid an extra full-size RGB copy, and run image conversions serially so large batches cannot multiply peak memory use.
 
 ### Contributors
 
 - Thank you to @nonamexishere, @YuukiRitoTeng, @strongdan, and @joyheroes for their contributions to this release.
+
+### Distribution
+
+- New Windows packages are withheld until the Authenticode signing and verification workflow is ready. The manual Windows workflow now builds and smoke-tests locally without attaching an unsigned installer to a GitHub Release.
 
 ## 0.2.2
 

@@ -16,8 +16,10 @@ use crate::error::AppError;
 use crate::models::{JobHandle, JobUpdate};
 use crate::pdf_engine::render;
 use crate::utils::temp;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
 
@@ -139,12 +141,89 @@ pub(crate) struct PageImage {
     pub dpi: u32,
 }
 
+const MAX_HEIF_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_HEIF_EDGE: u32 = 8_192;
+const MAX_HEIF_PIXELS: u64 = 32_000_000;
+const MAX_HEIF_DECODED_BYTES: u64 = 128 * 1024 * 1024;
+
+struct BoundedReader<R> {
+    inner: R,
+    remaining: u64,
+    exceeded: Arc<AtomicBool>,
+}
+
+impl<R> BoundedReader<R> {
+    fn new(inner: R, limit: u64, exceeded: Arc<AtomicBool>) -> Self {
+        Self {
+            inner,
+            remaining: limit,
+            exceeded,
+        }
+    }
+}
+
+impl<R: Read> Read for BoundedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            let mut extra = [0u8; 1];
+            return match self.inner.read(&mut extra) {
+                Ok(0) => Ok(0),
+                Ok(_) => {
+                    self.exceeded.store(true, Ordering::Relaxed);
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "HEIC/HEIF file exceeds the safe byte limit",
+                    ))
+                }
+                Err(error) => Err(error),
+            };
+        }
+
+        let allowed = usize::try_from(self.remaining.min(buf.len() as u64)).unwrap_or(buf.len());
+        let read = self.inner.read(&mut buf[..allowed])?;
+        self.remaining -= read as u64;
+        Ok(read)
+    }
+}
+
+fn heif_too_large() -> AppError {
+    AppError::new(
+        "IMAGE_TOO_LARGE",
+        "Image is too large",
+        "This HEIC/HEIF image is too large to convert safely.",
+    )
+    .with_suggestion("Export a smaller copy of the photo and try again.")
+}
+
+fn validate_heif_limits(
+    file_len: u64,
+    width: u32,
+    height: u32,
+    decoded_bytes: u64,
+) -> Result<(), AppError> {
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(heif_too_large)?;
+    if file_len > MAX_HEIF_FILE_BYTES
+        || width == 0
+        || height == 0
+        || width > MAX_HEIF_EDGE
+        || height > MAX_HEIF_EDGE
+        || pixels > MAX_HEIF_PIXELS
+        || decoded_bytes > MAX_HEIF_DECODED_BYTES
+    {
+        return Err(heif_too_large());
+    }
+    Ok(())
+}
+
 /// Wrap a single uploaded image into a one-page PDF (so it can be previewed,
 /// merged and edited exactly like any PDF). JPEGs are embedded losslessly; other
 /// formats are decoded and re-encoded to JPEG. Returns the output PDF path.
 pub fn image_to_pdf(app: &tauri::AppHandle, input: &str) -> Result<String, AppError> {
-    use std::io::BufWriter;
-
     let in_path = Path::new(input);
     if !in_path.is_file() {
         return Err(AppError::new(
@@ -155,6 +234,13 @@ pub fn image_to_pdf(app: &tauri::AppHandle, input: &str) -> Result<String, AppEr
     }
 
     let dir = temp::root(app)?.join("images").join(hash_hex(input));
+    let out_pdf = image_to_pdf_in_dir(in_path, &dir)?;
+    Ok(out_pdf.to_string_lossy().to_string())
+}
+
+fn image_to_pdf_in_dir(in_path: &Path, dir: &Path) -> Result<PathBuf, AppError> {
+    use std::io::BufWriter;
+
     std::fs::create_dir_all(&dir)
         .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
 
@@ -184,7 +270,8 @@ pub fn image_to_pdf(app: &tauri::AppHandle, input: &str) -> Result<String, AppEr
                     .with_suggestion("Supported: HEIC, HEIF, PNG, JPEG, GIF, BMP, WebP, TIFF.")
             })?
         };
-        let rgb = img.to_rgb8();
+        // Consume an already-RGB8 decode instead of cloning its full pixel buffer.
+        let rgb = img.into_rgb8();
         let (w, h) = (rgb.width(), rgb.height());
         let file = std::fs::File::create(&jpg_path)
             .map_err(|e| AppError::io("Could not write the converted image.", e))?;
@@ -214,17 +301,73 @@ pub fn image_to_pdf(app: &tauri::AppHandle, input: &str) -> Result<String, AppEr
         dpi: 96,
     }];
     write_image_pdf(&out_pdf_str, &pages)?;
-    Ok(out_pdf_str)
+    Ok(out_pdf)
 }
 
 /// Decode the primary image in a HEIC/HEIF container with the bundled libheif.
 fn decode_heif(path: &Path) -> Result<image::DynamicImage, AppError> {
-    let bytes = std::fs::read(path)
+    use image::ImageDecoder;
+
+    let file = std::fs::File::open(path)
         .map_err(|e| AppError::io("Could not read the HEIC/HEIF image.", e))?;
-    heif::decode(&bytes).map_err(|e| {
-        AppError::new("INVALID_IMAGE", "Could not decode this HEIC/HEIF image", e.to_string())
+    let metadata = file
+        .metadata()
+        .map_err(|e| AppError::io("Could not inspect the HEIC/HEIF image.", e))?;
+    if !metadata.file_type().is_file() {
+        return Err(AppError::new(
+            "INVALID_IMAGE",
+            "Could not decode this HEIC/HEIF image",
+            "The selected path is not a regular image file.",
+        ));
+    }
+    if metadata.len() > MAX_HEIF_FILE_BYTES {
+        return Err(heif_too_large());
+    }
+
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let reader = BoundedReader::new(file, MAX_HEIF_FILE_BYTES, exceeded.clone());
+    let decoder = heif::HeifDecoder::new(reader).map_err(|error| {
+        if exceeded.load(Ordering::Relaxed) {
+            heif_too_large()
+        } else {
+            AppError::new(
+                "INVALID_IMAGE",
+                "Could not decode this HEIC/HEIF image",
+                error.to_string(),
+            )
             .with_suggestion("Try exporting the original photo again if the file is incomplete.")
-    })
+        }
+    })?;
+
+    // Inspect the decoded layout before libheif allocates any pixel planes.
+    let (width, height) = decoder.dimensions();
+    let color = decoder.color_type();
+    let decoded_bytes = decoder.total_bytes();
+    let expected_bytes = u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(u64::from(color.bytes_per_pixel()));
+    if decoded_bytes != expected_bytes {
+        return Err(AppError::new(
+            "INVALID_IMAGE",
+            "Could not decode this HEIC/HEIF image",
+            "The image reported an inconsistent decoded size.",
+        ));
+    }
+    validate_heif_limits(metadata.len(), width, height, decoded_bytes)?;
+
+    let image = image::DynamicImage::from_decoder(decoder.with_threads(1)).map_err(|error| {
+        AppError::new(
+            "INVALID_IMAGE",
+            "Could not decode this HEIC/HEIF image",
+            error.to_string(),
+        )
+        .with_suggestion("Try exporting the original photo again if the file is incomplete.")
+    })?;
+    let image_bytes = u64::from(image.width())
+        .saturating_mul(u64::from(image.height()))
+        .saturating_mul(u64::from(image.color().bytes_per_pixel()));
+    validate_heif_limits(metadata.len(), image.width(), image.height(), image_bytes)?;
+    Ok(image)
 }
 
 /// Render one page to a JPEG at the given DPI/quality. `idx` keeps file names
@@ -489,4 +632,120 @@ fn write_image_pdf(output: &str, pages: &[PageImage]) -> Result<(), AppError> {
     std::fs::write(output, &buf)
         .map_err(|e| AppError::output_not_writable(&format!("{output} ({e})")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_tmp(prefix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sample_heif() -> Vec<u8> {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(64, 64, |x, y| {
+            image::Rgb([(x * 3) as u8, (y * 3) as u8, ((x + y) * 2) as u8])
+        }));
+        heif::encode(&image).expect("encode HEIC fixture")
+    }
+
+    #[test]
+    fn heif_limits_accept_normal_photos_and_reject_oversize_headers() {
+        assert!(validate_heif_limits(8 * 1024 * 1024, 6_000, 4_000, 72_000_000).is_ok());
+
+        for result in [
+            validate_heif_limits(MAX_HEIF_FILE_BYTES + 1, 10, 10, 300),
+            validate_heif_limits(100, MAX_HEIF_EDGE + 1, 10, 300),
+            validate_heif_limits(100, 8_000, 4_001, 300),
+            validate_heif_limits(100, 0, 10, 0),
+        ] {
+            assert_eq!(result.unwrap_err().code, "IMAGE_TOO_LARGE");
+        }
+    }
+
+    #[test]
+    fn heif_limits_include_high_depth_and_alpha_decode_buffers() {
+        let twelve_megapixels = 12_000_000;
+        // libheif exposes 10/12-bit samples as 16-bit RGB(A).
+        assert!(validate_heif_limits(10_000_000, 4_000, 3_000, twelve_megapixels * 6).is_ok());
+        assert!(validate_heif_limits(10_000_000, 4_000, 3_000, twelve_megapixels * 8).is_ok());
+
+        for decoded_bytes in [32_000_000 * 6, 32_000_000 * 8, MAX_HEIF_DECODED_BYTES + 1] {
+            assert_eq!(
+                validate_heif_limits(10_000_000, 8_000, 4_000, decoded_bytes)
+                    .unwrap_err()
+                    .code,
+                "IMAGE_TOO_LARGE"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_reader_detects_growth_past_its_limit() {
+        let exceeded = Arc::new(AtomicBool::new(false));
+        let source = std::io::Cursor::new(vec![0u8; 9]);
+        let mut reader = BoundedReader::new(source, 8, exceeded.clone());
+        let mut output = Vec::new();
+
+        assert!(reader.read_to_end(&mut output).is_err());
+        assert_eq!(output.len(), 8);
+        assert!(exceeded.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn decode_heif_rejects_invalid_and_truncated_files_without_panicking() {
+        let dir = unique_tmp("offpdf-heif-invalid");
+
+        let invalid = dir.join("invalid.heic");
+        std::fs::write(&invalid, b"not a HEIC container").unwrap();
+        assert_eq!(decode_heif(&invalid).unwrap_err().code, "INVALID_IMAGE");
+
+        let mut truncated_bytes = sample_heif();
+        truncated_bytes.truncate(truncated_bytes.len() / 2);
+        let truncated = dir.join("truncated.heif");
+        std::fs::write(&truncated, truncated_bytes).unwrap();
+        assert_eq!(decode_heif(&truncated).unwrap_err().code, "INVALID_IMAGE");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn decode_heif_rejects_oversize_file_before_reading_it() {
+        let dir = unique_tmp("offpdf-heif-large");
+        let path = dir.join("large.heic");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_HEIF_FILE_BYTES + 1).unwrap();
+        drop(file);
+
+        assert_eq!(decode_heif(&path).unwrap_err().code, "IMAGE_TOO_LARGE");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn heic_and_heif_complete_the_jpeg_and_pdf_pipeline() {
+        let dir = unique_tmp("offpdf-heif-pdf");
+        let bytes = sample_heif();
+
+        for ext in ["heic", "heif"] {
+            let input = dir.join(format!("photo.{ext}"));
+            let work = dir.join(format!("work-{ext}"));
+            std::fs::write(&input, &bytes).unwrap();
+
+            let output = image_to_pdf_in_dir(&input, &work).expect("convert HEIF image to PDF");
+            let document = lopdf::Document::load(&output).expect("load generated PDF");
+            assert_eq!(document.get_pages().len(), 1);
+            assert!(work.join("page.jpg").is_file());
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
