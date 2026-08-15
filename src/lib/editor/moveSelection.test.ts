@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { makeRectObject } from "./editReducer";
-import { moveSelectedRects } from "./moveSelection";
+import { moveSelectedRects, selectedIdsOnPage } from "./moveSelection";
 
 describe("moveSelectedRects", () => {
   it("M1: drag on the active page does not move selected objects on other pages", () => {
@@ -15,5 +15,12 @@ describe("moveSelectedRects", () => {
     expect(movedA?.rect).toEqual({ x: 25, y: 15, w: 30, h: 40 });
     expect(movedB?.rect).toEqual(bRect);
     expect(movedB?.pageIndex).toBe(1);
+  });
+
+  it("keeps selection-driven actions on the active page", () => {
+    const a = makeRectObject("a", 0, { x: 10, y: 20, w: 30, h: 40 });
+    const b = makeRectObject("b", 1, { x: 50, y: 60, w: 70, h: 80 });
+
+    expect(selectedIdsOnPage([a, b], ["a", "b", "missing"], 1)).toEqual(["b"]);
   });
 });

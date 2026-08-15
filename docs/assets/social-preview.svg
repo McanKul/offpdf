@@ -36,13 +36,13 @@
   </text>
 
   <text x="64" y="392" fill="#aeb8c8" font-family="Arial, Helvetica, sans-serif" font-size="24">
-    <tspan x="64" dy="0">22 open-source desktop tools.</tspan>
+    <tspan x="64" dy="0">23 open-source desktop tools.</tspan>
     <tspan x="64" dy="35">No upload, account, or telemetry.</tspan>
   </text>
 
   <g transform="translate(64 488)" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700">
     <rect width="128" height="44" rx="22" fill="#163357" stroke="#2563eb" stroke-opacity=".6"/>
-    <text x="64" y="28" fill="#bfdbfe" text-anchor="middle">22 tools</text>
+    <text x="64" y="28" fill="#bfdbfe" text-anchor="middle">23 tools</text>
     <rect x="140" width="112" height="44" rx="22" fill="#10372f" stroke="#2dd4bf" stroke-opacity=".5"/>
     <text x="196" y="28" fill="#99f6e4" text-anchor="middle">Offline</text>
     <rect x="264" width="86" height="44" rx="22" fill="#252938" stroke="#64748b" stroke-opacity=".5"/>

@@ -9,10 +9,8 @@ import { isTauriRuntime } from "@/lib/tauriEnv";
 
 /**
  * Click to open the native file dialog, or drag-and-drop PDFs onto it.
- * Only file *paths* are produced; bytes never enter the webview.
- *
- * Requires the Tauri desktop app (`npm run tauri:dev`). Browser-only Vite does
- * not expose OS paths or the native picker.
+ * The native picker requires the desktop app because a browser cannot expose
+ * local file paths to OffPDF.
  */
 export function Dropzone({
   multiple,
@@ -69,10 +67,8 @@ export function Dropzone({
     if (!inTauri) {
       toast({
         title: "Use the desktop app",
-        description:
-          "File pick and drop need OffPDF’s desktop shell. Run: npm run tauri:dev — then open Editor canvas from the sidebar. A normal browser tab cannot access local file paths.",
+        description: "File selection is available in the OffPDF desktop app.",
         variant: "error",
-        duration: 8000,
       });
       return;
     }
@@ -128,7 +124,7 @@ export function Dropzone({
         {inTauri
           ? (hint ??
             "PDF, images (PNG/JPG…), Word/Excel/PowerPoint — processed locally, never uploaded.")
-          : "Desktop app required — run npm run tauri:dev (browser cannot open local files)."}
+          : "Open this page in the OffPDF desktop app to choose local files."}
       </div>
     </div>
   );

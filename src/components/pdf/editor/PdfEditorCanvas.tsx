@@ -2,7 +2,14 @@
  * Reusable visual PDF editor canvas.
  * Renders a page, hosts an SVG draft overlay, object list, zoom/page chrome.
  */
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { Spinner } from "@/components/ui/Spinner";
@@ -20,6 +27,7 @@ import {
   pdfRectToViewport,
   placeImagePdfRect,
   rgbToHex,
+  selectedIdsOnPage,
   stageJustify,
 } from "@/lib/editor";
 import { PageSurface, type PageLayout } from "./PageSurface";
@@ -104,6 +112,20 @@ export function PdfEditorCanvas({
     strokeWidth: 1.5,
     opacity: 1,
   });
+  const pageObjects = useMemo(
+    () => session.objects.filter((object) => object.pageIndex === pageIndex),
+    [pageIndex, session.objects],
+  );
+  const pageSelectedIds = useMemo(
+    () => selectedIdsOnPage(session.objects, session.selectedIds, pageIndex),
+    [pageIndex, session.objects, session.selectedIds],
+  );
+
+  useEffect(() => {
+    setEditingTextId(null);
+    setColorPick(null);
+    setPickCursor(null);
+  }, [pageIndex]);
 
   useEffect(() => {
     const el = stageRef.current;
@@ -189,13 +211,14 @@ export function PdfEditorCanvas({
   };
 
   const copySelection = useCallback(() => {
-    const sel = session.objects.filter((o) => session.selectedIds.includes(o.id));
+    const activeIds = new Set(selectedIdsOnPage(session.objects, session.selectedIds, pageIndex));
+    const sel = session.objects.filter((object) => activeIds.has(object.id));
     if (sel.length === 0) return false;
     clipboardRef.current = sel.map(cloneObject);
     pasteGen.current = 1;
     setCanPaste(true);
     return true;
-  }, [session.objects, session.selectedIds]);
+  }, [pageIndex, session.objects, session.selectedIds]);
 
   const pasteClipboard = useCallback(() => {
     if (clipboardRef.current.length === 0) return;
@@ -249,7 +272,7 @@ export function PdfEditorCanvas({
         return;
       }
       if (mod && e.key.toLowerCase() === "d") {
-        if (session.selectedIds.length === 0) return;
+        if (pageSelectedIds.length === 0) return;
         e.preventDefault();
         copySelection();
         pasteClipboard();
@@ -270,30 +293,30 @@ export function PdfEditorCanvas({
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (session.selectedIds.length === 0) return;
+        if (pageSelectedIds.length === 0) return;
         e.preventDefault();
-        session.remove(session.selectedIds);
+        session.remove(pageSelectedIds);
         return;
       }
-      if (session.selectedIds.length === 0) return;
+      if (pageSelectedIds.length === 0) return;
       const step = e.shiftKey ? 10 : 1;
       if (e.key === "ArrowLeft") {
         e.preventDefault();
-        session.nudgeSelected(-step, 0);
+        session.nudgeSelected(-step, 0, pageIndex);
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        session.nudgeSelected(step, 0);
+        session.nudgeSelected(step, 0, pageIndex);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        session.nudgeSelected(0, step);
+        session.nudgeSelected(0, step, pageIndex);
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
-        session.nudgeSelected(0, -step);
+        session.nudgeSelected(0, -step, pageIndex);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [session, colorPick, copySelection, pasteClipboard, shapeOpen]);
+  }, [session, colorPick, copySelection, pageIndex, pageSelectedIds, pasteClipboard, shapeOpen]);
 
   useEffect(() => {
     const stopSpacePan = () => {
@@ -327,7 +350,7 @@ export function PdfEditorCanvas({
     };
   }, []);
 
-  const selected = session.objects.find((o) => o.id === session.selectedIds[0]) ?? null;
+  const selected = pageObjects.find((object) => object.id === pageSelectedIds[0]) ?? null;
   const panMode = !colorPick && (tool === "hand" || spacePan);
 
   const onStagePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -403,7 +426,7 @@ export function PdfEditorCanvas({
           size="sm"
           variant="ghost"
           onClick={copySelection}
-          disabled={session.selectedIds.length === 0}
+          disabled={pageSelectedIds.length === 0}
           title="Copy (Ctrl/Cmd+C)"
           aria-label="Copy"
         >
@@ -485,22 +508,22 @@ export function PdfEditorCanvas({
         <aside className="pdf-editor__sidebar">
           <div className="pdf-editor__sidebar-title">Objects</div>
           <ObjectList
-            objects={session.objects}
-            selectedIds={session.selectedIds}
+            objects={pageObjects}
+            selectedIds={pageSelectedIds}
             onSelect={session.select}
             onDelete={session.remove}
           />
-          {selected && session.selectedIds.length > 1 && (
+          {selected && pageSelectedIds.length > 1 && (
             <div className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>
-              {session.selectedIds.length} selected — drag to move together
+              {pageSelectedIds.length} selected — drag to move together
             </div>
           )}
-          {selected && session.selectedIds.length === 1 && (
+          {selected && pageSelectedIds.length === 1 && (
             <ObjectInspector
               obj={selected}
               picking={colorPick}
-              layerIndex={session.objects.filter((o) => o.pageIndex === selected.pageIndex).findIndex((o) => o.id === selected.id) + 1}
-              layerCount={session.objects.filter((o) => o.pageIndex === selected.pageIndex).length}
+              layerIndex={pageObjects.findIndex((object) => object.id === selected.id) + 1}
+              layerCount={pageObjects.length}
               onChange={(patch) => {
                 session.updateObject(selected.id, patch);
                 if (isClosedShapeObject(selected)) {
@@ -557,8 +580,8 @@ export function PdfEditorCanvas({
               {layout && (
                 <EditorOverlay
                   layout={layout}
-                  objects={session.objects}
-                  selectedIds={session.selectedIds}
+                  objects={pageObjects}
+                  selectedIds={pageSelectedIds}
                   pageIndex={pageIndex}
                   tool={panMode ? "hand" : tool}
                   createStyle={lastShapeStyle.current}
@@ -594,7 +617,7 @@ export function PdfEditorCanvas({
               )}
               {editingTextId && layout && (
                 <TextEditor
-                  obj={session.objects.find((o) => o.id === editingTextId)}
+                  obj={pageObjects.find((object) => object.id === editingTextId)}
                   layout={layout}
                   onChange={(content) => session.updateObject(editingTextId, { content } as Partial<EditObject>)}
                   onClose={() => setEditingTextId(null)}

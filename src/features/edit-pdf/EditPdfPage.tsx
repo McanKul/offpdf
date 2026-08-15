@@ -118,7 +118,7 @@ export function EditPdfPage() {
     );
   };
 
-  const canStart = refs.length > 0 && !!folder && doc.objects.length > 0 && !job.isBusy && inTauri;
+  const canStart = !job.isBusy && inTauri;
 
   return (
     <ToolPage tool={tool}>
@@ -131,12 +131,22 @@ export function EditPdfPage() {
         )}
       </ToolSection>
 
-      {!inTauri && (
-        <Alert variant="warning">Open the desktop app to edit pages and save a new PDF.</Alert>
-      )}
+      <ToolSection label="Output">
+        <div className="col">
+          <Input label="File name" value={name} onChange={(e) => setName(e.target.value)} placeholder="edited.pdf" />
+          <OutputFolderPicker value={folder} onChange={setFolder} />
+          <div className="row">
+            <Button variant="primary" size="lg" onClick={start} disabled={!canStart} loading={job.isBusy} leftIcon={<Icon name="fileText" size={18} />}>
+              Save PDF
+            </Button>
+          </div>
+        </div>
+      </ToolSection>
+
+      <JobStatus job={job} />
 
       {editCanvas === "edit" && refs.length > 0 && (
-        <ToolSection label="Edit" sublabel="Existing page content stays as-is. Draw on top, then save a new file.">
+        <ToolSection label="Edit">
           <PdfEditorCanvas
             sourcePath={current.path}
             sourcePage={current.page}
@@ -154,20 +164,6 @@ export function EditPdfPage() {
         </ToolSection>
       )}
 
-      <ToolSection label="Output">
-        <div className="col">
-          <Input label="File name" value={name} onChange={(e) => setName(e.target.value)} placeholder="edited.pdf" />
-          <OutputFolderPicker value={folder} onChange={setFolder} />
-        </div>
-      </ToolSection>
-
-      <div className="row">
-        <Button variant="primary" size="lg" onClick={start} disabled={!canStart} loading={job.isBusy} leftIcon={<Icon name="fileText" size={18} />}>
-          Save PDF
-        </Button>
-      </div>
-
-      <JobStatus job={job} />
       {disk.modal}
       <Modal
         open={discardPrompt !== null}

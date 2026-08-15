@@ -175,13 +175,13 @@ export function useEditSession(
   }, []);
 
   const nudgeSelected = useCallback(
-    (dx: number, dy: number) => {
+    (dx: number, dy: number, activePageIndex: number) => {
       const ids = state.present.selectedIds;
       if (ids.length === 0) return;
       dispatch({ type: "BEGIN_GESTURE" });
       for (const id of ids) {
         const obj = state.present.objects.find((o) => o.id === id);
-        if (!obj || obj.locked) continue;
+        if (!obj || obj.locked || obj.pageIndex !== activePageIndex) continue;
         const rect = { ...obj.rect, x: obj.rect.x + dx, y: obj.rect.y + dy };
         if (obj.kind === "line") {
           dispatch({

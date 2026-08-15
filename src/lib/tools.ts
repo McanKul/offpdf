@@ -90,9 +90,8 @@ export const TOOLS: ToolMeta[] = [
   {
     id: "editPdf",
     name: "Edit PDF",
-    description: "Add text, images and shapes — original file stays unchanged.",
-    longDescription:
-      "Place text, PNG/JPEG images, rectangles, lines and freehand drawings on the page. Existing text and vectors stay selectable. A new PDF is written; the original is never overwritten.",
+    description: "Add text, images and shapes to a PDF.",
+    longDescription: "Add text, images and shapes to a PDF, then save a new copy.",
     icon: "fileText",
     path: "/tools/edit-pdf",
     category: "Organize",
