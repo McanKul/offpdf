@@ -5,7 +5,7 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 
 ## Current release
 
-- **v0.2.2** is the latest public release, distributed through GitHub Releases
+- **v0.3.0** is the latest public release, distributed through GitHub Releases
   and [offpdf.com](https://offpdf.com).
 - The Windows x64 installer bundles qpdf, Poppler, Tesseract, and LibreOffice so
   the supported workflows run offline. The installer is not code-signed yet.
@@ -38,6 +38,8 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 - Lossy compression rasterizes pages. Use text-preserving compression when text
   selection matters.
 - Complex Office conversions are best effort and may not reproduce every layout.
+- Edit PDF adds new text, images, and shapes as overlays; it does not rewrite
+  existing text or images inside the source document.
 - Auto-update is intentionally not enabled.
 
 ## Later

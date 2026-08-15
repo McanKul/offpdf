@@ -13,6 +13,7 @@ concurrency:
 jobs:
   macos-arm64:
     name: Build, sign, and notarize macOS arm64
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-15
     timeout-minutes: 120
     env:
@@ -94,10 +95,25 @@ jobs:
           tagName: v__VERSION__
           releaseName: OffPDF v__VERSION__
           releaseBody: |
-            Signed and notarized OffPDF build for Apple Silicon Macs.
+            OffPDF now includes 23 private PDF tools that run locally without
+            uploads, accounts, or telemetry.
 
-            Supported: M1, M2, M3, M4 and newer Apple Silicon processors.
-            LibreOffice is optional and only required for Office conversion tools.
+            Highlights:
+            - Edit PDF adds text, images, shapes, lines, and freehand drawings
+              without rasterizing the original document.
+            - Cropped, rotated, and scaled pages preserve source content and
+              overlay placement.
+            - Reader accessibility, output-name validation, and metadata text
+              decoding are improved.
+
+            Thanks to @nonamexishere, @YuukiRitoTeng, @strongdan, and @joyheroes
+            for contributing to this release.
+
+            Packages:
+            - Windows x64 installer (currently unsigned; SmartScreen may warn)
+            - Signed and notarized DMG for Apple Silicon Macs
+
+            See CHANGELOG.md for full details.
           releaseDraft: true
           prerelease: false
           args: --target aarch64-apple-darwin --bundles dmg

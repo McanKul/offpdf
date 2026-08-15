@@ -22,7 +22,7 @@ export function SettingsPage() {
   const [clearing, setClearing] = useState(false);
 
   useEffect(() => {
-    getVersion().then(setVersion).catch(() => setVersion("0.1.0"));
+    getVersion().then(setVersion).catch(() => setVersion("—"));
     getTempDir().then(setTempDir).catch(() => setTempDir(""));
   }, []);
 
@@ -119,7 +119,7 @@ export function SettingsPage() {
             <div className="setting-row__label">App version</div>
             <div className="setting-row__desc">OffPDF — local-first PDF utility.</div>
           </div>
-          <Badge variant="neutral">v{version}</Badge>
+          <Badge variant="neutral">{version === "—" ? version : `v${version}`}</Badge>
         </div>
       </Card>
 
