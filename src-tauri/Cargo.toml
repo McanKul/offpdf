@@ -28,6 +28,9 @@ fs2 = "0.4"
 # Read/write PDF page boxes (used for cropping).
 lopdf = "0.34"
 
+# Glyph metrics for the bundled editor font (Noto Sans).
+ttf-parser = "0.25"
+
 # Decode common image formats so uploaded images can be wrapped into a PDF.
 image = { version = "0.25", default-features = false, features = [
     "jpeg",

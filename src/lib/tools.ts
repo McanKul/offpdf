@@ -88,6 +88,15 @@ export const TOOLS: ToolMeta[] = [
     category: "Organize",
   },
   {
+    id: "editPdf",
+    name: "Edit PDF",
+    description: "Add text, images and shapes to a PDF.",
+    longDescription: "Add text, images and shapes to a PDF, then save a new copy.",
+    icon: "fileText",
+    path: "/tools/edit-pdf",
+    category: "Organize",
+  },
+  {
     id: "poster",
     name: "Poster / tile print",
     description: "Split a big plan (A1/A0) into A4 sheets you can print at home.",

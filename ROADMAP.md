@@ -11,7 +11,7 @@ reliable local processing, clear packaging, and a contributor-friendly project.
   the supported workflows run offline. The installer is not code-signed yet.
 - The Apple Silicon macOS build is signed and notarized. It bundles qpdf,
   Poppler, and Tesseract; LibreOffice remains optional for Office and PDF/A work.
-- The app currently includes 22 tools for organizing, converting, optimizing,
+- The app currently includes 23 tools for organizing, converting, optimizing,
   securing, and repairing PDFs.
 
 ## Current focus

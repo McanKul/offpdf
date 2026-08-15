@@ -38,6 +38,13 @@ export interface OutlineItem {
   level: number;
 }
 
+/** Bounded editor image preview (Rust `ImagePreview`). */
+export interface ImagePreview {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
 /** Visual page-comparison result (Rust `DiffResult`). */
 export interface DiffResult {
   dataUrl: string;
@@ -141,6 +148,7 @@ export type ToolId =
   | "pdfa"
   | "compare"
   | "stamp"
+  | "editPdf"
   | "poster"
   | "nup"
   | "blankPages"

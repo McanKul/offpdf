@@ -109,6 +109,21 @@ describe("editReducer", () => {
     expect(s.past.length).toBeLessThanOrEqual(MAX_HISTORY);
   });
 
+  it("REBIND keeps provided history snapshots", () => {
+    let s = createHistoryState();
+    s = editReducer(s, { type: "ADD", object: rect("a") });
+    s = editReducer(s, {
+      type: "REBIND",
+      present: { version: 1, objects: [rect("a", 0)], selectedIds: ["a"] },
+      past: [{ version: 1, objects: [], selectedIds: [] }],
+      future: [],
+    });
+    expect(s.present.objects[0].id).toBe("a");
+    expect(canUndo(s)).toBe(true);
+    s = editReducer(s, { type: "UNDO" });
+    expect(s.present.objects).toHaveLength(0);
+  });
+
   it("REPLACE resets history", () => {
     let s = createHistoryState();
     s = editReducer(s, { type: "ADD", object: rect("a") });
@@ -122,5 +137,46 @@ describe("editReducer", () => {
     });
     expect(s.present.objects[0].id).toBe("z");
     expect(canUndo(s)).toBe(false);
+  });
+
+  it("ADD_MANY inserts all and selects them as one undo step", () => {
+    let s = createHistoryState();
+    s = editReducer(s, { type: "ADD", object: rect("a") });
+    s = editReducer(s, {
+      type: "ADD_MANY",
+      objects: [rect("b"), rect("c")],
+    });
+    expect(s.present.objects.map((o) => o.id)).toEqual(["a", "b", "c"]);
+    expect(s.present.selectedIds).toEqual(["b", "c"]);
+    s = editReducer(s, { type: "UNDO" });
+    expect(s.present.objects.map((o) => o.id)).toEqual(["a"]);
+  });
+
+  it("reorders layers on the same page only", () => {
+    let s = createHistoryState();
+    s = editReducer(s, { type: "ADD", object: rect("a", 0) });
+    s = editReducer(s, { type: "ADD", object: rect("b", 0) });
+    s = editReducer(s, { type: "ADD", object: rect("c", 1) });
+    s = editReducer(s, { type: "REORDER", id: "a", dir: "front" });
+    // Page 0 only: A moves in front of B; C stays on page 1.
+    expect(s.present.objects.map((o) => o.id)).toEqual(["b", "a", "c"]);
+    s = editReducer(s, { type: "REORDER", id: "a", dir: "backward" });
+    expect(s.present.objects.map((o) => o.id)).toEqual(["a", "b", "c"]);
+    s = editReducer(s, { type: "UNDO" });
+    expect(s.present.objects.map((o) => o.id)).toEqual(["b", "a", "c"]);
+  });
+
+  it("no-op gesture does not clear redo", () => {
+    let s = createHistoryState();
+    s = editReducer(s, { type: "ADD", object: rect("a") });
+    s = editReducer(s, { type: "ADD", object: rect("b") });
+    s = editReducer(s, { type: "UNDO" });
+    expect(s.present.objects.map((o) => o.id)).toEqual(["a"]);
+    expect(canRedo(s)).toBe(true);
+
+    s = editReducer(s, { type: "BEGIN_GESTURE" });
+    s = editReducer(s, { type: "END_GESTURE" });
+    expect(canRedo(s)).toBe(true);
+    expect(s.present.objects.map((o) => o.id)).toEqual(["a"]);
   });
 });

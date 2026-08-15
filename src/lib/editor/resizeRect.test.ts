@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { resizePdfRect } from "./resizeRect";
+import { resizePdfRect, resizeCssRect } from "./resizeRect";
+import { makeMapping, pdfRectToViewport, viewportRectToPdf } from "./coords";
 import type { PdfRect } from "./types";
 
 const start: PdfRect = { x: 100, y: 200, w: 80, h: 60 };
@@ -55,5 +56,23 @@ describe("resizePdfRect (PDF y-up, handle names are CSS)", () => {
     // LL moved
     expect(next.x).toBeCloseTo(80);
     expect(next.y).toBeCloseTo(170);
+  });
+});
+
+describe("resize via CSS space then viewportRectToPdf (rotated pages)", () => {
+  const start: PdfRect = { x: 100, y: 200, w: 80, h: 60 };
+
+  it("se handle grows the visual bottom-right at 90°", () => {
+    const g = { box: { x: 0, y: 0, w: 612, h: 792 }, rotate: 90 as const, pageIndex: 0 };
+    const m = makeMapping(g, 792, 612);
+    const css = pdfRectToViewport(start, m);
+    const nextCss = resizeCssRect(css, "se", 20, 10);
+    const pdf = viewportRectToPdf(nextCss, m);
+    // Visual SE grew → overlay AABB larger; PDF AABB recovered from corners
+    expect(pdf.w).toBeGreaterThan(1);
+    expect(pdf.h).toBeGreaterThan(1);
+    const back = pdfRectToViewport(pdf, m);
+    expect(back.w).toBeCloseTo(nextCss.w, 4);
+    expect(back.h).toBeCloseTo(nextCss.h, 4);
   });
 });

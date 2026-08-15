@@ -44,7 +44,8 @@
       "binaries/": "binaries/",
       "share/": "share/",
       "tesseract/": "tesseract/",
-      "libreoffice/": "libreoffice/"
+      "libreoffice/": "libreoffice/",
+      "resources/fonts/": "fonts/"
     },
     "windows": {
       "webviewInstallMode": {

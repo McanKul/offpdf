@@ -358,7 +358,7 @@ export function RefLightbox({
           <div
             ref={scroller}
             className="reader__canvas"
-            style={{ cursor: zoom > 1 ? (panning ? "grabbing" : "grab") : "zoom-in", alignItems: zoom > 1 ? "flex-start" : "center" }}
+            style={{ cursor: panning ? "grabbing" : "grab", alignItems: zoom > 1 ? "flex-start" : "center" }}
             onWheel={(e) => {
               if (e.ctrlKey || e.metaKey) {
                 e.preventDefault();

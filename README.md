@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Private PDF tools that run entirely on your computer.</strong><br>
-  22 tools · No uploads · No account · No telemetry · Works offline
+  23 tools · No uploads · No account · No telemetry · Works offline
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@ service in the middle.
 - **One focused toolbox.** Organize, convert, compress, OCR, protect, and repair PDFs.
 - **Open and inspectable.** The app and its privacy model are available here under MIT.
 
-## 22 PDF tools
+## 23 PDF tools
 
 | Organize | Convert | Optimize & secure |
 | --- | --- | --- |
@@ -50,6 +50,7 @@ service in the middle.
 | Watermark | PDF/A (archive) | Edit metadata |
 | Crop pages | PDF to text | |
 | Stamp / Sign | | |
+| Edit PDF | | |
 | Poster / tile print | | |
 | N-up / Booklet | | |
 | Compare PDFs | | |

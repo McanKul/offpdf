@@ -8,11 +8,15 @@
 
 import {
   createEmptyDocument,
+  lineBounds,
   normalizePdfRect,
+  pointsBounds,
   type EditDocument,
   type EditObject,
   type PdfRect,
+  type Point,
 } from "./types";
+import { cloneDocument } from "./serialize";
 
 export const MAX_HISTORY = 100;
 
@@ -20,48 +24,77 @@ export interface HistoryState {
   past: EditDocument[];
   present: EditDocument;
   future: EditDocument[];
-  /** When set, we are inside a move/resize gesture; past already has the pre-gesture snapshot. */
   gestureActive: boolean;
+  /** True after the first UPDATE inside a gesture (past already snapshotted). */
+  gestureCommitted: boolean;
 }
+
+export type LayerDir = "front" | "back" | "forward" | "backward";
 
 export type EditAction =
   | { type: "ADD"; object: EditObject }
+  | { type: "ADD_MANY"; objects: EditObject[] }
   | { type: "UPDATE"; id: string; patch: Partial<EditObject> }
   | { type: "DELETE"; ids: string[] }
   | { type: "SELECT"; ids: string[] }
   | { type: "CLEAR_SELECTION" }
+  | { type: "REORDER"; id: string; dir: LayerDir }
   | { type: "BEGIN_GESTURE" }
   | { type: "END_GESTURE" }
   | { type: "UNDO" }
   | { type: "REDO" }
   | { type: "REPLACE"; document: EditDocument }
+  | { type: "REBIND"; present: EditDocument; past: EditDocument[]; future: EditDocument[] }
   | { type: "RESET" };
 
-function cloneDoc(doc: EditDocument): EditDocument {
-  return {
-    version: 1,
-    objects: doc.objects.map((o) => ({ ...o, rect: { ...o.rect } })),
-    selectedIds: [...doc.selectedIds],
-  };
+/** Later objects on the same page paint in front. `null` if the move is a no-op. */
+export function reorderOnPage(objects: EditObject[], id: string, dir: LayerDir): EditObject[] | null {
+  const from = objects.findIndex((o) => o.id === id);
+  if (from < 0) return null;
+  const page = objects[from].pageIndex;
+  const pagePos = objects.map((o, i) => (o.pageIndex === page ? i : -1)).filter((i) => i >= 0);
+  const pos = pagePos.indexOf(from);
+  if (pos < 0) return null;
+  let target = pos;
+  if (dir === "backward") target = pos - 1;
+  else if (dir === "forward") target = pos + 1;
+  else if (dir === "back") target = 0;
+  else target = pagePos.length - 1;
+  if (target < 0 || target >= pagePos.length || target === pos) return null;
+
+  const item = objects[from];
+  const without = objects.filter((o) => o.id !== id);
+  const remain = without
+    .map((o, i) => ({ o, i }))
+    .filter((x) => x.o.pageIndex === page);
+  let insertAt: number;
+  if (remain.length === 0) insertAt = without.length;
+  else if (target >= remain.length) insertAt = remain[remain.length - 1].i + 1;
+  else insertAt = remain[target].i;
+  const next = without.slice();
+  next.splice(insertAt, 0, item);
+  return next;
 }
 
 function pushPast(state: HistoryState, nextPresent: EditDocument): HistoryState {
-  const past = [...state.past, cloneDoc(state.present)];
+  const past = [...state.past, cloneDocument(state.present)];
   if (past.length > MAX_HISTORY) past.splice(0, past.length - MAX_HISTORY);
   return {
     past,
     present: nextPresent,
     future: [],
-    gestureActive: state.gestureActive,
+    gestureActive: false,
+    gestureCommitted: false,
   };
 }
 
 export function createHistoryState(doc?: EditDocument): HistoryState {
   return {
     past: [],
-    present: doc ? cloneDoc(doc) : createEmptyDocument(),
+    present: doc ? cloneDocument(doc) : createEmptyDocument(),
     future: [],
     gestureActive: false,
+    gestureCommitted: false,
   };
 }
 
@@ -94,13 +127,37 @@ export function editReducer(state: HistoryState, action: EditAction): HistorySta
       return pushPast({ ...state, gestureActive: false }, present);
     }
 
+    case "ADD_MANY": {
+      if (action.objects.length === 0) return state;
+      const added = action.objects.map((o) => {
+        const next = { ...o, rect: normalizePdfRect(o.rect) } as EditObject;
+        return next;
+      });
+      const present: EditDocument = {
+        ...state.present,
+        objects: [...state.present.objects, ...added],
+        selectedIds: added.map((o) => o.id),
+      };
+      return pushPast({ ...state, gestureActive: false }, present);
+    }
+
     case "UPDATE": {
       if (state.gestureActive) {
-        // Already snapshotted at BEGIN_GESTURE — mutate present only.
+        let past = state.past;
+        let future = state.future;
+        let committed = state.gestureCommitted;
+        if (!committed) {
+          past = [...state.past, cloneDocument(state.present)];
+          if (past.length > MAX_HISTORY) past.splice(0, past.length - MAX_HISTORY);
+          future = [];
+          committed = true;
+        }
         return {
           ...state,
+          past,
+          future,
+          gestureCommitted: committed,
           present: applyUpdate(state.present, action.id, action.patch),
-          future: [],
         };
       }
       const present = applyUpdate(state.present, action.id, action.patch);
@@ -131,47 +188,60 @@ export function editReducer(state: HistoryState, action: EditAction): HistorySta
         present: { ...state.present, selectedIds: [] },
       };
 
+    case "REORDER": {
+      const objects = reorderOnPage(state.present.objects, action.id, action.dir);
+      if (!objects) return state;
+      return pushPast(state, { ...state.present, objects });
+    }
+
     case "BEGIN_GESTURE": {
       if (state.gestureActive) return state;
-      // Snapshot current present once; subsequent UPDATE during gesture skip past.
-      const past = [...state.past, cloneDoc(state.present)];
-      if (past.length > MAX_HISTORY) past.splice(0, past.length - MAX_HISTORY);
-      return {
-        past,
-        present: state.present,
-        future: [],
-        gestureActive: true,
-      };
+      return { ...state, gestureActive: true, gestureCommitted: false };
     }
 
     case "END_GESTURE":
-      return { ...state, gestureActive: false };
+      return { ...state, gestureActive: false, gestureCommitted: false };
 
     case "UNDO": {
-      if (state.past.length === 0) return { ...state, gestureActive: false };
+      if (state.past.length === 0) {
+        return { ...state, gestureActive: false, gestureCommitted: false };
+      }
       const past = [...state.past];
       const previous = past.pop()!;
       return {
         past,
         present: previous,
-        future: [cloneDoc(state.present), ...state.future],
+        future: [cloneDocument(state.present), ...state.future],
         gestureActive: false,
+        gestureCommitted: false,
       };
     }
 
     case "REDO": {
-      if (state.future.length === 0) return { ...state, gestureActive: false };
+      if (state.future.length === 0) {
+        return { ...state, gestureActive: false, gestureCommitted: false };
+      }
       const [next, ...rest] = state.future;
       return {
-        past: [...state.past, cloneDoc(state.present)],
+        past: [...state.past, cloneDocument(state.present)],
         present: next,
         future: rest,
         gestureActive: false,
+        gestureCommitted: false,
       };
     }
 
     case "REPLACE":
       return createHistoryState(action.document);
+
+    case "REBIND":
+      return {
+        present: cloneDocument(action.present),
+        past: action.past.map(cloneDocument),
+        future: action.future.map(cloneDocument),
+        gestureActive: false,
+        gestureCommitted: false,
+      };
 
     case "RESET":
       return createHistoryState();
@@ -194,15 +264,115 @@ export function makeRectObject(
   id: string,
   pageIndex: number,
   rect: PdfRect,
-  style?: Pick<import("./types").RectObject, "fill" | "stroke" | "opacity">,
+  style?: Pick<import("./types").RectObject, "fill" | "stroke" | "strokeWidth" | "opacity">,
 ): import("./types").RectObject {
   return {
     id,
     kind: "rect",
     pageIndex,
     rect: normalizePdfRect(rect),
-    fill: style?.fill ?? "rgba(37, 99, 235, 0.25)",
-    stroke: style?.stroke ?? "#2563eb",
+    fill: style?.fill ?? "none",
+    stroke: style?.stroke ?? "#111827",
+    strokeWidth: style?.strokeWidth ?? 1.5,
     opacity: style?.opacity ?? 1,
+  };
+}
+
+export function makeTextObject(
+  id: string,
+  pageIndex: number,
+  rect: PdfRect,
+  content = "Text",
+): import("./types").TextObject {
+  return {
+    id,
+    kind: "text",
+    pageIndex,
+    rect: normalizePdfRect(rect),
+    content,
+    fontSize: 14,
+    color: "#111827",
+    align: "left",
+    opacity: 1,
+  };
+}
+
+export function makeImageObject(
+  id: string,
+  pageIndex: number,
+  rect: PdfRect,
+  path: string,
+  previewUrl?: string,
+): import("./types").ImageObject {
+  return {
+    id,
+    kind: "image",
+    pageIndex,
+    rect: normalizePdfRect(rect),
+    path,
+    keepAspect: true,
+    opacity: 1,
+    previewUrl,
+  };
+}
+
+export function makeClosedShape(
+  id: string,
+  kind: import("./types").ClosedShapeKind,
+  pageIndex: number,
+  rect: PdfRect,
+  style?: import("./types").ShapeStyle,
+  keepAspect?: boolean,
+): import("./types").EditObject {
+  return {
+    id,
+    kind,
+    pageIndex,
+    rect: normalizePdfRect(rect),
+    fill: style?.fill ?? "none",
+    stroke: style?.stroke ?? "#111827",
+    strokeWidth: style?.strokeWidth ?? 1.5,
+    opacity: style?.opacity ?? 1,
+    keepAspect: keepAspect || undefined,
+  };
+}
+
+export function makeLineObject(
+  id: string,
+  pageIndex: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): import("./types").LineObject {
+  return {
+    id,
+    kind: "line",
+    pageIndex,
+    rect: lineBounds(x1, y1, x2, y2),
+    x1,
+    y1,
+    x2,
+    y2,
+    stroke: "#111827",
+    strokeWidth: 2,
+    opacity: 1,
+  };
+}
+
+export function makeInkObject(
+  id: string,
+  pageIndex: number,
+  points: Point[],
+): import("./types").InkObject {
+  return {
+    id,
+    kind: "ink",
+    pageIndex,
+    rect: pointsBounds(points),
+    points: points.map((p) => ({ ...p })),
+    stroke: "#111827",
+    strokeWidth: 2.5,
+    opacity: 1,
   };
 }

@@ -8,44 +8,9 @@ use crate::models::{JobHandle, PageGroup};
 use crate::pdf_engine::{crop, overlay, qpdf};
 use crate::utils::process::run_qpdf;
 use crate::utils::temp;
-use lopdf::{Document, Object, ObjectId};
+use lopdf::Document;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-
-fn num(o: &Object, doc: &Document) -> Option<f64> {
-    match o {
-        Object::Integer(i) => Some(*i as f64),
-        Object::Real(r) => Some(*r as f64),
-        Object::Reference(r) => doc.get_object(*r).ok().and_then(|x| num(x, doc)),
-        _ => None,
-    }
-}
-
-fn media_box(doc: &Document, page_id: ObjectId) -> (f64, f64) {
-    let mut cur = Some(page_id);
-    let mut steps = 0;
-    while let Some(id) = cur {
-        if steps > 32 {
-            break;
-        }
-        steps += 1;
-        let Ok(dict) = doc.get_dictionary(id) else { break };
-        if let Ok(obj) = dict.get(b"MediaBox") {
-            let resolved = if let Ok(r) = obj.as_reference() { doc.get_object(r).ok() } else { Some(obj) };
-            if let Some(arr) = resolved.and_then(|o| o.as_array().ok()) {
-                if arr.len() == 4 {
-                    let x0 = num(&arr[0], doc).unwrap_or(0.0);
-                    let y0 = num(&arr[1], doc).unwrap_or(0.0);
-                    let x1 = num(&arr[2], doc).unwrap_or(612.0);
-                    let y1 = num(&arr[3], doc).unwrap_or(792.0);
-                    return ((x1 - x0).abs(), (y1 - y0).abs());
-                }
-            }
-        }
-        cur = dict.get(b"Parent").ok().and_then(|o| o.as_reference().ok());
-    }
-    (612.0, 792.0)
-}
 
 /// Displayed size of `page` (1-based) in points, by extracting it to a tiny PDF
 /// (safe even for huge sources) and reading its MediaBox. /Rotate 90/270 swaps
@@ -71,10 +36,7 @@ fn page_size(app: &tauri::AppHandle, merged: &str, page: u32, dir: &std::path::P
             .get_pages()
             .values()
             .next()
-            .map(|id| {
-                let (w, h) = media_box(&doc, *id);
-                if crop::page_rotation(&doc, *id) % 180 == 90 { (h, w) } else { (w, h) }
-            })
+            .map(|id| crop::displayed_size(&doc, *id))
             .unwrap_or((612.0, 792.0)),
         Err(_) => (612.0, 792.0),
     }
