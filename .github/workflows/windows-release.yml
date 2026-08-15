@@ -30,6 +30,7 @@ concurrency:
 jobs:
   windows-x64:
     name: Build and release Windows installer
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 120
 
@@ -73,13 +74,25 @@ jobs:
           tagName: v__VERSION__
           releaseName: OffPDF v__VERSION__
           releaseBody: |
-            OffPDF build for Windows (x64).
+            OffPDF now includes 23 private PDF tools that run locally without
+            uploads, accounts, or telemetry.
 
-            Note: this installer is not code-signed yet, so Windows SmartScreen
-            may show an "unknown publisher" warning. Click "More info" then
-            "Run anyway" to install.
+            Highlights:
+            - Edit PDF adds text, images, shapes, lines, and freehand drawings
+              without rasterizing the original document.
+            - Cropped, rotated, and scaled pages preserve source content and
+              overlay placement.
+            - Reader accessibility, output-name validation, and metadata text
+              decoding are improved.
 
-            LibreOffice is bundled and only required for Office conversion tools.
+            Thanks to @nonamexishere, @YuukiRitoTeng, @strongdan, and @joyheroes
+            for contributing to this release.
+
+            Packages:
+            - Windows x64 installer (currently unsigned; SmartScreen may warn)
+            - Signed and notarized DMG for Apple Silicon Macs
+
+            See CHANGELOG.md for full details.
           releaseDraft: true
           prerelease: false
           args: --bundles nsis

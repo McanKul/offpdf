@@ -60,8 +60,8 @@ service in the middle.
 
 | Platform | Package | Status |
 | --- | --- | --- |
-| Windows x64 | [Download v0.2.2 setup](https://github.com/McanKul/offpdf/releases/download/v0.2.2/OffPDF_0.2.2_x64-setup.exe) | Available; currently unsigned, so SmartScreen may warn |
-| macOS 11+ · Apple Silicon | [Download v0.2.2 DMG](https://github.com/McanKul/offpdf/releases/download/v0.2.2/OffPDF_0.2.2_aarch64.dmg) | Signed and notarized |
+| Windows x64 | [Download from the latest release](https://github.com/McanKul/offpdf/releases/latest) | Available; currently unsigned, so SmartScreen may warn |
+| macOS 11+ · Apple Silicon | [Download from the latest release](https://github.com/McanKul/offpdf/releases/latest) | Signed and notarized |
 | Intel Mac / Linux | [Build from source](#development) | No published package yet |
 
 The Windows installer is large because it includes the local engines needed to

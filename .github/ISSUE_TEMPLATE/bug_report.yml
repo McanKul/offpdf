@@ -31,7 +31,7 @@ body:
     id: version
     attributes:
       label: OffPDF version
-      placeholder: v0.2.2 or commit SHA
+      placeholder: v0.3.0 or commit SHA
     validations:
       required: false
   - type: dropdown
