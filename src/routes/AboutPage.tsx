@@ -66,8 +66,8 @@ export function AboutPage() {
             completely offline, on a plane or an air-gapped machine.
           </Point>
           <Point icon="fileText" title="Built for very large files">
-            Only file paths cross between the interface and the engine, never the file bytes. That
-            means multi-gigabyte plan sets can be processed without loading them into memory.
+            Core operations pass file paths to local engines so large documents do not need to be
+            loaded into the interface. Previews and editing use only the local page data they need.
           </Point>
           <Point icon="compress" title="Lossless or targeted compression">
             Keep your text with a lossless cleanup, or set a target size and let OffPDF auto-tune
