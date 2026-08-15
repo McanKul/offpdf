@@ -60,6 +60,11 @@ pub(crate) fn media_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
     inherited_box(doc, page_id, b"MediaBox").unwrap_or([0.0, 0.0, 612.0, 792.0])
 }
 
+/// Resolve the effective CropBox, preserving whether the source had one.
+pub(crate) fn crop_box(doc: &Document, page_id: ObjectId) -> Option<[f64; 4]> {
+    inherited_box(doc, page_id, b"CropBox")
+}
+
 fn intersect_box(inner: [f64; 4], media: [f64; 4]) -> [f64; 4] {
     let ix0 = inner[0].max(media[0]);
     let iy0 = inner[1].max(media[1]);
@@ -75,7 +80,7 @@ fn intersect_box(inner: [f64; 4], media: [f64; 4]) -> [f64; 4] {
 /// Visible page box = CropBox ∩ MediaBox (else MediaBox). Matches pdf.js paint.
 pub(crate) fn visible_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
     let mb = media_box(doc, page_id);
-    match inherited_box(doc, page_id, b"CropBox") {
+    match crop_box(doc, page_id) {
         Some(cb) => intersect_box(cb, mb),
         None => mb,
     }
@@ -105,13 +110,18 @@ fn page_dict_box(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f64; 
     Some([v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3])])
 }
 
+/// Resolve a page-level TrimBox. qpdf overlay alignment does not inherit it.
+pub(crate) fn page_trim_box(doc: &Document, page_id: ObjectId) -> Option<[f64; 4]> {
+    page_dict_box(doc, page_id, b"TrimBox")
+}
+
 /// qpdf overlay alignment: raw **page** TrimBox (not inherited, not clipped to
 /// Media) → inherited CropBox → MediaBox. Matches `getTrimBox()` used by `--overlay`.
 pub(crate) fn align_box(doc: &Document, page_id: ObjectId) -> [f64; 4] {
-    if let Some(trim) = page_dict_box(doc, page_id, b"TrimBox") {
+    if let Some(trim) = page_trim_box(doc, page_id) {
         return trim;
     }
-    inherited_box(doc, page_id, b"CropBox").unwrap_or_else(|| media_box(doc, page_id))
+    crop_box(doc, page_id).unwrap_or_else(|| media_box(doc, page_id))
 }
 
 /// Page `/UserUnit` (default 1). Not inherited.

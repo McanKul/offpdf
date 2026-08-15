@@ -9,7 +9,8 @@ invent a second coordinate system.
 - A **typed, JSON-serializable** description of draft objects on PDF pages.
 - Pure **viewport ↔ PDF** coordinate transforms.
 - An **undo/redo** reducer for editor sessions.
-- Kinds: `text`, `image` (filesystem path), `rect`, `line`, `ink`.
+- Kinds: `text`, `image` (filesystem path), `line`, `ink`, and closed vector
+  shapes such as rectangles, ellipses, arrows, and polygons.
 
 ## What this module is not
 
@@ -23,7 +24,7 @@ invent a second coordinate system.
 
 | Space | Origin | Units | Stored? |
 | --- | --- | --- | --- |
-| PDF page space | Absolute unrotated user space. Preview mapping subtracts the **visible** box (CropBox ∩ MediaBox). Export maps through the **align** box (TrimBox → CropBox → MediaBox, matching qpdf overlay). `/UserUnit` is copied onto overlay pages. | PDF points | **Yes** — `EditObject.rect` |
+| PDF page space | Absolute unrotated user space. Preview and export mapping subtract the **visible** box (CropBox ∩ MediaBox). `/UserUnit` is copied onto overlay pages. | PDF points | **Yes** — `EditObject.rect` |
 | Display page space | Lower-left of the page after applying `/Rotate` | points | Internal only |
 | CSS / viewport | Top-left of the rendered page element | CSS pixels | Transient UI |
 
@@ -43,8 +44,10 @@ displayedSize(geometry) → { w, h }
 
 `ViewportMapping` is `{ cssWidth, cssHeight, geometry }` where `geometry`
 includes `box` (pdf.js visible view), optional `userUnit`, `rotate`, and `pageIndex`.
-Export align (raw page TrimBox, not inherited and not clipped to Media → Crop → Media)
-is computed in Rust to match qpdf; the preview never observes TrimBox.
+Rust also reads qpdf's native alignment box (raw page TrimBox, not inherited or
+clipped to Media → Crop → Media). When that box or MediaBox differs from the
+visible box, export normalizes a temporary working page before composition; the
+preview never observes TrimBox.
 
 ## EditDocument
 
@@ -89,26 +92,30 @@ job.
 ## How export consumes this
 
 1. Read `EditDocument.objects` for the chosen pages.
-2. Map each `rect` / point from unrotated PDF space through the **align box**
-   (TrimBox → CropBox → MediaBox) and `/Rotate` into displayed overlay space.
-   Overlay pages copy dest `/UserUnit` and set matching Media/Crop/Trim boxes
-   so qpdf maps 1:1. Preview still paints CropBox; stored coords stay absolute.
+2. Map each `rect` / point from unrotated PDF space through the **visible box**
+   and `/Rotate` into displayed overlay space. Overlay pages copy destination
+   `/UserUnit` and use the transformed absolute visible box so qpdf maps 1:1.
+   Stored coordinates stay absolute.
 3. Build a hand-rolled overlay PDF (embedded Noto Sans, vector ops, image
    XObjects) and `qpdf --overlay` it onto the **primary source**, not an empty
    rebuild. A single full-range file is `original --overlay overlay -- dest`
    (bookmarks, Info/XMP, AcroForm stay). A subset or multi-file job uses the
    first file as infile with `--pages . <spec> …` — same compromise as Optimize.
-   Never `qpdf --empty --pages`.
+   Never `qpdf --empty --pages`. If qpdf's native alignment would differ from
+   the preview, normalize Media/Crop/Trim together on temporary source copies,
+   compose, then restore the original page boxes on the output. Never change
+   the user's source file.
 4. Keep offline path-based processing; never put full PDF bytes into React state
    for export.
 5. Preserve “original file is never overwritten.”
 
 ## Accessibility
 
-The canvas exposes an object list (or equivalent) so selection and deletion work
-without pointer-only interaction. Keyboard: Delete/Backspace, Escape, undo/redo
-chords, arrow nudge. Hand tool (H) and hold-Space pan the zoomed page; trackpad
-scroll on the stage still works.
+The canvas exposes the active page's object list so selection and deletion work
+without pointer-only interaction. Selection-driven actions never affect hidden
+pages. Keyboard: Delete/Backspace, Escape, undo/redo chords, arrow nudge. Hand
+tool (H) and hold-Space pan the zoomed page; trackpad scroll on the stage still
+works.
 
 ## Offline / privacy
 

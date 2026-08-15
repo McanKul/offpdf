@@ -785,11 +785,15 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
 /// Per-page geometry read from the original sources (not a `--empty` rebuild).
 #[derive(Debug, Clone, Copy)]
 struct OverlayPageGeom {
-    /// qpdf overlay align box (raw page Trim → Crop → Media).
-    align: [f64; 4],
     /// Crop ∩ Media (else Media). Overlay Media/Crop/Trim use this so qpdf
     /// `getTrimBox()` is the full visible page (no Trim⊂Media centering).
     visible: [f64; 4],
+    /// Original effective page boxes. The temporary qpdf source normalizes all
+    /// three boxes to `visible`; these values restore the exported page.
+    media: [f64; 4],
+    crop: Option<[f64; 4]>,
+    /// Page-level only: qpdf overlay alignment does not inherit TrimBox.
+    trim: Option<[f64; 4]>,
     rotate: i64,
     user_unit: f64,
 }
@@ -807,37 +811,48 @@ fn pdf_rect_obj(b: [f64; 4]) -> Object {
     ])
 }
 
-fn set_page_trim(
+fn set_page_box(
     doc: &mut Document,
     page_id: lopdf::ObjectId,
-    b: [f64; 4],
+    key: &[u8],
+    value: Option<[f64; 4]>,
 ) -> Result<(), AppError> {
     let dict = doc
         .get_object_mut(page_id)
         .and_then(|o| o.as_dict_mut())
         .map_err(|e| AppError::engine_failed(format!("Could not update page boxes: {e}")))?;
-    dict.set(b"TrimBox".to_vec(), pdf_rect_obj(b));
+    if let Some(b) = value {
+        dict.set(key.to_vec(), pdf_rect_obj(b));
+    } else {
+        dict.remove(key);
+    }
     Ok(())
 }
 
-/// Working copy whose TrimBox equals the visible box so qpdf `--overlay`
-/// `getTrimBox()` is the full visible page. Never writes `src`.
-fn write_visible_trim_copy(src: &Path, dest: &Path) -> Result<(), AppError> {
+/// Working copy whose Media/Crop/Trim boxes all equal the visible box. qpdf
+/// centers a page's alignment box inside its MediaBox while composing; changing
+/// Trim alone therefore moves existing content when Crop is asymmetric. Making
+/// all three boxes identical keeps both the source and overlay transforms 1:1.
+/// Never writes `src`.
+fn write_visible_box_copy(src: &Path, dest: &Path) -> Result<(), AppError> {
     let mut doc = Document::load(src)
         .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
     let page_ids: Vec<_> = doc.get_pages().values().cloned().collect();
     for id in page_ids {
         let vis = crop::visible_box(&doc, id);
-        set_page_trim(&mut doc, id, vis)?;
+        set_page_box(&mut doc, id, b"MediaBox", Some(vis))?;
+        set_page_box(&mut doc, id, b"CropBox", Some(vis))?;
+        set_page_box(&mut doc, id, b"TrimBox", Some(vis))?;
     }
     doc.save(dest)
         .map_err(|e| AppError::io("Could not write a temporary PDF.", e))?;
     Ok(())
 }
 
-/// Point `--overlay` at working copies when Trim ⊂ visible. Unchanged sources
-/// keep their original path (identity overlay argv stays the user file).
-fn remap_groups_to_visible_trim(
+/// Point `--overlay` at normalized working copies whenever qpdf's alignment box
+/// or MediaBox differs from the visible page. Unchanged sources keep their
+/// original path (identity overlay argv stays the user file).
+fn remap_groups_to_visible_box(
     groups: &[PageGroup],
     work: &Path,
 ) -> Result<(Vec<PageGroup>, bool), AppError> {
@@ -852,11 +867,15 @@ fn remap_groups_to_visible_trim(
             let needs = doc
                 .get_pages()
                 .values()
-                .any(|&id| !boxes_near(crop::align_box(&doc, id), crop::visible_box(&doc, id)));
+                .any(|&id| {
+                    let visible = crop::visible_box(&doc, id);
+                    !boxes_near(crop::align_box(&doc, id), visible)
+                        || !boxes_near(crop::media_box(&doc, id), visible)
+                });
             if needs {
                 let dest = work.join(format!("src-{n_copies}.pdf"));
                 n_copies += 1;
-                write_visible_trim_copy(Path::new(&g.path), &dest)?;
+                write_visible_box_copy(Path::new(&g.path), &dest)?;
                 copies.insert(g.path.clone(), dest.to_string_lossy().into_owned());
                 any = true;
             } else {
@@ -871,8 +890,9 @@ fn remap_groups_to_visible_trim(
     Ok((out, any))
 }
 
-/// Write original TrimBoxes (`OverlayPageGeom.align`) back onto dest pages.
-fn restore_dest_trim_boxes(dest: &Path, geoms: &[OverlayPageGeom]) -> Result<(), AppError> {
+/// Restore the original page boxes after qpdf composed against normalized
+/// working pages. Missing CropBox/TrimBox entries remain missing.
+fn restore_dest_page_boxes(dest: &Path, geoms: &[OverlayPageGeom]) -> Result<(), AppError> {
     let mut doc = Document::load(dest)
         .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
     let page_map = doc.get_pages();
@@ -881,7 +901,9 @@ fn restore_dest_trim_boxes(dest: &Path, geoms: &[OverlayPageGeom]) -> Result<(),
         let id = *page_map
             .get(&p)
             .ok_or_else(|| AppError::engine_failed(format!("Page {p} is not in the saved PDF.")))?;
-        set_page_trim(&mut doc, id, geom.align)?;
+        set_page_box(&mut doc, id, b"MediaBox", Some(geom.media))?;
+        set_page_box(&mut doc, id, b"CropBox", geom.crop)?;
+        set_page_box(&mut doc, id, b"TrimBox", geom.trim)?;
     }
     let side = dest.with_file_name(format!(
         "{}.boxes",
@@ -915,13 +937,17 @@ pub(crate) fn image_meet_blit(
     (x + (w - dw) / 2.0, y + (h - dh) / 2.0, dw, dh)
 }
 
-fn displayed_wh(vis: [f64; 4], rotate: i64) -> (f64, f64) {
+/// Overlay page box after applying the same zero-origin rotation window used by
+/// `pdf_rect_to_overlay` to absolute source coordinates. A non-zero visible
+/// origin must remain in this transformed box or qpdf applies a second offset.
+fn overlay_page_box(vis: [f64; 4], rotate: i64) -> [f64; 4] {
     let w = vis[2] - vis[0];
     let h = vis[3] - vis[1];
-    if rotate % 180 == 90 {
-        (h, w)
-    } else {
-        (w, h)
+    match ((rotate % 360) + 360) % 360 {
+        90 => [vis[1], w - vis[2], vis[3], w - vis[0]],
+        180 => [w - vis[2], h - vis[3], w - vis[0], h - vis[1]],
+        270 => [h - vis[3], vis[0], h - vis[1], vis[2]],
+        _ => vis,
     }
 }
 
@@ -1010,8 +1036,10 @@ fn collect_source_pages(
                 )
             })?;
             geoms.push(OverlayPageGeom {
-                align: crop::align_box(doc, id),
                 visible: crop::visible_box(doc, id),
+                media: crop::media_box(doc, id),
+                crop: crop::crop_box(doc, id),
+                trim: crop::page_trim_box(doc, id),
                 rotate: crop::page_rotation(doc, id),
                 user_unit: crop::page_user_unit(doc, id),
             });
@@ -1099,11 +1127,11 @@ where
             .map_err(|e| AppError::io("Could not read the editor font.", e))?;
         let font = FontInfo::parse(font_bytes)?;
         write_overlay_pdf(&overlay_str, &geoms, document, &font, cancel)?;
-        let (mapped, restore_trim) = remap_groups_to_visible_trim(groups, work)?;
+        let (mapped, restore_boxes) = remap_groups_to_visible_box(groups, work)?;
         let args = build_edit_overlay_args(&mapped, &counts, &overlay_str, &tmp_str)?;
         run(&args)?;
-        if restore_trim {
-            restore_dest_trim_boxes(&tmp, &geoms)?;
+        if restore_boxes {
+            restore_dest_page_boxes(&tmp, &geoms)?;
             // lopdf xref can look damaged; qpdf rewrite before the atomic replace.
             let cleaned = work.join("dest-boxes.pdf");
             let cleaned_str = cleaned.to_string_lossy().to_string();
@@ -1622,16 +1650,11 @@ fn write_overlay_pdf(
     let mut out_page_ids = Vec::with_capacity(n);
     for (pi, geom) in geoms.iter().enumerate() {
         let rot = ((geom.rotate % 360) + 360) % 360;
-        let (media, crop, trim) = if rot == 0 {
-            // Same visible box as the dest working copy Trim so qpdf maps 1:1.
-            // Content is dest user space (absolute PDF coords), not Trim-origin.
-            let v = geom.visible;
-            (v, v, v)
-        } else {
-            let (pw, ph) = displayed_wh(geom.visible, geom.rotate);
-            let b = [0.0, 0.0, pw, ph];
-            (b, b, b)
-        };
+        // Content uses absolute source coordinates transformed through a
+        // zero-origin rotation window. Keep the correspondingly transformed
+        // visible origin in the overlay boxes so qpdf maps both Forms 1:1.
+        let page_box = overlay_page_box(geom.visible, rot);
+        let (media, crop, trim) = (page_box, page_box, page_box);
         let mut xo = String::new();
         for (oi, obj) in document.objects.iter().enumerate() {
             if obj.page_index() as usize != pi {
@@ -1890,11 +1913,22 @@ mod tests {
 
     fn letter_geom() -> OverlayPageGeom {
         OverlayPageGeom {
-            align: [0.0, 0.0, 612.0, 792.0],
             visible: [0.0, 0.0, 612.0, 792.0],
+            media: [0.0, 0.0, 612.0, 792.0],
+            crop: None,
+            trim: None,
             rotate: 0,
             user_unit: 1.0,
         }
+    }
+
+    #[test]
+    fn overlay_page_box_keeps_transformed_offset_origin() {
+        let visible = [72.0, 36.0, 540.0, 720.0];
+        assert_eq!(overlay_page_box(visible, 0), [72.0, 36.0, 540.0, 720.0]);
+        assert_eq!(overlay_page_box(visible, 90), [36.0, -72.0, 720.0, 396.0]);
+        assert_eq!(overlay_page_box(visible, 180), [-72.0, -36.0, 396.0, 648.0]);
+        assert_eq!(overlay_page_box(visible, 270), [-36.0, 72.0, 648.0, 540.0]);
     }
 
     fn test_font() -> FontInfo {

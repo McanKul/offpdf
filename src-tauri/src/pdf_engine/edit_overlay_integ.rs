@@ -69,6 +69,49 @@ fn write_letter_page(path: &Path, extras: &[(&[u8], Object)]) {
     doc.save(path).expect("write letter fixture");
 }
 
+fn write_visual_page(
+    path: &Path,
+    rotate: i64,
+    crop: Option<[i64; 4]>,
+    trim: Option<[i64; 4]>,
+) {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    // All paint is resource-free vector content. The green rectangle is where
+    // the edit is placed; the yellow marker proves the far corner survives.
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        b"q 0 0 1 rg 72 36 468 684 re f Q\nq 0 1 0 rg 82 46 40 30 re f Q\nq 1 1 0 rg 490 660 40 30 re f Q\n".to_vec(),
+    )));
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    if let Some(b) = crop {
+        page.set("CropBox", box_obj(b));
+    }
+    if let Some(b) = trim {
+        page.set("TrimBox", box_obj(b));
+    }
+    page.set("Rotate", Object::Integer(rotate));
+    page.set("Resources", Object::Dictionary(Dictionary::new()));
+    page.set("Contents", content_id);
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path).expect("write visual fixture");
+}
+
 fn write_catalog_fixture(path: &Path) {
     let mut doc = Document::with_version("1.5");
     let pages_id = doc.new_object_id();
@@ -181,6 +224,69 @@ fn page_box(dict: &Dictionary, name: &[u8]) -> Option<Vec<f64>> {
     }
 }
 
+fn form_streams(path: &Path) -> Vec<(Dictionary, String)> {
+    let mut doc = Document::load(path).expect("load pdf");
+    let _ = doc.decompress();
+    let page_id = *doc.get_pages().get(&1).expect("page 1");
+    let page = doc.get_dictionary(page_id).expect("page dict");
+    let resources_obj = page.get(b"Resources").expect("page resources");
+    let resources = match resources_obj {
+        Object::Dictionary(d) => d,
+        Object::Reference(id) => doc.get_dictionary(*id).expect("resources dict"),
+        _ => panic!("invalid page resources"),
+    };
+    let xobjects_obj = resources.get(b"XObject").expect("page XObjects");
+    let xobjects = match xobjects_obj {
+        Object::Dictionary(d) => d,
+        Object::Reference(id) => doc.get_dictionary(*id).expect("XObject dict"),
+        _ => panic!("invalid page XObjects"),
+    };
+    xobjects
+        .iter()
+        .filter_map(|(_, obj)| {
+            let id = obj.as_reference().ok()?;
+            let stream = doc.get_object(id).ok()?.as_stream().ok()?;
+            let bytes = stream
+                .get_plain_content()
+                .unwrap_or_else(|_| stream.content.clone());
+            Some((stream.dict.clone(), String::from_utf8_lossy(&bytes).into_owned()))
+        })
+        .collect()
+}
+
+fn form_matrix(dict: &Dictionary) -> [f64; 6] {
+    let Some(values) = page_box(dict, b"Matrix") else {
+        return [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    };
+    if values.len() != 6 {
+        return [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    }
+    [values[0], values[1], values[2], values[3], values[4], values[5]]
+}
+
+fn transform_rect(rect: [f64; 4], m: [f64; 6]) -> [f64; 4] {
+    let [a, b, c, d, e, f] = m;
+    let corners = [
+        (rect[0], rect[1]),
+        (rect[2], rect[1]),
+        (rect[2], rect[3]),
+        (rect[0], rect[3]),
+    ];
+    let mapped = corners.map(|(x, y)| (a * x + c * y + e, b * x + d * y + f));
+    let min_x = mapped.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let min_y = mapped.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let max_x = mapped.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let max_y = mapped.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    [min_x, min_y, max_x, max_y]
+}
+
+fn assert_rect_near(got: [f64; 4], want: [f64; 4], context: &str) {
+    assert!(
+        got.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.5),
+        "{context}: got {got:?}, want {want:?}"
+    );
+}
+
 fn assert_box_near(dict: &Dictionary, name: &[u8], want: [f64; 4]) {
     let got = page_box(dict, name).unwrap_or_default();
     assert!(
@@ -266,6 +372,19 @@ impl Harness {
 
     fn overlay_pdf(&self) -> PathBuf {
         self.work.join("overlay.pdf")
+    }
+
+    fn assert_dest_checks(&self) {
+        let out = std::process::Command::new(&self.qpdf)
+            .args(["--check"])
+            .arg(&self.dest)
+            .output()
+            .expect("run qpdf --check");
+        assert!(
+            out.status.success(),
+            "qpdf --check failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     fn cleanup(self) {
@@ -644,6 +763,17 @@ fn parse_cm_ops(blob: &str) -> Vec<[f64; 6]> {
     out
 }
 
+fn assert_source_overlay_cm_match(path: &Path, context: &str) {
+    let cms = parse_cm_ops(&first_page_contents(path));
+    assert_eq!(cms.len(), 2, "{context}: expected source + overlay cm ops");
+    for i in 0..6 {
+        assert!(
+            (cms[0][i] - cms[1][i]).abs() < 0.01,
+            "{context}: qpdf shifted source and overlay differently: {cms:?}"
+        );
+    }
+}
+
 #[test]
 fn integ_trim_inside_crop_stamp_inside_trim_unshifted() {
     let Some(fx) = Harness::new("trim-in") else {
@@ -781,6 +911,131 @@ fn integ_r1_rotate_90_trim_inside_crop_uses_visible() {
     assert_eq!(rot, 90, "page /Rotate should survive overlay");
     assert_dest_boxes_trim_inside_crop(&fx.dest);
     fx.cleanup();
+}
+
+#[test]
+fn integ_offset_crop_smaller_trim_preserves_source_and_overlay_all_rotations() {
+    let cases = [
+        (
+            0,
+            "82.00 46.00 40.00 30.00 re",
+            [82.0, 46.0, 122.0, 76.0],
+            [72.0, 36.0, 540.0, 720.0],
+        ),
+        (
+            90,
+            "46.00 346.00 30.00 40.00 re",
+            [46.0, 346.0, 76.0, 386.0],
+            [36.0, -72.0, 720.0, 396.0],
+        ),
+        (
+            180,
+            "346.00 608.00 40.00 30.00 re",
+            [346.0, 608.0, 386.0, 638.0],
+            [-72.0, -36.0, 396.0, 648.0],
+        ),
+        (
+            270,
+            "608.00 82.00 30.00 40.00 re",
+            [608.0, 82.0, 638.0, 122.0],
+            [-36.0, 72.0, 648.0, 540.0],
+        ),
+    ];
+
+    for (rotate, expected_re, expected_rect, expected_overlay_box) in cases {
+        let Some(fx) = Harness::new(&format!("offset-crop-rot-{rotate}")) else {
+            eprintln!("skip: qpdf not available");
+            return;
+        };
+        write_visual_page(
+            &fx.src,
+            rotate,
+            Some([72, 36, 540, 720]),
+            Some([100, 100, 400, 500]),
+        );
+        fx.export(&filled_rect(82.0, 46.0, 40.0, 30.0))
+            .expect("export");
+
+        let out = Document::load(&fx.dest).expect("load dest");
+        let page = first_page_dict(&out);
+        assert_box_near(&page, b"MediaBox", [0.0, 0.0, 612.0, 792.0]);
+        assert_box_near(&page, b"CropBox", [72.0, 36.0, 540.0, 720.0]);
+        assert_box_near(&page, b"TrimBox", [100.0, 100.0, 400.0, 500.0]);
+        let saved_rotate = match page.get(b"Rotate") {
+            Ok(Object::Integer(v)) => *v,
+            _ => 0,
+        };
+        assert_eq!(saved_rotate, rotate, "Rotate {rotate} must survive");
+
+        let forms = form_streams(&fx.dest);
+        let (source_dict, source_stream) = forms
+            .iter()
+            .find(|(_, stream)| stream.contains("0 1 0 rg 82 46 40 30 re f"))
+            .expect("source vector Form");
+        assert!(
+            source_stream.contains("1 1 0 rg 490 660 40 30 re f"),
+            "Rotate {rotate}: far source marker was removed"
+        );
+        assert_box_near(source_dict, b"BBox", [72.0, 36.0, 540.0, 720.0]);
+
+        let (overlay_dict, overlay_stream) = forms
+            .iter()
+            .find(|(_, stream)| stream.contains("/GS100 gs"))
+            .expect("overlay Form");
+        assert!(
+            overlay_stream.contains(expected_re),
+            "Rotate {rotate}: expected {expected_re}; re={}",
+            listed_re_ops(overlay_stream)
+        );
+        assert_box_near(overlay_dict, b"BBox", expected_overlay_box);
+
+        let mapped_source = transform_rect([82.0, 46.0, 122.0, 76.0], form_matrix(source_dict));
+        assert_rect_near(
+            mapped_source,
+            expected_rect,
+            &format!("Rotate {rotate}: source marker transform"),
+        );
+
+        assert_source_overlay_cm_match(&fx.dest, &format!("Rotate {rotate}"));
+
+        fx.assert_dest_checks();
+        fx.cleanup();
+    }
+}
+
+#[test]
+fn integ_box_normalization_restores_missing_crop_and_trim_entries() {
+    let Some(no_trim) = Harness::new("restore-no-trim") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_visual_page(&no_trim.src, 0, Some([72, 36, 540, 720]), None);
+    no_trim
+        .export(&filled_rect(82.0, 46.0, 40.0, 30.0))
+        .expect("export without TrimBox");
+    let page = first_page_dict(&Document::load(&no_trim.dest).unwrap());
+    assert_box_near(&page, b"MediaBox", [0.0, 0.0, 612.0, 792.0]);
+    assert_box_near(&page, b"CropBox", [72.0, 36.0, 540.0, 720.0]);
+    assert!(page.get(b"TrimBox").is_err(), "must not invent TrimBox");
+    assert_source_overlay_cm_match(&no_trim.dest, "missing TrimBox");
+    no_trim.assert_dest_checks();
+    no_trim.cleanup();
+
+    let Some(no_crop) = Harness::new("restore-no-crop") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_visual_page(&no_crop.src, 0, None, Some([100, 100, 400, 500]));
+    no_crop
+        .export(&filled_rect(82.0, 46.0, 40.0, 30.0))
+        .expect("export without CropBox");
+    let page = first_page_dict(&Document::load(&no_crop.dest).unwrap());
+    assert_box_near(&page, b"MediaBox", [0.0, 0.0, 612.0, 792.0]);
+    assert!(page.get(b"CropBox").is_err(), "must not invent CropBox");
+    assert_box_near(&page, b"TrimBox", [100.0, 100.0, 400.0, 500.0]);
+    assert_source_overlay_cm_match(&no_crop.dest, "missing CropBox");
+    no_crop.assert_dest_checks();
+    no_crop.cleanup();
 }
 
 #[test]

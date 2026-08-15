@@ -1,7 +1,8 @@
 /**
  * Visible page box = CropBox ∩ MediaBox (else MediaBox).
  * Matches Rust `crop::visible_box`. Preview uses pdf.js `page.view` (same
- * window). Export overlay alignment is Rust `align_box` (page Trim → Crop → Media).
+ * window). Rust also reads qpdf's native alignment box (page Trim → Crop →
+ * Media) to decide whether the temporary export pages need normalization.
  */
 
 import type { PageBox } from "./types";
@@ -40,9 +41,10 @@ export function visiblePageBox(media: PdfBoxQuad, crop?: PdfBoxQuad | null): Pag
 }
 
 /**
- * qpdf overlay alignment model: raw page TrimBox (not inherited, not clipped
- * to Media) → CropBox → MediaBox. Preview does not see Trim (pdf.js); live
- * export uses Rust `align_box`.
+ * qpdf's native overlay alignment model: raw page TrimBox (not inherited and
+ * not clipped to Media) → CropBox → MediaBox. Preview does not see TrimBox.
+ * Export normalizes mismatched working-page boxes to the visible box before
+ * composition, then restores the source boxes.
  */
 export function alignPageBox(
   media: PdfBoxQuad,
