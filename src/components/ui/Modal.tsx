@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useId, type ReactNode } from "react";
 
 export interface ModalProps {
   open: boolean;
@@ -11,6 +11,8 @@ export interface ModalProps {
 }
 
 export function Modal({ open, onClose, title, children, footer, wide = false }: ModalProps) {
+  const titleId = useId();
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -29,9 +31,16 @@ export function Modal({ open, onClose, title, children, footer, wide = false }: 
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className={`modal ${wide ? "modal--wide" : ""}`} role="dialog" aria-modal="true">
+      <div
+        className={`modal ${wide ? "modal--wide" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
         <div className="modal__header">
-          <div className="modal__title">{title}</div>
+          <div className="modal__title" id={titleId}>
+            {title}
+          </div>
         </div>
         <div className="modal__body">{children}</div>
         {footer && <div className="modal__footer">{footer}</div>}
