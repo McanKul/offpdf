@@ -6,7 +6,7 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 ## Current release
 
 - **v0.2.2** is the latest published release. Its historical Windows package is
-  unsigned; new Windows distribution is paused rather than repeating that model.
+  unsigned and remains available through GitHub Releases.
 - The Apple Silicon macOS build is signed and notarized. It bundles qpdf,
   Poppler, and Tesseract; LibreOffice remains optional for Office and PDF/A work.
 
@@ -15,8 +15,9 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 - **v0.3.0** is being prepared for distribution through GitHub Releases and
   [offpdf.com](https://offpdf.com).
 - The Windows x64 installer bundles qpdf, Poppler, Tesseract, and LibreOffice so
-  the supported workflows run offline. Public Windows distribution is paused
-  until the Authenticode signing workflow is ready.
+  the supported workflows run offline. It is distributed through GitHub Releases
+  with an explicit unsigned warning while Authenticode signing is completed;
+  offpdf.com does not link to it yet.
 - The app currently includes 23 tools for organizing, converting, optimizing,
   securing, and repairing PDFs.
 
@@ -38,7 +39,8 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 
 ## Known limitations
 
-- A current Windows installer is not published while code signing is being set up.
+- Windows installers are currently unsigned and available only through GitHub
+  Releases; offpdf.com will link them after code signing is complete.
 - There are no official Intel Mac or Linux packages yet.
 - Office conversion and PDF/A require LibreOffice; it is not bundled on macOS.
 - Lossy compression rasterizes pages. Use text-preserving compression when text

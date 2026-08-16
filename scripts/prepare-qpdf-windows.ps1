@@ -6,7 +6,9 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $OutDir = Join-Path $RepoRoot "src-tauri\binaries"
+$RuntimeOutDir = Join-Path $RepoRoot "src-tauri\windows-runtime"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+New-Item -ItemType Directory -Force -Path $RuntimeOutDir | Out-Null
 
 $Headers = @{
   "User-Agent" = "OffPDF-build"
@@ -52,8 +54,19 @@ Write-Host "Copying qpdf runtime from $QpdfBin to $OutDir"
 Copy-Item -Path (Join-Path $QpdfBin "qpdf.exe") -Destination $OutDir -Force
 Get-ChildItem -Path $QpdfBin -Filter "*.dll" | Copy-Item -Destination $OutDir -Force
 
+foreach ($Runtime in @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")) {
+  $RuntimeSource = Join-Path $QpdfBin $Runtime
+  if (-not (Test-Path $RuntimeSource)) {
+    throw "Could not find required Windows runtime in the qpdf archive: $Runtime"
+  }
+  Copy-Item -Path $RuntimeSource -Destination $RuntimeOutDir -Force
+}
+
 Write-Host "Bundled files:"
 Get-ChildItem -Path $OutDir | Select-Object Name, Length | Format-Table -AutoSize
+
+Write-Host "Runtime DLLs staged at the application root:"
+Get-ChildItem -Path $RuntimeOutDir -File | Select-Object Name, Length | Format-Table -AutoSize
 
 if ($IsWindows) {
   Write-Host "qpdf version:"

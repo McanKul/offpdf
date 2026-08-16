@@ -18,6 +18,7 @@
 <p align="center">
   <strong><a href="#downloads">View downloads</a></strong>
   · <a href="https://offpdf.com">Visit offpdf.com</a>
+  · <a href="https://github.com/McanKul/offpdf">Star OffPDF on GitHub</a>
   · <a href="./CONTRIBUTING.md">Contribute</a>
 </p>
 
@@ -60,13 +61,15 @@ service in the middle.
 
 | Platform | Package | Status |
 | --- | --- | --- |
-| Windows x64 | New package not currently published | v0.3 is withheld while Authenticode signing is prepared; older unsigned builds remain in release history |
+| Windows x64 | [Download from the latest release](https://github.com/McanKul/offpdf/releases/latest) | Available on GitHub Releases; currently unsigned while Authenticode signing is completed |
 | macOS 11+ · Apple Silicon | [Download from the latest release](https://github.com/McanKul/offpdf/releases/latest) | Signed and notarized |
 | Intel Mac / Linux | [Build from source](#development) | No published package yet |
 
 The Windows installer is large because it includes the local engines needed to
 keep its core workflows offline. The macOS build bundles qpdf, Poppler, and
 Tesseract; LibreOffice is optional and only needed for Office and PDF/A tools.
+Until Authenticode signing is complete, the Windows package is distributed only
+through GitHub Releases and is not linked from offpdf.com.
 
 All published binaries are available on the
 [Releases page](https://github.com/McanKul/offpdf/releases).

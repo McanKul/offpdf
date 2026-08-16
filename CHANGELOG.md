@@ -33,7 +33,8 @@ All notable project changes should be documented here.
 
 ### Distribution
 
-- New Windows packages are withheld until the Authenticode signing and verification workflow is ready. The manual Windows workflow now builds and smoke-tests locally without attaching an unsigned installer to a GitHub Release.
+- The Windows x64 installer is available through GitHub Releases with an accompanying SHA-256 file. It remains clearly marked as unsigned while Authenticode signing is completed and is not linked from offpdf.com.
+- The Windows release workflow builds, installs, launches, checks bundled runtimes, and scans the installer with Microsoft Defender before attaching it to a draft release.
 
 ## 0.2.2
 
