@@ -18,6 +18,7 @@
 <p align="center">
   <strong><a href="#downloads">View downloads</a></strong>
   · <a href="https://offpdf.com">Visit offpdf.com</a>
+  · <a href="https://github.com/McanKul/offpdf">Star OffPDF on GitHub</a>
   · <a href="./CONTRIBUTING.md">Contribute</a>
 </p>
 
