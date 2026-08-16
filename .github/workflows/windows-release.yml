@@ -1,4 +1,4 @@
-name: Windows Build Verification
+name: Windows x64 Release
 
 on:
   workflow_dispatch:
@@ -21,16 +21,16 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: windows-release-${{ github.ref }}
+  group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   windows-x64:
-    name: Build and smoke-test Windows installer (not published)
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development'
+    name: Build, verify, and stage Windows x64 installer
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 120
 
@@ -72,16 +72,26 @@ jobs:
         shell: pwsh
         run: ./scripts/prepare-libreoffice-windows.ps1 -Version "${{ github.event.inputs.libreoffice_version }}"
 
-      - name: Build Windows installer for smoke testing
+      - name: Build Windows installer
         uses: tauri-apps/tauri-action@v0
         with:
           args: --bundles nsis
 
-      - name: Enforce Windows signing gate
+      - name: Verify unsigned Authenticode state
         shell: pwsh
         run: |
-          Write-Host 'This workflow validates the Windows bundle locally only.'
-          Write-Host 'Do not publish it until the Authenticode signing workflow is enabled.'
+          $installer = @(Get-ChildItem -Path src-tauri/target/release/bundle/nsis -Filter '*-setup.exe')
+          if ($installer.Count -ne 1) { throw "Expected one NSIS installer, found $($installer.Count)." }
+
+          $appPath = 'src-tauri/target/release/offpdf.exe'
+          if (-not (Test-Path $appPath)) { throw "Built application not found at $appPath" }
+
+          foreach ($file in @($installer[0].FullName, $appPath)) {
+            $signature = Get-AuthenticodeSignature -FilePath $file
+            if ($signature.Status -ne 'NotSigned') {
+              throw "Expected an unsigned build, but ${file} has Authenticode status $($signature.Status)."
+            }
+          }
 
       - name: Smoke test installed application
         shell: pwsh
@@ -108,6 +118,88 @@ jobs:
           Start-Sleep -Seconds 10
           if ($app.HasExited) { throw "OffPDF exited during startup with code $($app.ExitCode)." }
           Stop-Process -Id $app.Id -Force
+
+      - name: Scan installer with Microsoft Defender
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem -Path src-tauri/target/release/bundle/nsis -Filter '*-setup.exe')
+          if ($installer.Count -ne 1) { throw "Expected one NSIS installer, found $($installer.Count)." }
+
+          $defender = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+          if (-not (Test-Path $defender)) {
+            $defender = Get-ChildItem "$env:ProgramData\Microsoft\Windows Defender\Platform" -Filter MpCmdRun.exe -Recurse |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $defender) { throw 'Microsoft Defender command-line scanner was not found.' }
+
+          & $defender -Scan -ScanType 3 -File $installer[0].FullName -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { throw "Microsoft Defender scan failed with exit code $LASTEXITCODE." }
+
+      - name: Attach verified installer to draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = node -p "require('./package.json').version"
+          $tag = "v$version"
+          $notesPath = ".github/release-notes/$tag.md"
+          if (-not (Test-Path $notesPath)) { throw "Release notes not found at $notesPath" }
+
+          $installer = @(Get-ChildItem -Path src-tauri/target/release/bundle/nsis -Filter '*-setup.exe')
+          if ($installer.Count -ne 1) { throw "Expected one NSIS installer, found $($installer.Count)." }
+
+          $expectedName = "OffPDF_${version}_x64-setup.exe"
+          if ($installer[0].Name -ne $expectedName) {
+            throw "Unexpected installer name $($installer[0].Name); expected $expectedName."
+          }
+
+          $checksumPath = "$($installer[0].FullName).sha256"
+          $hash = (Get-FileHash -Algorithm SHA256 $installer[0].FullName).Hash.ToLowerInvariant()
+          "$hash  $($installer[0].Name)" | Set-Content -Path $checksumPath -Encoding utf8NoBOM
+
+          $releaseExists = $true
+          gh release view $tag --json isDraft *> $null
+          if ($LASTEXITCODE -ne 0) { $releaseExists = $false }
+
+          if (-not $releaseExists) {
+            gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" *> $null
+            if ($LASTEXITCODE -ne 0) {
+              gh api --method POST "repos/$env:GITHUB_REPOSITORY/git/refs" `
+                -f "ref=refs/tags/$tag" `
+                -f "sha=$env:GITHUB_SHA" *> $null
+              if ($LASTEXITCODE -ne 0) { throw "Could not create tag $tag." }
+            }
+          }
+
+          $tagSha = gh api "repos/$env:GITHUB_REPOSITORY/commits/$tag" --jq '.sha'
+          if ($LASTEXITCODE -ne 0 -or $tagSha -ne $env:GITHUB_SHA) {
+            throw "Refusing to attach $env:GITHUB_SHA to $tag at $tagSha."
+          }
+
+          if ($releaseExists) {
+            $isDraft = gh release view $tag --json isDraft --jq '.isDraft'
+            if ($isDraft -ne 'true') { throw "Refusing to modify published release $tag." }
+          } else {
+            gh release create $tag `
+              --verify-tag `
+              --draft `
+              --title "OffPDF $tag" `
+              --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) { throw "Could not create draft release $tag." }
+          }
+
+          $existingAssets = @(gh release view $tag --json assets --jq '.assets[].name')
+          foreach ($name in @($installer[0].Name, (Split-Path $checksumPath -Leaf))) {
+            if ($existingAssets -contains $name) {
+              throw "Refusing to replace existing release asset $name."
+            }
+          }
+
+          gh release upload $tag $installer[0].FullName $checksumPath
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload Windows assets to $tag." }
+
+          "Staged unsigned Windows installer in draft release $tag." | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
       - name: List bundle outputs
         shell: pwsh

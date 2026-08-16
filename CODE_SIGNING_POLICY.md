@@ -8,11 +8,13 @@ tag, build log, and resulting artifact must remain traceable to one another.
 
 - Apple Silicon macOS releases are signed with an Apple Developer ID certificate,
   notarized by Apple, and verified before publication.
-- Public Windows distribution is paused while the Authenticode signing workflow
-  is being prepared. An unsigned Windows validation build must not be attached to
-  a public GitHub Release or linked as an official download.
-- Windows publication will resume only after the application executable,
-  installer, and uninstaller pass Authenticode and timestamp verification.
+- Windows x64 installers may be published only through GitHub Releases while the
+  Authenticode workflow is being prepared. They must be clearly marked as
+  unsigned, include a SHA-256 file, and pass the documented build, install,
+  startup, runtime, and Microsoft Defender checks before attachment.
+- Unsigned Windows installers are not linked from offpdf.com. Once Authenticode
+  is enabled, the application executable, installer, and uninstaller must pass
+  signature and timestamp verification before the website links the package.
 
 ## Roles and approval
 
@@ -28,10 +30,13 @@ tag, build log, and resulting artifact must remain traceable to one another.
 
 1. Required frontend and Rust checks must pass on the release commit.
 2. Release builds run on GitHub-hosted runners from the tagged `main` commit.
-3. Each platform workflow completes its explicitly documented signature,
-   notarization, and smoke-test gates before it can attach a release artifact.
-4. The future Windows workflow must additionally verify the application,
-   installer, uninstaller, and RFC 3161 timestamp before publishing anything.
+3. Each platform workflow completes its documented verification and smoke-test
+   gates before it can attach a release artifact. macOS additionally requires a
+   valid signature and notarization ticket.
+4. The temporary unsigned Windows path verifies the unsigned state, produces a
+   SHA-256 file, installs and launches the app, checks bundled runtimes, and runs
+   Microsoft Defender. The future signed path must additionally verify the
+   application, installer, uninstaller, and RFC 3161 timestamp.
 5. A failed or unverifiable artifact is discarded rather than published.
 
 OffPDF has no automatic updater. Users choose when to download and install a
