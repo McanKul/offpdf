@@ -721,8 +721,9 @@ button {
   animation: pop 0.14s ease;
 }
 .modal--wide { max-width: min(1000px, 94vw); }
-.modal__header { padding: 18px 20px 0; }
-.modal__title { font-size: 16px; font-weight: 650; }
+.modal__header { padding: 18px 20px 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.modal__title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 650; }
+.modal__header-actions { flex: none; }
 .modal__body { padding: 12px 20px; color: var(--text-muted); }
 .modal__footer { padding: 14px 20px 18px; display: flex; justify-content: flex-end; gap: 10px; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }

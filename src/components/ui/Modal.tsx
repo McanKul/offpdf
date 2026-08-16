@@ -4,13 +4,14 @@ export interface ModalProps {
   open: boolean;
   onClose: () => void;
   title: ReactNode;
+  headerActions?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
   /** Wide layout for viewers (≈ full-screen page preview). */
   wide?: boolean;
 }
 
-export function Modal({ open, onClose, title, children, footer, wide = false }: ModalProps) {
+export function Modal({ open, onClose, title, headerActions, children, footer, wide = false }: ModalProps) {
   const titleId = useId();
 
   useEffect(() => {
@@ -41,6 +42,7 @@ export function Modal({ open, onClose, title, children, footer, wide = false }: 
           <div className="modal__title" id={titleId}>
             {title}
           </div>
+          {headerActions && <div className="modal__header-actions">{headerActions}</div>}
         </div>
         <div className="modal__body">{children}</div>
         {footer && <div className="modal__footer">{footer}</div>}
