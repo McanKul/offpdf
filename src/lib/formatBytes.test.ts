@@ -77,6 +77,11 @@ describe("formatRelativeTime", () => {
     expect(formatRelativeTime(now - 44_000, now)).toBe("just now");
   });
 
+  it("returns '1 min ago' for times from 45 through 59 seconds ago", () => {
+    expect(formatRelativeTime(now - 45_000, now)).toBe("1 min ago");
+    expect(formatRelativeTime(now - 59_000, now)).toBe("1 min ago");
+  });
+
   it("returns 'X min ago' for times less than 60 minutes ago", () => {
     expect(formatRelativeTime(now - 60_000, now)).toBe("1 min ago");
     expect(formatRelativeTime(now - 5 * 60_000, now)).toBe("5 min ago");
