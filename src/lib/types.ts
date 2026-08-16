@@ -171,14 +171,34 @@ export interface RecentJob {
 
 /** Type guard: is this value an AppError coming back from `invoke`? */
 export function isAppError(value: unknown): value is AppError {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "code" in value &&
-    "title" in value &&
-    "message" in value
-  );
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.code !== "string" ||
+    typeof candidate.title !== "string" ||
+    typeof candidate.message !== "string"
+  ) {
+    return false;
+  }
+  if (
+    candidate.details !== undefined &&
+    candidate.details !== null &&
+    typeof candidate.details !== "string"
+  ) {
+    return false;
+  }
+  if (
+    candidate.suggestion !== undefined &&
+    candidate.suggestion !== null &&
+    typeof candidate.suggestion !== "string"
+  ) {
+    return false;
+  }
+  return true;
 }
+
 
 /** Coerce anything thrown from a command into an AppError for the UI. */
 export function toAppError(value: unknown): AppError {
