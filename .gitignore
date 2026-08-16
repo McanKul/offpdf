@@ -20,6 +20,8 @@ src-tauri/tesseract/*
 !src-tauri/tesseract/.gitkeep
 src-tauri/libreoffice/*
 !src-tauri/libreoffice/.gitkeep
+src-tauri/windows-runtime/*
+!src-tauri/windows-runtime/.gitkeep
 
 # Editor / OS
 .DS_Store

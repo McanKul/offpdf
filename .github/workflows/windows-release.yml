@@ -50,12 +50,15 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Smoke test HEIC and HEIF conversion
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib heic_and_heif_complete_the_jpeg_and_pdf_pipeline
+      - name: Build frontend assets for Rust tests
+        run: npm run build
 
       - name: Bundle qpdf for Windows
         shell: pwsh
         run: ./scripts/prepare-qpdf-windows.ps1 -Version "${{ github.event.inputs.qpdf_version }}"
+
+      - name: Smoke test HEIC and HEIF conversion
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib heic_and_heif_complete_the_jpeg_and_pdf_pipeline
 
       - name: Bundle poppler for Windows
         shell: pwsh
@@ -94,7 +97,11 @@ jobs:
 
           foreach ($runtime in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
             $runtimePath = Join-Path (Split-Path $appPath) $runtime
-            if (-not (Test-Path $runtimePath)) { throw "Required runtime is missing: $runtimePath" }
+            if (-not (Test-Path $runtimePath)) {
+              Write-Host 'Installed application tree:'
+              Get-ChildItem (Split-Path $appPath) -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+              throw "Required runtime is missing: $runtimePath"
+            }
           }
 
           $app = Start-Process -FilePath $appPath -PassThru
