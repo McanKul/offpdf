@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: macos-release-${{ github.ref }}
+  group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -124,31 +124,43 @@ jobs:
           test -f "$notes_path"
           test -n "$dmg_path"
 
+          release_exists=false
           if gh release view "$tag" --json isDraft >/dev/null 2>&1; then
+            release_exists=true
+          fi
+
+          if [[ "$release_exists" == "false" ]]; then
+            if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f "ref=refs/tags/${tag}" \
+                -f "sha=${GITHUB_SHA}" >/dev/null
+            fi
+          fi
+
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha')"
+          if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+            echo "Refusing to attach a build from $GITHUB_SHA to $tag at $tag_sha." >&2
+            exit 1
+          fi
+
+          if [[ "$release_exists" == "true" ]]; then
             is_draft="$(gh release view "$tag" --json isDraft --jq '.isDraft')"
             if [[ "$is_draft" != "true" ]]; then
-              echo "Refusing to replace assets on published release $tag." >&2
+              echo "Refusing to modify published release $tag." >&2
               exit 1
             fi
-            tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha')"
-            if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
-              echo "Refusing to attach a build from $GITHUB_SHA to $tag at $tag_sha." >&2
-              exit 1
-            fi
-            gh release upload "$tag" "$dmg_path" --clobber
-            gh release edit "$tag" \
-              --title "OffPDF ${tag}" \
-              --notes-file "$notes_path"
           else
-            if tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha' 2>/dev/null)"; then
-              if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
-                echo "Refusing to create a release for $tag at $tag_sha from $GITHUB_SHA." >&2
-                exit 1
-              fi
-            fi
-            gh release create "$tag" "$dmg_path" \
+            gh release create "$tag" \
+              --verify-tag \
               --draft \
-              --target "$GITHUB_SHA" \
               --title "OffPDF ${tag}" \
               --notes-file "$notes_path"
           fi
+
+          dmg_name="$(basename "$dmg_path")"
+          if gh release view "$tag" --json assets --jq '.assets[].name' | grep -Fqx "$dmg_name"; then
+            echo "Refusing to replace existing release asset $dmg_name." >&2
+            exit 1
+          fi
+
+          gh release upload "$tag" "$dmg_path"
