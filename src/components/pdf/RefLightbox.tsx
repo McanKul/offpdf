@@ -217,40 +217,36 @@ export function RefLightbox({
       open
       wide
       onClose={onClose}
-      title={
-        <div className="row spread" style={{ width: "100%", gap: 12 }}>
-          <span className="truncate" title={`${ref.fileName} · page ${ref.page}`}>
-            {ref.fileName} · page {index + 1} of {list.length}
-          </span>
-          <div className="row" style={{ flex: "none", gap: 6 }}>
-            <button
-              className="btn btn--ghost btn--sm"
-              title="Zoom out (-)"
-              aria-label="Zoom out"
-              disabled={zoom <= MIN_ZOOM}
-              onClick={() => setZoom((z) => clamp(z - STEP))}
-            >
-              <Icon name="minus" size={15} />
-            </button>
-            <button
-              className="btn btn--ghost btn--sm"
-              title="Reset (0)"
-              aria-label={`Reset zoom, current zoom ${pct}%`}
-              onClick={() => setZoom(1)}
-              style={{ minWidth: 52 }}
-            >
-              {pct}%
-            </button>
-            <button
-              className="btn btn--ghost btn--sm"
-              title="Zoom in (+)"
-              aria-label="Zoom in"
-              disabled={zoom >= MAX_ZOOM}
-              onClick={() => setZoom((z) => clamp(z + STEP))}
-            >
-              <Icon name="plus" size={15} />
-            </button>
-          </div>
+      title={`${ref.fileName} · page ${index + 1} of ${list.length}`}
+      headerActions={
+        <div className="row" style={{ gap: 6 }}>
+          <button
+            className="btn btn--ghost btn--sm"
+            title="Zoom out (-)"
+            aria-label="Zoom out"
+            disabled={zoom <= MIN_ZOOM}
+            onClick={() => setZoom((z) => clamp(z - STEP))}
+          >
+            <Icon name="minus" size={15} />
+          </button>
+          <button
+            className="btn btn--ghost btn--sm"
+            title="Reset (0)"
+            aria-label={`Reset zoom, current zoom ${pct}%`}
+            onClick={() => setZoom(1)}
+            style={{ minWidth: 52 }}
+          >
+            {pct}%
+          </button>
+          <button
+            className="btn btn--ghost btn--sm"
+            title="Zoom in (+)"
+            aria-label="Zoom in"
+            disabled={zoom >= MAX_ZOOM}
+            onClick={() => setZoom((z) => clamp(z + STEP))}
+          >
+            <Icon name="plus" size={15} />
+          </button>
         </div>
       }
       footer={
