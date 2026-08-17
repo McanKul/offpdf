@@ -1,0 +1,27 @@
+[package]
+name = "heif-rs"
+version = "26.7.0"
+edition = "2024"
+links = "heif"
+build = "build.rs"
+description = "Encode and decode HEIF/HEIC images with x265 and libde265, via statically-linked libheif."
+license = "Apache-2.0"
+repository = "https://github.com/vegidio/heif-rs"
+homepage = "https://github.com/vegidio/heif-rs"
+readme = "README.md"
+authors = ["Vinicius Egidio <me@vinicius.io>"]
+keywords = ["heif", "heic", "image", "hevc", "encoding"]
+categories = ["multimedia::images", "encoding"]
+exclude = [".cargo/", ".github/", ".idea/", ".editorconfig", ".gitignore", "assets/", "examples/", "scripts/", "rustfmt.toml"]
+
+[lib]
+name = "heif"
+
+[dependencies]
+image = "0.25"
+thiserror = "2"
+
+[build-dependencies]
+bindgen = "0.72.1"
+ureq = "3"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
