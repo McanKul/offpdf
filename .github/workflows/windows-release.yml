@@ -19,6 +19,11 @@ on:
         description: Optional Chocolatey libreoffice-fresh package version. Empty uses latest.
         required: false
         type: string
+      stage_test_build:
+        description: Stage an owner-only draft test build instead of updating the version release.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -142,9 +147,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = node -p "require('./package.json').version"
-          $tag = "v$version"
+          $testMode = '${{ github.event.inputs.stage_test_build }}' -eq 'true'
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $tag = if ($testMode) { "test-windows-$version-$shortSha" } else { "v$version" }
           $notesPath = ".github/release-notes/$tag.md"
-          if (-not (Test-Path $notesPath)) { throw "Release notes not found at $notesPath" }
+          if (-not $testMode -and -not (Test-Path $notesPath)) {
+            throw "Release notes not found at $notesPath"
+          }
+
+          if ($testMode) {
+            $notesPath = Join-Path $env:RUNNER_TEMP 'windows-test-build.md'
+            @"
+          Temporary unsigned Windows x64 test build for issue #14.
+
+          - Exact source commit: `$env:GITHUB_SHA`
+          - This is not a release and must not be redistributed.
+          - Verify the accompanying SHA-256 before testing.
+          "@ | Set-Content -Path $notesPath -Encoding utf8NoBOM
+          }
 
           $installer = @(Get-ChildItem -Path src-tauri/target/release/bundle/nsis -Filter '*-setup.exe')
           if ($installer.Count -ne 1) { throw "Expected one NSIS installer, found $($installer.Count)." }
@@ -181,11 +201,15 @@ jobs:
             $isDraft = gh release view $tag --json isDraft --jq '.isDraft'
             if ($isDraft -ne 'true') { throw "Refusing to modify published release $tag." }
           } else {
-            gh release create $tag `
-              --verify-tag `
-              --draft `
-              --title "OffPDF $tag" `
-              --notes-file $notesPath
+            $releaseArgs = @(
+              'release', 'create', $tag,
+              '--verify-tag',
+              '--draft',
+              '--title', $(if ($testMode) { "OffPDF Windows test build ($shortSha)" } else { "OffPDF $tag" }),
+              '--notes-file', $notesPath
+            )
+            if ($testMode) { $releaseArgs += '--prerelease' }
+            & gh @releaseArgs
             if ($LASTEXITCODE -ne 0) { throw "Could not create draft release $tag." }
           }
 
@@ -199,7 +223,8 @@ jobs:
           gh release upload $tag $installer[0].FullName $checksumPath
           if ($LASTEXITCODE -ne 0) { throw "Could not upload Windows assets to $tag." }
 
-          "Staged unsigned Windows installer in draft release $tag." | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          $mode = if ($testMode) { 'owner-only test draft' } else { 'version draft' }
+          "Staged unsigned Windows installer in $mode $tag." | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
       - name: List bundle outputs
         shell: pwsh
