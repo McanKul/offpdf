@@ -42,7 +42,7 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 # Decode iPhone/iPad HEIC and HEIF photos. libheif is built and linked into the
 # app so users do not need to install a system codec or upload their photos.
-heif-rs = "26.7"
+heif-rs = { path = "vendor/heif-rs" }
 
 [features]
 # By default Tauri uses custom protocols. Keep network features off.

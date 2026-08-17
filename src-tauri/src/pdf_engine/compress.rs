@@ -355,7 +355,10 @@ fn decode_heif(path: &Path) -> Result<image::DynamicImage, AppError> {
     }
     validate_heif_limits(metadata.len(), width, height, decoded_bytes)?;
 
-    let image = image::DynamicImage::from_decoder(decoder.with_threads(1)).map_err(|error| {
+    // Keep libheif's tile decoding on the calling thread. Its codec backend may
+    // still manage its own workers, but this removes libheif's background tile
+    // thread from the FFI path while decoding untrusted input.
+    let image = image::DynamicImage::from_decoder(decoder.with_threads(0)).map_err(|error| {
         AppError::new(
             "INVALID_IMAGE",
             "Could not decode this HEIC/HEIF image",

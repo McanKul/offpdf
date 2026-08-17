@@ -1720,8 +1720,6 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 [[package]]
 name = "heif-rs"
 version = "26.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1864e5d0f2f9e82db410c2be5bdfd419909d9018ed82702481603a879a33a6d4"
 dependencies = [
  "bindgen",
  "image",
