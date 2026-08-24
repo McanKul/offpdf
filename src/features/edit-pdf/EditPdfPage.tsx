@@ -16,7 +16,7 @@ import {
 } from "@/components/pdf";
 import { useEditSession } from "@/components/pdf/editor";
 import { useJob, JobStatus, useDiskGuard } from "@/components/jobs";
-import { editPdfOverlays } from "@/lib/tauriCommands";
+import { editPdfOverlays, listPdfLinks } from "@/lib/tauriCommands";
 import { getTool } from "@/lib/tools";
 import { estimateRequiredBytes, validateOutputName, joinPath } from "@/lib/validation";
 import { stripExt } from "@/lib/formatBytes";
@@ -24,6 +24,7 @@ import { useSettingsStore } from "@/state/settingsStore";
 import { useWorkspace } from "@/state/workspaceStore";
 import {
   clampPageIndex,
+  makeLinkObject,
   planKeyRebind,
   rebindNeedsConfirm,
   resolveViewPageIndex,
@@ -64,6 +65,60 @@ export function EditPdfPage() {
 
   const session = useEditSession(pageKeys);
   const doc = session.document;
+  const hydratedUids = useRef(new Set<string>());
+  const [hydrateReady, setHydrateReady] = useState(
+    () => files.every((f) => (f.pageCount ?? 0) === 0),
+  );
+
+  useEffect(() => {
+    const live = new Set(files.map((f) => f.uid));
+    for (const uid of [...hydratedUids.current]) {
+      if (!live.has(uid)) hydratedUids.current.delete(uid);
+    }
+    const pending = files.filter((f) => (f.pageCount ?? 0) > 0 && !hydratedUids.current.has(f.uid));
+    if (pending.length === 0) {
+      setHydrateReady(true);
+      return;
+    }
+    setHydrateReady(false);
+    let cancelled = false;
+    void (async () => {
+      const mapped: import("@/lib/editor").EditObject[] = [];
+      const succeeded: string[] = [];
+      for (const file of pending) {
+        try {
+          const listed = await listPdfLinks(file.path);
+          if (cancelled) return;
+          for (const link of listed) {
+            const pageIndex = refs.findIndex((r) => r.key === `${file.uid}#${link.pageIndex + 1}`);
+            if (pageIndex < 0) continue;
+            let action = link.action;
+            if (action.type === "goto") {
+              const destPage = action.destPageIndex;
+              const dest = refs.findIndex((r) => r.key === `${file.uid}#${destPage + 1}`);
+              if (dest < 0) continue;
+              action = { type: "goto", destPageIndex: dest };
+            }
+            const id =
+              typeof crypto !== "undefined" && "randomUUID" in crypto
+                ? crypto.randomUUID()
+                : `link-${file.uid}-${link.pageIndex}-${mapped.length}`;
+            mapped.push(makeLinkObject(id, pageIndex, link.rect, action));
+          }
+          succeeded.push(file.uid);
+        } catch {
+          continue;
+        }
+      }
+      if (cancelled) return;
+      if (mapped.length > 0) session.hydrateObjects(mapped);
+      for (const uid of succeeded) hydratedUids.current.add(uid);
+      setHydrateReady(pending.every((f) => hydratedUids.current.has(f.uid)));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [files, refs, session.hydrateObjects]);
 
   const first = files[0];
   useEffect(() => {
@@ -102,6 +157,7 @@ export function EditPdfPage() {
 
   const start = async () => {
     if (refs.length === 0) return toast({ title: "Add a PDF first", variant: "error" });
+    if (!hydrateReady) return toast({ title: "Still reading links from the PDF", variant: "error" });
     if (doc.objects.length === 0) return toast({ title: "Add something to the page first", variant: "error" });
     if (!folder) return toast({ title: "Choose an output folder", variant: "error" });
     const nameRes = validateOutputName(name);
@@ -118,7 +174,7 @@ export function EditPdfPage() {
     );
   };
 
-  const canStart = !job.isBusy && inTauri;
+  const canStart = !job.isBusy && inTauri && hydrateReady;
 
   return (
     <ToolPage tool={tool}>

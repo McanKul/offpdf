@@ -7,6 +7,7 @@ All notable project changes should be documented here.
 ### Added
 
 - Edit PDF: staged output is checked with `qpdf --check` and reopened for page boxes, per-page content identity, and catalog data before the destination file is replaced. A failed check leaves the original and any existing destination untouched. `qpdf --check` warnings (exit 3) still publish and appear on the completed job update.
+- Edit PDF: add, edit, and remove URI (`https` / `http` / `mailto`) and in-document GoTo link annotations. Unsupported actions are left unchanged. The original file is never overwritten.
 
 ### Fixed
 

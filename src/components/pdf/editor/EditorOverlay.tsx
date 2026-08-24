@@ -51,7 +51,8 @@ export type EditorTool =
   | "arrow"
   | "line"
   | "ink"
-  | "image";
+  | "image"
+  | "link";
 
 type Handle = ResizeHandle;
 
@@ -81,6 +82,7 @@ type DragMode =
   | { kind: "marquee"; startCss: { x: number; y: number }; additive: boolean }
   | { kind: "create-shape"; shape: ClosedShapeKind; startCss: { x: number; y: number }; lock1to1: boolean }
   | { kind: "create-text"; startCss: { x: number; y: number } }
+  | { kind: "create-link"; startCss: { x: number; y: number } }
   | { kind: "create-line"; startCss: { x: number; y: number } }
   | { kind: "create-ink"; points: { x: number; y: number }[] };
 
@@ -117,6 +119,7 @@ export function EditorOverlay({
   onUpdateRotate,
   onCreateShape,
   onCreateText,
+  onCreateLink,
   onCreateLine,
   onCreateInk,
   onRequestImage,
@@ -139,6 +142,7 @@ export function EditorOverlay({
   onUpdateRotate: (id: string, deg: number) => void;
   onCreateShape: (kind: ClosedShapeKind, rect: PdfRect, keepAspect?: boolean) => void;
   onCreateText: (rect: PdfRect) => void;
+  onCreateLink: (rect: PdfRect) => void;
   onCreateLine: (a: Point, b: Point) => void;
   onCreateInk: (points: Point[]) => void;
   onRequestImage: (atCss: { x: number; y: number }) => void;
@@ -199,6 +203,9 @@ export function EditorOverlay({
       setDraft({ kind: "shape", shape: shapeKind, start: local, cur: local });
     } else if (tool === "text") {
       dragRef.current = { kind: "create-text", startCss: local };
+      setDraft({ kind: "box", start: local, cur: local });
+    } else if (tool === "link") {
+      dragRef.current = { kind: "create-link", startCss: local };
       setDraft({ kind: "box", start: local, cur: local });
     } else if (tool === "line") {
       dragRef.current = { kind: "create-line", startCss: local };
@@ -316,7 +323,7 @@ export function EditorOverlay({
       }
       return;
     }
-    if (drag.kind === "create-text" || drag.kind === "marquee") {
+    if (drag.kind === "create-text" || drag.kind === "create-link" || drag.kind === "marquee") {
       setDraft({ kind: "box", start: drag.startCss, cur: local });
       return;
     }
@@ -399,7 +406,7 @@ export function EditorOverlay({
       }
       return;
     }
-    if (drag.kind === "create-shape" || drag.kind === "create-text") {
+    if (drag.kind === "create-shape" || drag.kind === "create-text" || drag.kind === "create-link") {
       const lock1to1 = drag.kind === "create-shape" && (drag.lock1to1 || e.shiftKey);
       const box = lock1to1 ? constrainCssBox1to1(drag.startCss, local) : cssBoxFromPoints(drag.startCss, local);
       setDraft(null);
@@ -415,6 +422,7 @@ export function EditorOverlay({
         : box;
       const pdf = viewportRectFromCss(fallback, mapping);
       if (drag.kind === "create-text") onCreateText(pdf);
+      else if (drag.kind === "create-link") onCreateLink(pdf);
       else onCreateShape(drag.shape, pdf, drag.lock1to1 || undefined);
       return;
     }
@@ -714,6 +722,20 @@ function ObjectShape({
           onPointerDown={interactive ? (e) => onPointerDownObject(e, obj) : undefined}
         />
       )}
+      {obj.kind === "link" && (
+        <g style={{ cursor: moveCursor }} onPointerDown={interactive ? (e) => onPointerDownObject(e, obj) : undefined}>
+          <rect
+            x={css.x}
+            y={css.y}
+            width={Math.max(css.w, 1)}
+            height={Math.max(css.h, 1)}
+            fill="transparent"
+            stroke="#2563eb"
+            strokeWidth={1.5}
+            strokeDasharray="5 4"
+          />
+        </g>
+      )}
       </g>
       {selected && (
         <rect
@@ -728,7 +750,7 @@ function ObjectShape({
           pointerEvents="none"
         />
       )}
-      {selected && selectedCount === 1 && !obj.locked && (
+      {selected && selectedCount === 1 && !obj.locked && obj.kind !== "link" && (
         <>
           <line
             x1={mid.x}

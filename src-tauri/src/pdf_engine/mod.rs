@@ -9,6 +9,7 @@ pub mod blank;
 pub mod compress;
 pub mod crop;
 pub mod edit_image;
+pub mod edit_links;
 pub mod edit_overlay;
 #[cfg(test)]
 mod edit_overlay_integ;

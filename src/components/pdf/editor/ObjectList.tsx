@@ -18,6 +18,13 @@ function labelFor(obj: EditObject, layer: string): string {
   if (obj.kind === "arrow") return `Arrow · ${page} · ${layer}`;
   if (obj.kind === "line") return `Line · ${page} · ${layer}`;
   if (obj.kind === "ink") return `Drawing · ${page} · ${layer}`;
+  if (obj.kind === "link") {
+    if (obj.action.type === "uri") {
+      const u = obj.action.uri.trim() || "Link";
+      return `Link: ${u.length > 22 ? `${u.slice(0, 22)}…` : u} · ${page}`;
+    }
+    return `Link: page ${obj.action.destPageIndex + 1} · ${page}`;
+  }
   return `${isNearlySquare(obj.rect) ? "Square" : "Rectangle"} · ${page} · ${layer}`;
 }
 

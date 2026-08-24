@@ -584,6 +584,7 @@ fn write_tiny_png(path: &Path, w: u32, h: u32) {
         .unwrap();
 }
 
+// L4 keepGreen: overlay-only stamp save keeps catalog keys.
 #[test]
 fn integ_catalog_survives_and_original_stream_stays() {
     let Some(fx) = Harness::new("catalog") else {

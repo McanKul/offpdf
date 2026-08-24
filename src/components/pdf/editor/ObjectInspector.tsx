@@ -19,6 +19,7 @@ export function ObjectInspector({
   picking,
   layerIndex,
   layerCount,
+  pageCount,
   onChange,
   onPickFromPage,
   onReorder,
@@ -28,6 +29,8 @@ export function ObjectInspector({
   /** 1-based, back = 1, front = layerCount */
   layerIndex: number;
   layerCount: number;
+  /** Assembled page count (GoTo dest picker). */
+  pageCount?: number;
   onChange: (patch: Partial<EditObject>) => void;
   onPickFromPage?: (target: ColorPickTarget) => void;
   onReorder?: (dir: LayerDir) => void;
@@ -41,6 +44,68 @@ export function ObjectInspector({
 
   return (
     <div className="pdf-editor__inspector">
+      {obj.kind === "link" && (
+        <>
+          <div className="pdf-editor__icon-row" role="group" aria-label="Link type">
+            <button
+              type="button"
+              className={`btn btn--sm ${obj.action.type === "uri" ? "btn--primary" : "btn--ghost"}`}
+              onClick={() =>
+                onChange({
+                  action: {
+                    type: "uri",
+                    uri: obj.action.type === "uri" ? obj.action.uri : "https://",
+                  },
+                } as Partial<EditObject>)
+              }
+            >
+              URL
+            </button>
+            <button
+              type="button"
+              className={`btn btn--sm ${obj.action.type === "goto" ? "btn--primary" : "btn--ghost"}`}
+              onClick={() =>
+                onChange({
+                  action: {
+                    type: "goto",
+                    destPageIndex: obj.action.type === "goto" ? obj.action.destPageIndex : 0,
+                  },
+                } as Partial<EditObject>)
+              }
+            >
+              Page
+            </button>
+          </div>
+          {obj.action.type === "uri" && (
+            <>
+              <label className="field__label">Address</label>
+              <input
+                className="pdf-editor__inspector-text"
+                type="text"
+                spellCheck={false}
+                value={obj.action.uri}
+                onChange={(e) =>
+                  onChange({ action: { type: "uri", uri: e.target.value } } as Partial<EditObject>)
+                }
+              />
+            </>
+          )}
+          {obj.action.type === "goto" && (
+            <DraftNumber
+              label="Dest page"
+              value={obj.action.destPageIndex + 1}
+              min={1}
+              max={Math.max(1, pageCount ?? obj.action.destPageIndex + 1)}
+              onCommit={(n) =>
+                onChange({
+                  action: { type: "goto", destPageIndex: n - 1 },
+                } as Partial<EditObject>)
+              }
+            />
+          )}
+        </>
+      )}
+
       {obj.kind === "text" && (
         <>
           <label className="field__label">Text</label>
@@ -185,38 +250,42 @@ export function ObjectInspector({
         </div>
       )}
 
-      <DraftNumber
-        label="Rotation"
-        value={obj.objectRotate ?? 0}
-        min={-180}
-        max={180}
-        suffix="°"
-        onCommit={(n) => onChange({ objectRotate: n })}
-      />
-
-      <label className="field__label">Opacity</label>
-      <div className="pdf-editor__opacity">
-        <input
-          type="range"
-          min={0.1}
-          max={1}
-          step={0.05}
-          value={opacity}
-          aria-label="Opacity"
-          onChange={(e) => onChange({ opacity: Number(e.target.value) } as Partial<EditObject>)}
-        />
+      {obj.kind !== "link" && (
         <DraftNumber
-          label="Opacity percent"
-          hideLabel
-          value={Math.round(opacity * 100)}
-          min={10}
-          max={100}
-          suffix="%"
-          onCommit={(n) => onChange({ opacity: n / 100 } as Partial<EditObject>)}
+          label="Rotation"
+          value={obj.objectRotate ?? 0}
+          min={-180}
+          max={180}
+          suffix="°"
+          onCommit={(n) => onChange({ objectRotate: n })}
         />
-      </div>
+      )}
 
-      {onReorder && layerCount > 0 && (
+      {obj.kind !== "link" && <label className="field__label">Opacity</label>}
+      {obj.kind !== "link" && (
+        <div className="pdf-editor__opacity">
+          <input
+            type="range"
+            min={0.1}
+            max={1}
+            step={0.05}
+            value={opacity}
+            aria-label="Opacity"
+            onChange={(e) => onChange({ opacity: Number(e.target.value) } as Partial<EditObject>)}
+          />
+          <DraftNumber
+            label="Opacity percent"
+            hideLabel
+            value={Math.round(opacity * 100)}
+            min={10}
+            max={100}
+            suffix="%"
+            onCommit={(n) => onChange({ opacity: n / 100 } as Partial<EditObject>)}
+          />
+        </div>
+      )}
+
+      {onReorder && layerCount > 0 && obj.kind !== "link" && (
         <div className="pdf-editor__layer">
           <label className="field__label">Layer</label>
           <div className="muted" style={{ fontSize: 12 }}>

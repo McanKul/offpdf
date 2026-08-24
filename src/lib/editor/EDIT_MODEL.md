@@ -15,6 +15,9 @@ invent a second coordinate system.
 ## What this module is not
 
 - It does **not** edit existing page content operators.
+- **Links** (`kind: "link"`) are PDF `/Annots`, not overlay stamps. They use
+  the same unrotated `EditObject.rect` space. Overlay paint skips them; Save
+  rewrites dest `/Link` dictionaries after `qpdf --overlay`.
 - It does **not** hold source PDF bytes. Paths and per-page bytes stay in the
   render layer (same pattern as `pagePdf`).
 - Image **bytes** are not stored in the document — only a local path (plus a

@@ -4,6 +4,10 @@
 
 use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
+use crate::pdf_engine::edit_links::{
+    apply_link_annots, dest_has_supported_links, expected_dest_has_annots, unsafe_uri_error,
+    uri_is_allowed, LinkAction, SessionLink,
+};
 use crate::pdf_engine::validate_output::{
     catalog_flags_from_doc, content_digest, validate_staged_pdf, ContentDigest, OutputSnapshot,
     PageSnapshot,
@@ -196,6 +200,24 @@ pub enum EditObjectIn {
         #[serde(default, rename = "objectRotate")]
         object_rotate: f64,
     },
+    Link {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        action: LinkActionIn,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum LinkActionIn {
+    Uri {
+        uri: String,
+    },
+    Goto {
+        #[serde(rename = "destPageIndex")]
+        dest_page_index: u32,
+    },
 }
 
 impl EditObjectIn {
@@ -212,11 +234,13 @@ impl EditObjectIn {
             | Self::Text { page_index, .. }
             | Self::Image { page_index, .. }
             | Self::Line { page_index, .. }
-            | Self::Ink { page_index, .. } => *page_index,
+            | Self::Ink { page_index, .. }
+            | Self::Link { page_index, .. } => *page_index,
         }
     }
     fn opacity(&self) -> f64 {
         let o = match self {
+            Self::Link { .. } => return 1.0,
             Self::Rect { opacity, .. }
             | Self::Ellipse { opacity, .. }
             | Self::Triangle { opacity, .. }
@@ -235,6 +259,7 @@ impl EditObjectIn {
 
     fn object_rotate(&self) -> f64 {
         match self {
+            Self::Link { .. } => 0.0,
             Self::Rect { object_rotate, .. }
             | Self::Ellipse { object_rotate, .. }
             | Self::Triangle { object_rotate, .. }
@@ -287,7 +312,8 @@ impl EditObjectIn {
             | Self::Bubble { rect, .. }
             | Self::Arrow { rect, .. }
             | Self::Text { rect, .. }
-            | Self::Image { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
+            | Self::Image { rect, .. }
+            | Self::Link { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
         }
     }
 }
@@ -754,7 +780,7 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
         return Err(AppError::new(
             "NO_EDITS",
             "Nothing to save",
-            "Add text, an image or a shape before saving.",
+            "Add text, an image, a shape or a link before saving.",
         ));
     }
     if doc.objects.len() > MAX_OBJECTS {
@@ -779,6 +805,12 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
                     "Drawing is too complex",
                     "Use a shorter stroke.",
                 ));
+            }
+            EditObjectIn::Link {
+                action: LinkActionIn::Uri { uri },
+                ..
+            } if !uri_is_allowed(uri) => {
+                return Err(unsafe_uri_error(uri));
             }
             _ => {}
         }
@@ -869,14 +901,11 @@ fn remap_groups_to_visible_box(
         if !copies.contains_key(&g.path) {
             let doc = Document::load(&g.path)
                 .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
-            let needs = doc
-                .get_pages()
-                .values()
-                .any(|&id| {
-                    let visible = crop::visible_box(&doc, id);
-                    !boxes_near(crop::align_box(&doc, id), visible)
-                        || !boxes_near(crop::media_box(&doc, id), visible)
-                });
+            let needs = doc.get_pages().values().any(|&id| {
+                let visible = crop::visible_box(&doc, id);
+                !boxes_near(crop::align_box(&doc, id), visible)
+                    || !boxes_near(crop::media_box(&doc, id), visible)
+            });
             if needs {
                 let dest = work.join(format!("src-{n_copies}.pdf"));
                 n_copies += 1;
@@ -1097,6 +1126,64 @@ pub(crate) fn build_edit_overlay_args(
     Ok(args)
 }
 
+fn session_links_from_doc(doc: &EditDocumentIn) -> Vec<SessionLink> {
+    doc.objects
+        .iter()
+        .filter_map(|o| match o {
+            EditObjectIn::Link {
+                page_index,
+                rect,
+                action,
+            } => Some(SessionLink {
+                page_index: *page_index,
+                rect: [rect.x, rect.y, rect.w, rect.h],
+                action: match action {
+                    LinkActionIn::Uri { uri } => LinkAction::Uri { uri: uri.clone() },
+                    LinkActionIn::Goto { dest_page_index } => LinkAction::GoTo {
+                        dest_page_index: *dest_page_index,
+                    },
+                },
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Link-only save: assemble to dest without `--empty` and without overlay paint.
+fn assemble_to_tmp<F>(
+    groups: &[PageGroup],
+    page_counts: &[u32],
+    tmp: &Path,
+    tmp_str: &str,
+    run: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(&[String]) -> Result<(), AppError>,
+{
+    if groups.is_empty() {
+        return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
+    }
+    let identity = groups.len() == 1 && super::spec_is_full_range(&groups[0].pages, page_counts[0]);
+    if identity {
+        std::fs::copy(&groups[0].path, tmp)
+            .map_err(|e| AppError::io("Could not prepare the output file.", e))?;
+        return Ok(());
+    }
+    let mut args = vec![
+        groups[0].path.clone(),
+        "--pages".into(),
+        ".".into(),
+        groups[0].pages.clone(),
+    ];
+    for g in &groups[1..] {
+        args.push(g.path.clone());
+        args.push(g.pages.clone());
+    }
+    args.push("--".into());
+    args.push(tmp_str.to_string());
+    run(&args)
+}
+
 /// Build the overlay and run qpdf via `run`. Used by tests (system/`"qpdf"`).
 pub(crate) fn export_edit_pdf_with_runner<F>(
     groups: &[PageGroup],
@@ -1159,19 +1246,38 @@ where
         let font_bytes = std::fs::read(font_path)
             .map_err(|e| AppError::io("Could not read the editor font.", e))?;
         let font = FontInfo::parse(font_bytes)?;
-        write_overlay_pdf(&overlay_str, &geoms, document, &font, cancel)?;
-        let (mapped, restore_boxes) = remap_groups_to_visible_box(groups, work)?;
-        let args = build_edit_overlay_args(&mapped, &counts, &overlay_str, &tmp_str)?;
-        run(&args)?;
-        if restore_boxes {
-            restore_dest_page_boxes(&tmp, &geoms)?;
-            // lopdf xref can look damaged; qpdf rewrite before the atomic replace.
-            let cleaned = work.join("dest-boxes.pdf");
+        let links = session_links_from_doc(document);
+        let has_paint = document
+            .objects
+            .iter()
+            .any(|o| !matches!(o, EditObjectIn::Link { .. }));
+        if has_paint {
+            write_overlay_pdf(&overlay_str, &geoms, document, &font, cancel)?;
+            let (mapped, restore_boxes) = remap_groups_to_visible_box(groups, work)?;
+            let args = build_edit_overlay_args(&mapped, &counts, &overlay_str, &tmp_str)?;
+            run(&args)?;
+            if restore_boxes {
+                restore_dest_page_boxes(&tmp, &geoms)?;
+                // lopdf xref can look damaged; qpdf rewrite before the atomic replace.
+                let cleaned = work.join("dest-boxes.pdf");
+                let cleaned_str = cleaned.to_string_lossy().to_string();
+                run(&[tmp_str.clone(), cleaned_str.clone()])?;
+                safe_output::replace_file(&cleaned, &tmp)?;
+            }
+        } else {
+            assemble_to_tmp(groups, &counts, &tmp, &tmp_str, &mut run)?;
+        }
+        let expected_annots = expected_dest_has_annots(&tmp, &links)?;
+        let rewrite_links = !links.is_empty() || dest_has_supported_links(&tmp)?;
+        if rewrite_links {
+            apply_link_annots(&tmp, &links)?;
+            let cleaned = work.join("dest-links.pdf");
             let cleaned_str = cleaned.to_string_lossy().to_string();
             run(&[tmp_str.clone(), cleaned_str.clone()])?;
             safe_output::replace_file(&cleaned, &tmp)?;
         }
-        let snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
+        let mut snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
+        snapshot.catalog.annots = expected_annots;
         let vr = validate_staged_pdf(&tmp, &snapshot, cancel, |args| {
             run_qpdf_check_argv(qpdf_check, args, handle)
         })?;
@@ -1493,6 +1599,9 @@ fn write_overlay_pdf(
             if obj.page_index() as usize != pi {
                 continue;
             }
+            if matches!(obj, EditObjectIn::Link { .. }) {
+                continue;
+            }
             let op100 = (obj.opacity() * 100.0).round() as i32;
             content.push_str(&format!("q\n/GS{op100} gs\n"));
             let rotated = push_object_rotate(
@@ -1722,6 +1831,7 @@ fn write_overlay_pdf(
                         content.push_str("S\n");
                     }
                 }
+                EditObjectIn::Link { .. } => {}
             }
             if rotated {
                 content.push_str("Q\n");
@@ -2367,6 +2477,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // L5 keepGreen: hard-linked dest stays OVERWRITE.
     #[test]
     fn export_rejects_hard_linked_destination() {
         let Some(qpdf) = test_qpdf() else {
