@@ -4,6 +4,10 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+### Added
+
+- Edit PDF: staged output is checked with `qpdf --check` and reopened for page boxes and catalog data before the destination file is replaced. A failed check leaves the original and any existing destination untouched.
+
 ### Fixed
 
 - HEIC/HEIF import refuses to copy pixels when the decoded plane size does not match the image handle, so a tiled or rotated phone photo cannot walk off the buffer. Invalid files still return an in-app error.

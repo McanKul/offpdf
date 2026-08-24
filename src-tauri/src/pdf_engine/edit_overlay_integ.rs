@@ -436,6 +436,7 @@ fn write_tiny_png(path: &Path, w: u32, h: u32) {
 
 #[test]
 fn integ_catalog_survives_and_original_stream_stays() {
+    // V7 keepGreen
     let Some(fx) = Harness::new("catalog") else {
         eprintln!("skip: qpdf not available");
         return;
@@ -464,6 +465,7 @@ fn integ_catalog_survives_and_original_stream_stays() {
     assert!(cat.get(b"AcroForm").is_ok(), "AcroForm missing");
 
     let blob = dump_streams(&fx.dest);
+    // V7 keepGreen
     assert!(blob.contains("Hello"), "original page stream rasterized away: {blob:?}");
     fx.cleanup();
 }

@@ -4,7 +4,10 @@
 
 use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
-use crate::pdf_engine::{crop, edit_image};
+use crate::pdf_engine::validate_output::{
+    catalog_flags_from_doc, validate_staged_pdf, OutputSnapshot, PageSnapshot,
+};
+use crate::pdf_engine::{crop, edit_image, qpdf};
 use crate::utils::process::run_qpdf;
 use crate::utils::safe_output;
 use crate::utils::temp;
@@ -1088,7 +1091,7 @@ pub(crate) fn build_edit_overlay_args(
     Ok(args)
 }
 
-/// Build the overlay and run qpdf via `run`. Used by the Tauri command and tests.
+/// Build the overlay and run qpdf via `run`. Used by tests (system/`"qpdf"`).
 pub(crate) fn export_edit_pdf_with_runner<F>(
     groups: &[PageGroup],
     output: &str,
@@ -1097,6 +1100,27 @@ pub(crate) fn export_edit_pdf_with_runner<F>(
     work: &Path,
     unique: &str,
     cancel: Option<&AtomicBool>,
+    run: F,
+) -> Result<Vec<String>, AppError>
+where
+    F: FnMut(&[String]) -> Result<(), AppError>,
+{
+    let exe = qpdf::resolve_qpdf_standalone();
+    export_edit_pdf_with_check_exe(
+        groups, output, document, font_path, work, unique, cancel, &exe, run,
+    )
+}
+
+/// Same as [`export_edit_pdf_with_runner`], with an explicit `qpdf --check` binary.
+fn export_edit_pdf_with_check_exe<F>(
+    groups: &[PageGroup],
+    output: &str,
+    document: &EditDocumentIn,
+    font_path: &Path,
+    work: &Path,
+    unique: &str,
+    cancel: Option<&AtomicBool>,
+    qpdf_check: &Path,
     mut run: F,
 ) -> Result<Vec<String>, AppError>
 where
@@ -1118,6 +1142,7 @@ where
     let tmp_str = tmp.to_string_lossy().to_string();
     let overlay = work.join("overlay.pdf");
     let overlay_str = overlay.to_string_lossy().to_string();
+    let mut gate_passed = false;
     let result = (|| -> Result<Vec<String>, AppError> {
         let (geoms, counts) = collect_source_pages(groups)?;
         if geoms.is_empty() {
@@ -1138,15 +1163,58 @@ where
             run(&[tmp_str.clone(), cleaned_str.clone()])?;
             safe_output::replace_file(&cleaned, &tmp)?;
         }
+        let snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
+        validate_staged_pdf(&tmp, &snapshot, cancel, |args| {
+            run_qpdf_check_argv(qpdf_check, args)
+        })?;
+        gate_passed = true;
         safe_output::replace_file(&tmp, dest)?;
         Ok(vec![output.to_string()])
     })();
-    // On success the temp was renamed away. On failure leave a dest-sibling
-    // tmp in place so a failed Windows replace still has a recoverable file.
-    if result.is_ok() && tmp.exists() {
+    // Keep tmp only if replace_file failed after a passed gate (Windows recover).
+    // Spawn/validate errors (and leftover success tmp) delete the sibling.
+    if !(gate_passed && result.is_err()) && tmp.exists() {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+fn output_snapshot_from_source(
+    geoms: &[OverlayPageGeom],
+    primary: &Path,
+) -> Result<OutputSnapshot, AppError> {
+    let doc = Document::load(primary)
+        .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
+    Ok(OutputSnapshot {
+        pages: geoms
+            .iter()
+            .map(|g| PageSnapshot {
+                media_box: g.media,
+                crop_box: g.crop,
+                trim_box: g.trim,
+                rotate: g.rotate,
+                user_unit: g.user_unit,
+            })
+            .collect(),
+        catalog: catalog_flags_from_doc(&doc),
+    })
+}
+
+fn run_qpdf_check_argv(exe: &Path, args: &[String]) -> Result<(i32, String), AppError> {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| AppError::io("qpdf --check failed to start", e))?;
+    Ok((
+        output.status.code().unwrap_or(1),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
 }
 
 pub fn edit_pdf_overlays(
@@ -1183,7 +1251,8 @@ pub fn edit_pdf_overlays(
         if handle.is_cancelled() {
             return Err(AppError::cancelled());
         }
-        export_edit_pdf_with_runner(
+        let qpdf_exe = qpdf::resolve_qpdf(app);
+        export_edit_pdf_with_check_exe(
             groups,
             output,
             document,
@@ -1191,6 +1260,7 @@ pub fn edit_pdf_overlays(
             &work,
             job_id,
             Some(&handle.cancelled),
+            &qpdf_exe,
             |args| run_qpdf(app, handle, job_id, args, "Saving", None),
         )
     })();
