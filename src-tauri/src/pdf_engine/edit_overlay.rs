@@ -8,7 +8,7 @@ use crate::pdf_engine::validate_output::{
     catalog_flags_from_doc, validate_staged_pdf, OutputSnapshot, PageSnapshot,
 };
 use crate::pdf_engine::{crop, edit_image, qpdf};
-use crate::utils::process::run_qpdf;
+use crate::utils::process::{run_qpdf, run_tracked};
 use crate::utils::safe_output;
 use crate::utils::temp;
 use lopdf::{Document, Object};
@@ -1107,7 +1107,7 @@ where
 {
     let exe = qpdf::resolve_qpdf_standalone();
     export_edit_pdf_with_check_exe(
-        groups, output, document, font_path, work, unique, cancel, &exe, run,
+        groups, output, document, font_path, work, unique, cancel, &exe, None, run,
     )
 }
 
@@ -1121,6 +1121,7 @@ fn export_edit_pdf_with_check_exe<F>(
     unique: &str,
     cancel: Option<&AtomicBool>,
     qpdf_check: &Path,
+    handle: Option<&Arc<JobHandle>>,
     mut run: F,
 ) -> Result<Vec<String>, AppError>
 where
@@ -1165,7 +1166,7 @@ where
         }
         let snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
         validate_staged_pdf(&tmp, &snapshot, cancel, |args| {
-            run_qpdf_check_argv(qpdf_check, args)
+            run_qpdf_check_argv(qpdf_check, args, handle)
         })?;
         gate_passed = true;
         safe_output::replace_file(&tmp, dest)?;
@@ -1200,13 +1201,23 @@ fn output_snapshot_from_source(
     })
 }
 
-fn run_qpdf_check_argv(exe: &Path, args: &[String]) -> Result<(i32, String), AppError> {
+fn run_qpdf_check_argv(
+    exe: &Path,
+    args: &[String],
+    handle: Option<&Arc<JobHandle>>,
+) -> Result<(i32, String), AppError> {
     let mut cmd = std::process::Command::new(exe);
     cmd.args(args);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
+    }
+    if let Some(h) = handle {
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::piped());
+        let (status, stderr) = run_tracked(h, cmd)?;
+        return Ok((status.and_then(|s| s.code()).unwrap_or(1), stderr));
     }
     let output = cmd
         .output()
@@ -1261,6 +1272,7 @@ pub fn edit_pdf_overlays(
             job_id,
             Some(&handle.cancelled),
             &qpdf_exe,
+            Some(handle),
             |args| run_qpdf(app, handle, job_id, args, "Saving", None),
         )
     })();

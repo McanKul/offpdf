@@ -91,6 +91,14 @@ fn fatal_staged(staged: &Path, message: impl Into<String>) -> AppError {
     invalid_output(message)
 }
 
+fn abort_if_cancelled(staged: &Path, cancel: Option<&AtomicBool>) -> Result<(), AppError> {
+    if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+        let _ = std::fs::remove_file(staged);
+        return Err(AppError::cancelled());
+    }
+    Ok(())
+}
+
 pub(crate) fn catalog_flags_from_doc(doc: &Document) -> CatalogFlags {
     CatalogFlags {
         outlines: has_catalog_key(doc, b"Outlines"),
@@ -128,13 +136,19 @@ pub fn validate_staged_pdf(
     cancel: Option<&AtomicBool>,
     mut run_check: impl FnMut(&[String]) -> Result<(i32, String), AppError>,
 ) -> Result<ValidationResult, AppError> {
-    if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
-        return Err(AppError::cancelled());
-    }
+    abort_if_cancelled(staged, cancel)?;
 
     let staged_arg = staged.to_string_lossy().into_owned();
     let args = ["--check".to_string(), staged_arg];
-    let (exit, stderr) = run_check(&args)?;
+    let (exit, stderr) = match run_check(&args) {
+        Ok(v) => v,
+        Err(e) if e.code == "CANCELLED" => {
+            let _ = std::fs::remove_file(staged);
+            return Err(AppError::cancelled());
+        }
+        Err(e) => return Err(e),
+    };
+    abort_if_cancelled(staged, cancel)?;
 
     let mut warnings = Vec::new();
     match classify_qpdf_check(exit, &stderr) {
@@ -240,6 +254,7 @@ pub fn validate_staged_pdf(
         ));
     }
 
+    abort_if_cancelled(staged, cancel)?;
     Ok(ValidationResult { warnings })
 }
 
@@ -248,6 +263,7 @@ mod tests {
     use super::*;
     use lopdf::{Dictionary, Document, Object, Stream};
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct Scratch(PathBuf);
 
@@ -626,5 +642,39 @@ mod tests {
         );
         assert_invalid_output(&err);
         assert_eq!(std::fs::read(&dest).unwrap(), b"OLD-DEST");
+    }
+
+    // --- C1 -----------------------------------------------------------------
+
+    #[test]
+    fn validate_cancel_after_check_does_not_pass() {
+        let scratch = Scratch::new("c1-cancel");
+        let dest = scratch.path().join("out.pdf");
+        let staged = scratch.path().join(".offpdf-job.pdf.tmp");
+        write_one_page_pdf(&staged, &[]);
+        std::fs::write(&dest, b"OLD-DEST").unwrap();
+        let snapshot = letter_snapshot();
+        let cancel = AtomicBool::new(false);
+
+        let result = validate_staged_pdf(&staged, &snapshot, Some(&cancel), |_args| {
+            cancel.store(true, Ordering::SeqCst);
+            Ok((0, String::new()))
+        });
+
+        let err = result.expect_err("C1: cancel after successful --check must be CANCELLED");
+        assert_eq!(
+            err.code, "CANCELLED",
+            "C1: cancel after check must be CANCELLED, not {}",
+            err.code
+        );
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"OLD-DEST",
+            "C1: dest bytes must stay OLD-DEST"
+        );
+        assert!(
+            !staged.exists(),
+            "C1: cancel must delete staged .offpdf-*.pdf.tmp"
+        );
     }
 }
