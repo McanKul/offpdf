@@ -751,4 +751,40 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    fn sample_heif_rgba() -> Vec<u8> {
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(64, 64, |x, y| {
+            image::Rgba([(x * 3) as u8, (y * 3) as u8, ((x + y) * 2) as u8, 255])
+        }));
+        heif::encode(&image).expect("encode RGBA HEIC fixture")
+    }
+
+    #[test]
+    fn heic_rgba_32bpp_like_completes_jpeg_and_pdf() {
+        let dir = unique_tmp("offpdf-heif-rgba");
+        let input = dir.join("photo.heic");
+        let work = dir.join("work");
+        std::fs::write(&input, sample_heif_rgba()).unwrap();
+
+        match image_to_pdf_in_dir(&input, &work) {
+            Ok(output) => {
+                let document = lopdf::Document::load(&output).expect("load generated PDF");
+                assert_eq!(
+                    document.get_pages().len(),
+                    1,
+                    "RGBA 32-bpp-like HEIC must write a one-page PDF"
+                );
+                assert!(work.join("page.jpg").is_file());
+            }
+            Err(err) => {
+                assert_eq!(
+                    err.code, "INVALID_IMAGE",
+                    "RGBA 32-bpp-like HEIC must convert or be INVALID_IMAGE, got {}",
+                    err.code
+                );
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
