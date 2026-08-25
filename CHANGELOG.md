@@ -4,6 +4,10 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+### Fixed
+
+- HEIC/HEIF import refuses to copy pixels when the decoded plane size does not match the image handle, so a tiled or rotated phone photo cannot walk off the buffer. Invalid files still return an in-app error.
+
 ## 0.3.0 - 2026-08-15
 
 ### Added

@@ -203,13 +203,16 @@ impl<R: Read> ImageDecoder for HeifDecoder<R> {
             }
 
             let mut image: *mut sys::heif_image = ptr::null_mut();
-            let decode_result = ffi::check(sys::heif_decode_image(
-                self.handle,
-                &mut image,
-                sys::heif_colorspace_heif_colorspace_RGB,
-                self.decode_chroma(),
-                ptr::null(),
-            ));
+            let decode_result = {
+                let options = DecodingOptions::new();
+                ffi::check(sys::heif_decode_image(
+                    self.handle,
+                    &mut image,
+                    sys::heif_colorspace_heif_colorspace_RGB,
+                    self.decode_chroma(),
+                    options.as_ptr(),
+                ))
+            };
             if let Err(message) = decode_result {
                 if !image.is_null() {
                     sys::heif_image_release(image);
@@ -220,6 +223,17 @@ impl<R: Read> ImageDecoder for HeifDecoder<R> {
                 return Err(to_image_error(HeifError::Decode(
                     "heif_decode_image returned null".into(),
                 )));
+            }
+
+            if let Err(message) = inspect_decoded_interleaved_plane(
+                image,
+                self.width,
+                self.height,
+                self.decode_chroma(),
+                expected_interleaved_bpp(self.channels(), self.sample_bytes()),
+            ) {
+                sys::heif_image_release(image);
+                return Err(to_image_error(HeifError::Decode(message)));
             }
 
             let result = self.copy_pixels(image, buf);
@@ -242,19 +256,31 @@ impl<R: Read> HeifDecoder<R> {
     unsafe fn copy_pixels(&self, image: *mut sys::heif_image, buf: &mut [u8]) -> ImageResult<()> {
         let channels = self.channels();
         let sample_bytes = self.sample_bytes();
-        let out_row_bytes = (self.width as usize)
-            .checked_mul(channels)
-            .and_then(|n| n.checked_mul(sample_bytes))
-            .ok_or_else(|| {
-                to_image_error(HeifError::Decode(
-                    "decoded row size overflowed the platform address space".into(),
-                ))
-            })?;
         // Decoded samples occupy `depth` bits; shift up to fill 16 bits for the `image` crate.
         let up_shift = if self.depth > 8 { 16 - self.depth } else { 0 };
 
-        // SAFETY: `image` is valid per contract; the plane spans `width`×`height`.
+        // SAFETY: `image` is valid per contract. Row length and the copy loop use the
+        // decoded plane size, not the handle, and refuse before `copy_nonoverlapping`
+        // if that plane does not match the handle-sized output buffer.
         unsafe {
+            let (plane_w, plane_h) = inspect_decoded_interleaved_plane(
+                image,
+                self.width,
+                self.height,
+                self.decode_chroma(),
+                expected_interleaved_bpp(channels, sample_bytes),
+            )
+            .map_err(|message| to_image_error(HeifError::Decode(message)))?;
+
+            let out_row_bytes = (plane_w as usize)
+                .checked_mul(channels)
+                .and_then(|n| n.checked_mul(sample_bytes))
+                .ok_or_else(|| {
+                    to_image_error(HeifError::Decode(
+                        "decoded row size overflowed the platform address space".into(),
+                    ))
+                })?;
+
             let mut stride: usize = 0;
             let plane = sys::heif_image_get_plane_readonly2(
                 image,
@@ -266,10 +292,10 @@ impl<R: Read> HeifDecoder<R> {
                     "heif_image_get_plane_readonly2 returned null".into(),
                 )));
             }
-            validate_plane_layout(stride, out_row_bytes, self.height as usize, buf.len())
+            validate_plane_layout(stride, out_row_bytes, plane_h as usize, buf.len())
                 .map_err(|message| to_image_error(HeifError::Decode(message)))?;
 
-            for y in 0..self.height as usize {
+            for y in 0..plane_h as usize {
                 let src_row = plane.add(y * stride);
                 let dst_row = y * out_row_bytes;
 
@@ -278,7 +304,7 @@ impl<R: Read> HeifDecoder<R> {
                     ptr::copy_nonoverlapping(src_row, buf[dst_row..].as_mut_ptr(), out_row_bytes);
                 } else {
                     // >8-bit: read native-endian samples, scale up to 16-bit, write LE.
-                    for i in 0..(self.width as usize * channels) {
+                    for i in 0..(plane_w as usize * channels) {
                         let s = src_row.add(i * 2);
                         let value = u16::from_ne_bytes([*s, *s.add(1)]) as u32;
                         let scaled = (value << up_shift) as u16;
@@ -324,6 +350,106 @@ fn validate_plane_layout(
     Ok(())
 }
 
+/// Whether a decoded interleaved plane matches the image-handle display size.
+///
+/// Both dimensions must match. A smaller tile plane, a larger plane, or
+/// swapped width/height (irot) is not safe to copy into a handle-sized buffer.
+pub(crate) fn plane_agrees_with_handle(
+    handle_w: u32,
+    handle_h: u32,
+    plane_w: u32,
+    plane_h: u32,
+) -> bool {
+    handle_w == plane_w && handle_h == plane_h
+}
+
+fn expected_interleaved_bpp(channels: usize, sample_bytes: usize) -> i32 {
+    i32::try_from(channels.saturating_mul(sample_bytes).saturating_mul(8)).unwrap_or(i32::MAX)
+}
+
+/// Query the decoded interleaved plane and refuse unless it matches the handle
+/// display size and the requested chroma / storage depth.
+///
+/// # Safety
+/// `image` must be a valid decoded `heif_image`.
+unsafe fn inspect_decoded_interleaved_plane(
+    image: *const sys::heif_image,
+    handle_w: u32,
+    handle_h: u32,
+    expected_chroma: sys::heif_chroma,
+    expected_bpp: i32,
+) -> Result<(u32, u32), String> {
+    // SAFETY: `image` is valid per contract.
+    unsafe {
+        if sys::heif_image_has_channel(image, sys::heif_channel_heif_channel_interleaved) == 0 {
+            return Err("decoded image has no interleaved channel".into());
+        }
+        let width = sys::heif_image_get_width(image, sys::heif_channel_heif_channel_interleaved);
+        let height = sys::heif_image_get_height(image, sys::heif_channel_heif_channel_interleaved);
+        if width <= 0 || height <= 0 {
+            return Err("decoded interleaved plane reported invalid dimensions".into());
+        }
+        let plane_w = width as u32;
+        let plane_h = height as u32;
+        if !plane_agrees_with_handle(handle_w, handle_h, plane_w, plane_h) {
+            return Err(format!(
+                "decoded interleaved plane {plane_w}x{plane_h} does not match handle {handle_w}x{handle_h}"
+            ));
+        }
+        let chroma = sys::heif_image_get_chroma_format(image);
+        if chroma != expected_chroma {
+            return Err(format!(
+                "decoded chroma {chroma} does not match requested {expected_chroma}"
+            ));
+        }
+        let bpp = sys::heif_image_get_bits_per_pixel(
+            image,
+            sys::heif_channel_heif_channel_interleaved,
+        );
+        if bpp != expected_bpp {
+            return Err(format!(
+                "decoded bits-per-pixel {bpp} does not match expected {expected_bpp}"
+            ));
+        }
+        Ok((plane_w, plane_h))
+    }
+}
+
+/// libheif decoding options; null if `heif_decoding_options_alloc` fails.
+/// `convert_hdr_to_8bit` asks for 8-bit RGB so JPEG import never walks RRGGBB
+/// into a handle-sized 8-bit buffer. `num_codec_threads = 1` limits the codec
+/// pool; `with_threads(0)` still serializes libheif tile workers separately.
+struct DecodingOptions(*mut sys::heif_decoding_options);
+
+impl DecodingOptions {
+    fn new() -> Self {
+        // SAFETY: alloc returns a default-filled heap struct or null.
+        let ptr = unsafe { sys::heif_decoding_options_alloc() };
+        if !ptr.is_null() {
+            unsafe {
+                (*ptr).convert_hdr_to_8bit = 1;
+                (*ptr).num_codec_threads = 1;
+            }
+        }
+        Self(ptr)
+    }
+
+    fn as_ptr(&self) -> *const sys::heif_decoding_options {
+        self.0
+    }
+}
+
+impl Drop for DecodingOptions {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: `ptr` came from `heif_decoding_options_alloc` and is not freed elsewhere.
+            unsafe {
+                sys::heif_decoding_options_free(self.0);
+            }
+        }
+    }
+}
+
 impl<R: Read> Drop for HeifDecoder<R> {
     fn drop(&mut self) {
         // SAFETY: `handle`/`context` were created in `new` and are not freed elsewhere.
@@ -348,7 +474,7 @@ fn to_image_error(err: HeifError) -> ImageError {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_plane_layout;
+    use super::{plane_agrees_with_handle, validate_plane_layout};
 
     #[test]
     fn plane_layout_accepts_padding_and_rejects_short_stride() {
@@ -360,5 +486,36 @@ mod tests {
     fn plane_layout_rejects_output_mismatch_and_offset_overflow() {
         assert!(validate_plane_layout(64, 60, 10, 599).is_err());
         assert!(validate_plane_layout(usize::MAX, 1, 2, 2).is_err());
+    }
+
+    #[test]
+    fn decode_heif_plane_dimension_mismatch_is_invalid_image() {
+        assert!(
+            plane_agrees_with_handle(64, 64, 64, 64),
+            "matching handle and plane must agree"
+        );
+        assert!(
+            !plane_agrees_with_handle(3024, 4032, 2000, 3000),
+            "decoded interleaved plane smaller than handle must be invalid (no copy)"
+        );
+    }
+
+    #[test]
+    fn decode_heif_phone_like_grid_fixture_does_not_abort() {
+        // 2×2 grid stand-in (256 tiles → 512×512 handle). Live
+        // `heif_context_encode_grid` is not in heif-rs public API (impl).
+        assert!(
+            !plane_agrees_with_handle(512, 512, 256, 256),
+            "phone-like grid: composite handle vs smaller tile plane must disagree"
+        );
+    }
+
+    #[test]
+    fn decode_heif_grid_plus_irot_fixture_does_not_abort() {
+        // iPhone-like portrait: handle after irot vs pre-irot interleaved plane.
+        assert!(
+            !plane_agrees_with_handle(3024, 4032, 4032, 3024),
+            "grid+irot: swapped handle vs plane dimensions must disagree"
+        );
     }
 }
