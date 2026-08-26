@@ -12,6 +12,8 @@ pub mod edit_image;
 pub mod edit_overlay;
 #[cfg(test)]
 mod edit_overlay_integ;
+#[cfg(test)]
+mod source_edit_fixtures;
 pub mod metadata;
 pub mod nup;
 pub mod ocr;
