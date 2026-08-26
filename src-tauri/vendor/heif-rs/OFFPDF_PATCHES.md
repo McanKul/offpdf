@@ -9,7 +9,8 @@ The local decoder patch:
 - uses libheif's `size_t`-based `heif_image_get_plane_readonly2` API instead
   of the deprecated `int`-stride variant;
 - validates row stride, destination length, and pointer-offset arithmetic
-  before copying decoded pixels; and
+  before copying decoded pixels;
+- checks decoded interleaved plane size against the handle before copy; and
 - releases a partially returned image on decode errors.
 
 Keep the original `LICENSE` file and rebase these changes when upgrading the
