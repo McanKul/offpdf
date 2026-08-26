@@ -109,39 +109,37 @@ pub fn classify_link_action(s: &str, uri: Option<&str>, dest_is_named: bool) -> 
 /// List supported URI / in-document GoTo `/Link` annots.
 ///
 /// Rects are the written unrotated `/Rect` values as `[x, y, w, h]`, not
-/// display-swapped for `/Rotate`.
+/// display-swapped for `/Rotate`. Oversize files, more than [`MAX_LINKS`]
+/// supported links, a missing path, or an unreadable PDF return an actionable
+/// [`AppError`] — never a silent empty or truncated `Ok`.
 pub fn list_link_annots(path: &Path) -> Result<Vec<ListedLink>, AppError> {
-    let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let meta = std::fs::metadata(path).map_err(|e| {
+        AppError::io("Could not read the file.", e)
+            .with_suggestion("Check that the PDF still exists and try again.")
+    })?;
     if meta.len() > MAX_LINK_BYTES {
-        return Ok(Vec::new());
+        return Err(file_too_large_for_links());
     }
-    let doc = match Document::load(path) {
-        Ok(d) => d,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let path_str = path.to_string_lossy();
+    let doc = Document::load(path)
+        .map_err(|e| AppError::invalid_pdf(&path_str).with_details(format!("lopdf: {e}")))?;
     let page_index_of = page_index_map(&doc);
     let mut out = Vec::new();
     let pages = doc.get_pages();
     let mut nums: Vec<u32> = pages.keys().copied().collect();
     nums.sort_unstable();
     for num in nums {
-        if out.len() >= MAX_LINKS {
-            break;
-        }
         let Some(&page_id) = pages.get(&num) else {
             continue;
         };
         for raw in page_annot_objects(&doc, page_id) {
-            if out.len() >= MAX_LINKS {
-                break;
-            }
             let Some(listed) = listed_from_annot(&doc, &raw, num.saturating_sub(1), &page_index_of)
             else {
                 continue;
             };
+            if out.len() >= MAX_LINKS {
+                return Err(too_many_links());
+            }
             out.push(listed);
         }
     }
@@ -190,13 +188,20 @@ pub fn apply_link_annots(staged: &Path, links: &[SessionLink]) -> Result<(), App
         let page_index = num.saturating_sub(1);
         let existing = page_annot_objects(&doc, *page_id);
         let mut kept: Vec<Object> = Vec::new();
+        let mut session: Vec<&SessionLink> = by_page.get(&page_index).cloned().unwrap_or_default();
         for raw in existing {
-            if annot_is_supported_link(&doc, &raw, &page_index_of) {
+            if let Some(listed) = listed_from_annot(&doc, &raw, page_index, &page_index_of) {
+                if let Some(i) = session
+                    .iter()
+                    .position(|l| session_matches_listed(l, &listed))
+                {
+                    session.remove(i);
+                    kept.push(raw);
+                }
                 continue;
             }
             kept.push(raw);
         }
-        let session = by_page.get(&page_index).map(Vec::as_slice).unwrap_or(&[]);
         for link in session {
             let annot_id = add_session_link(&mut doc, link, &page_ids)?;
             kept.push(annot_id.into());
@@ -232,6 +237,20 @@ pub fn dest_has_supported_links(staged: &Path) -> Result<bool, AppError> {
     Ok(false)
 }
 
+/// Whether Save should rewrite dest supported `/Link`s.
+///
+/// Incomplete hydrate + empty session must not wipe dest. Complete empty
+/// still deletes (L7).
+pub fn should_rewrite_supported_links(complete: bool, session_len: usize, dest_has: bool) -> bool {
+    if !complete {
+        return false;
+    }
+    if session_len > 0 {
+        return true;
+    }
+    dest_has
+}
+
 /// Command helper: size-gated list as JSON DTOs.
 pub fn list_pdf_links_cmd(path: &str) -> Result<Vec<PdfLinkDto>, AppError> {
     let listed = list_link_annots(Path::new(path))?;
@@ -245,6 +264,32 @@ pub fn unsafe_uri_error(uri: &str) -> AppError {
         format!("OffPDF cannot write a link to \"{uri}\"."),
     )
     .with_suggestion("Use an https, http, or mailto address.")
+}
+
+fn file_too_large_for_links() -> AppError {
+    AppError::new(
+        "FILE_TOO_LARGE",
+        "File too large to read links",
+        "Reading links needs the document loaded into memory, and this file is over 400 MB.",
+    )
+    .with_suggestion("Save stamps only, or split the PDF into smaller documents.")
+}
+
+fn too_many_links() -> AppError {
+    AppError::new(
+        "TOO_MANY_LINKS",
+        "Too many links to edit",
+        "This PDF has more than 5,000 supported links, so OffPDF cannot load them all.",
+    )
+    .with_suggestion("Save stamps only, or split the PDF into smaller documents.")
+}
+
+fn rects_close(a: [f64; 4], b: [f64; 4]) -> bool {
+    a.iter().zip(b.iter()).all(|(x, y)| (x - y).abs() < 0.5)
+}
+
+fn session_matches_listed(link: &SessionLink, listed: &ListedLink) -> bool {
+    rects_close(link.rect, listed.rect) && link.action == listed.action
 }
 
 fn listed_to_dto(link: ListedLink) -> PdfLinkDto {
@@ -739,6 +784,75 @@ mod tests {
             self.push_annot(page_index, annot);
         }
 
+        fn add_n_uri_links(&mut self, page_index: usize, n: usize, uri: &str) {
+            let page_id = self.page_ids[page_index];
+            let mut arr = match self.doc.get_dictionary(page_id).ok().and_then(|p| {
+                p.get(b"Annots").ok().and_then(|o| match o {
+                    Object::Array(a) => Some(a.clone()),
+                    _ => None,
+                })
+            }) {
+                Some(a) => a,
+                None => Vec::new(),
+            };
+            for i in 0..n {
+                let x = (i as i64) % 500;
+                let y = (i as i64) / 500;
+                let mut action = Dictionary::new();
+                action.set("S", name("URI"));
+                action.set("URI", Object::string_literal(uri));
+                let mut annot = Dictionary::new();
+                annot.set("Type", "Annot");
+                annot.set("Subtype", "Link");
+                annot.set("Rect", box_obj([x, y, x + 10, y + 10]));
+                annot.set("A", Object::Dictionary(action));
+                let annot_id = self.doc.add_object(Object::Dictionary(annot));
+                arr.push(annot_id.into());
+            }
+            if let Ok(Object::Dictionary(page)) = self.doc.get_object_mut(page_id) {
+                page.set("Annots", Object::Array(arr));
+            }
+        }
+
+        fn add_link_uri_with_extra_keys(&mut self, page_index: usize, rect: [i64; 4], uri: &str) {
+            let mut action = Dictionary::new();
+            action.set("S", name("URI"));
+            action.set("URI", Object::string_literal(uri));
+            let mut ap = Dictionary::new();
+            ap.set("N", name("Off"));
+            let mut annot = Dictionary::new();
+            annot.set("Type", "Annot");
+            annot.set("Subtype", "Link");
+            annot.set("Rect", box_obj(rect));
+            annot.set("A", Object::Dictionary(action));
+            annot.set(
+                "Border",
+                Object::Array(vec![
+                    Object::Integer(2),
+                    Object::Integer(1),
+                    Object::Integer(3),
+                ]),
+            );
+            annot.set("H", name("I"));
+            annot.set("F", Object::Integer(4));
+            annot.set("AP", Object::Dictionary(ap));
+            annot.set(
+                "QuadPoints",
+                Object::Array(vec![
+                    Object::Integer(rect[0]),
+                    Object::Integer(rect[1]),
+                    Object::Integer(rect[2]),
+                    Object::Integer(rect[1]),
+                    Object::Integer(rect[2]),
+                    Object::Integer(rect[3]),
+                    Object::Integer(rect[0]),
+                    Object::Integer(rect[3]),
+                ]),
+            );
+            annot.set("Contents", Object::string_literal("keep-contents"));
+            self.push_annot(page_index, annot);
+        }
+
         fn save(&mut self, path: &Path) {
             self.doc.save(path).expect("write link fixture");
         }
@@ -752,6 +866,11 @@ mod tests {
         dest_page_index: Option<u32>,
         contents: Option<String>,
         has_annots_key: bool,
+        has_border: bool,
+        has_h: bool,
+        has_f: bool,
+        has_ap: bool,
+        has_quad_points: bool,
     }
 
     fn as_name(obj: &Object) -> Option<String> {
@@ -872,6 +991,11 @@ mod tests {
                     dest_page_index,
                     contents,
                     has_annots_key,
+                    has_border: annot.get(b"Border").is_ok(),
+                    has_h: annot.get(b"H").is_ok(),
+                    has_f: annot.get(b"F").is_ok(),
+                    has_ap: annot.get(b"AP").is_ok(),
+                    has_quad_points: annot.get(b"QuadPoints").is_ok(),
                 })
             })
             .collect()
@@ -1266,5 +1390,181 @@ mod tests {
                 .map(|a| (&a.subtype, &a.contents))
                 .collect::<Vec<_>>()
         );
+    }
+
+    // --- H1 oversize -------------------------------------------------------
+
+    #[test]
+    fn list_oversize_file_is_app_error() {
+        let scratch = Scratch::new("h1");
+        let path = scratch.file("huge.pdf");
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(MAX_LINK_BYTES + 1).unwrap();
+        drop(f);
+
+        let err = list_link_annots(&path).expect_err(
+            "H1: list_link_annots on set_len(MAX_LINK_BYTES+1) must be AppError, not Ok([])",
+        );
+        assert_actionable(&err, "H1");
+    }
+
+    // --- H2-list count cap -------------------------------------------------
+
+    #[test]
+    fn list_over_max_links_is_app_error() {
+        let scratch = Scratch::new("h2-list");
+        let src = scratch.file("many.pdf");
+        let mut pdf = PdfFix::new(1, 0, None);
+        pdf.add_n_uri_links(0, MAX_LINKS + 1, "https://example.com/cap");
+        pdf.save(&src);
+
+        match list_link_annots(&src) {
+            Ok(listed) => panic!(
+                "H2-list: 5,001 supported URI /Link annots must be Err, not Ok of length {}",
+                listed.len()
+            ),
+            Err(err) => assert_actionable(&err, "H2-list"),
+        }
+    }
+
+    // --- H2-save incomplete empty must not wipe ----------------------------
+
+    #[test]
+    fn incomplete_empty_session_does_not_rewrite_supported_links() {
+        assert!(
+            !should_rewrite_supported_links(false, 0, true),
+            "H2-save: incomplete hydrate + empty session must not rewrite dest supported links"
+        );
+        assert!(
+            should_rewrite_supported_links(true, 0, true),
+            "H2-save: complete hydrate + empty session must still rewrite (L7 delete-all)"
+        );
+    }
+
+    #[test]
+    fn incomplete_empty_session_does_not_wipe_dest_supported_links() {
+        let scratch = Scratch::new("h2-save");
+        let dest = scratch.file("dest.pdf");
+        let mut pdf = PdfFix::new(1, 0, None);
+        pdf.add_link_uri(0, URI_RECT_PDF, "https://a.example/");
+        pdf.add_link_uri(0, GOTO_RECT_PDF, "https://b.example/");
+        pdf.add_link_uri(0, HIGHLIGHT_RECT_PDF, "https://c.example/");
+        pdf.save(&dest);
+
+        if should_rewrite_supported_links(false, 0, true) {
+            apply_link_annots(&dest, &[]).expect("H2-save: apply empty");
+        }
+
+        let annots = inspect_page_annots(&dest, 1);
+        let uris: Vec<&str> = annots
+            .iter()
+            .filter(|a| a.subtype == "Link" && a.action_s.as_deref() == Some("URI"))
+            .filter_map(|a| a.uri.as_deref())
+            .collect();
+        assert_eq!(
+            uris.len(),
+            3,
+            "H2-save: incomplete hydrate + empty session must not wipe dest supported links; got {uris:?}"
+        );
+        assert!(uris.contains(&"https://a.example/"));
+        assert!(uris.contains(&"https://b.example/"));
+        assert!(uris.contains(&"https://c.example/"));
+    }
+
+    #[test]
+    fn complete_empty_session_still_deletes_dest_supported_links() {
+        assert!(
+            should_rewrite_supported_links(true, 0, true),
+            "H2-save: complete empty must still rewrite (L7)"
+        );
+        let scratch = Scratch::new("h2-save-l7");
+        let dest = scratch.file("dest.pdf");
+        let mut pdf = PdfFix::new(1, 0, None);
+        pdf.add_link_uri(0, URI_RECT_PDF, "https://drop.example/");
+        pdf.save(&dest);
+        apply_link_annots(&dest, &[]).expect("H2-save L7 contrast: apply empty");
+        let annots = inspect_page_annots(&dest, 1);
+        let uris: Vec<&str> = annots
+            .iter()
+            .filter(|a| a.subtype == "Link" && a.action_s.as_deref() == Some("URI"))
+            .filter_map(|a| a.uri.as_deref())
+            .collect();
+        assert!(
+            uris.is_empty(),
+            "H2-save: complete empty session must still delete dest supported links; got {uris:?}"
+        );
+    }
+
+    // --- H3 no-op keeps extra dest keys ------------------------------------
+
+    #[test]
+    fn apply_noop_keeps_extra_link_dict_keys() {
+        let scratch = Scratch::new("h3");
+        let dest = scratch.file("dest.pdf");
+        let mut pdf = PdfFix::new(1, 0, None);
+        pdf.add_link_uri_with_extra_keys(0, URI_RECT_PDF, "https://keep.example/");
+        pdf.save(&dest);
+
+        let links = [SessionLink {
+            page_index: 0,
+            rect: URI_RECT_XYWH,
+            action: LinkAction::Uri {
+                uri: "https://keep.example/".into(),
+            },
+        }];
+        apply_link_annots(&dest, &links).expect("H3: apply_link_annots no-op");
+
+        let annots = inspect_page_annots(&dest, 1);
+        let uri = annots.iter().find(|a| {
+            a.subtype == "Link"
+                && a.action_s.as_deref() == Some("URI")
+                && a.uri.as_deref() == Some("https://keep.example/")
+        });
+        let uri = uri.expect("H3: dest must still have the session URI");
+        assert!(
+            uri.has_border,
+            "H3: dest URI must keep /Border; keys gone after rewrite"
+        );
+        assert!(
+            uri.has_h,
+            "H3: dest URI must keep /H; keys gone after rewrite"
+        );
+        assert!(
+            uri.has_f,
+            "H3: dest URI must keep /F; keys gone after rewrite"
+        );
+        assert!(
+            uri.has_ap,
+            "H3: dest URI must keep /AP; keys gone after rewrite"
+        );
+        assert!(
+            uri.has_quad_points,
+            "H3: dest URI must keep /QuadPoints; keys gone after rewrite"
+        );
+        assert_eq!(
+            uri.contents.as_deref(),
+            Some("keep-contents"),
+            "H3: dest URI must keep /Contents; keys gone after rewrite"
+        );
+    }
+
+    // --- H4 list Err -------------------------------------------------------
+
+    #[test]
+    fn list_missing_path_is_app_error() {
+        let scratch = Scratch::new("h4-missing");
+        let path = scratch.file("missing.pdf");
+        let err =
+            list_link_annots(&path).expect_err("H4: missing path must be AppError, not Ok([])");
+        assert_actionable(&err, "H4 missing path");
+    }
+
+    #[test]
+    fn list_invalid_pdf_is_app_error() {
+        let scratch = Scratch::new("h4-invalid");
+        let path = scratch.file("not.pdf");
+        std::fs::write(&path, b"not a pdf").unwrap();
+        let err = list_link_annots(&path).expect_err("H4: load fail must be AppError, not Ok([])");
+        assert_actionable(&err, "H4 load fail");
     }
 }

@@ -5,8 +5,8 @@
 use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
 use crate::pdf_engine::edit_links::{
-    apply_link_annots, dest_has_supported_links, expected_dest_has_annots, unsafe_uri_error,
-    uri_is_allowed, LinkAction, SessionLink,
+    apply_link_annots, dest_has_supported_links, expected_dest_has_annots, list_link_annots,
+    should_rewrite_supported_links, unsafe_uri_error, uri_is_allowed, LinkAction, SessionLink,
 };
 use crate::pdf_engine::validate_output::{
     catalog_flags_from_doc, content_digest, validate_staged_pdf, ContentDigest, OutputSnapshot,
@@ -1126,6 +1126,28 @@ pub(crate) fn build_edit_overlay_args(
     Ok(args)
 }
 
+/// When hydrate failed for a source, a session `kind: "link"` on that file's
+/// dest pages must return the same list `AppError` instead of rewriting.
+fn reject_links_on_unlistable_sources(
+    groups: &[PageGroup],
+    counts: &[u32],
+    links: &[SessionLink],
+) -> Result<(), AppError> {
+    let mut dest_base = 0u32;
+    for (g, &n) in groups.iter().zip(counts.iter()) {
+        let end = dest_base.saturating_add(n);
+        let has = links
+            .iter()
+            .any(|l| l.page_index >= dest_base && l.page_index < end);
+        dest_base = end;
+        if !has {
+            continue;
+        }
+        list_link_annots(Path::new(&g.path))?;
+    }
+    Ok(())
+}
+
 fn session_links_from_doc(doc: &EditDocumentIn) -> Vec<SessionLink> {
     doc.objects
         .iter()
@@ -1200,7 +1222,7 @@ where
 {
     let exe = qpdf::resolve_qpdf_standalone();
     export_edit_pdf_with_check_exe(
-        groups, output, document, font_path, work, unique, cancel, &exe, None, run,
+        groups, output, document, font_path, work, unique, cancel, &exe, None, true, run,
     )
     .map(|(paths, _warnings)| paths)
 }
@@ -1216,6 +1238,7 @@ fn export_edit_pdf_with_check_exe<F>(
     cancel: Option<&AtomicBool>,
     qpdf_check: &Path,
     handle: Option<&Arc<JobHandle>>,
+    links_complete: bool,
     mut run: F,
 ) -> Result<(Vec<String>, Vec<String>), AppError>
 where
@@ -1268,7 +1291,13 @@ where
             assemble_to_tmp(groups, &counts, &tmp, &tmp_str, &mut run)?;
         }
         let expected_annots = expected_dest_has_annots(&tmp, &links)?;
-        let rewrite_links = !links.is_empty() || dest_has_supported_links(&tmp)?;
+        if !links_complete && !links.is_empty() {
+            reject_links_on_unlistable_sources(groups, &counts, &links)?;
+        }
+        // Skip dest_has load when hydrate was incomplete so a 400 MiB dest
+        // is not opened just to decide. Complete + empty still deletes (L7).
+        let dest_has = links_complete && links.is_empty() && dest_has_supported_links(&tmp)?;
+        let rewrite_links = should_rewrite_supported_links(links_complete, links.len(), dest_has);
         if rewrite_links {
             apply_link_annots(&tmp, &links)?;
             let cleaned = work.join("dest-links.pdf");
@@ -1349,6 +1378,7 @@ pub fn edit_pdf_overlays(
     groups: &[PageGroup],
     output: &str,
     document: &EditDocumentIn,
+    links_complete: bool,
 ) -> Result<(Vec<String>, Vec<String>), AppError> {
     if groups.is_empty() {
         return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
@@ -1387,6 +1417,7 @@ pub fn edit_pdf_overlays(
             Some(&handle.cancelled),
             &qpdf_exe,
             Some(handle),
+            links_complete,
             |args| run_qpdf(app, handle, job_id, args, "Saving", None),
         )
     })();

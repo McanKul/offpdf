@@ -291,8 +291,9 @@ export function editPdfOverlays(
   outputPath: string,
   groups: PageGroup[],
   document: EditDocument,
+  linksComplete = true,
 ): Promise<JobResult> {
-  return invoke<JobResult>("edit_pdf_overlays", { jobId, outputPath, groups, document });
+  return invoke<JobResult>("edit_pdf_overlays", { jobId, outputPath, groups, document, linksComplete });
 }
 
 export function stampPdf(

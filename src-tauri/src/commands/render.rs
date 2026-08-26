@@ -123,7 +123,8 @@ pub async fn pdf_outline(input_path: String) -> Result<Vec<crate::models::Outlin
 }
 
 /// Supported URI / in-document GoTo `/Link` annots. Paths in, JSON out; never
-/// fetches a URI.
+/// fetches a URI. Files over 400 MiB or with more than 5,000 supported links
+/// return an actionable error (not a silent empty or truncated list).
 #[tauri::command]
 pub async fn list_pdf_links(
     input_path: String,
