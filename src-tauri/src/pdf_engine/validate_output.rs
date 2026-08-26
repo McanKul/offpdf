@@ -11,9 +11,16 @@
 
 use crate::error::AppError;
 use crate::pdf_engine::crop;
-use lopdf::Document;
+use lopdf::{Document, Object, ObjectId};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// FNV-1a of decoded page Contents plus that byte length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentDigest {
+    pub hash: u64,
+    pub len: usize,
+}
 
 /// Per-page geometry the gate compares to the reopened staged file.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,6 +30,7 @@ pub struct PageSnapshot {
     pub trim_box: Option<[f64; 4]>,
     pub rotate: i64,
     pub user_unit: f64,
+    pub content_digest: ContentDigest,
 }
 
 /// Catalog / trailer structures the source had and the staged file must keep.
@@ -126,6 +134,96 @@ fn has_any_annots(doc: &Document) -> bool {
     })
 }
 
+/// Same FNV-1a-64 as `render::fnv1a_hex`, on raw bytes (no hex).
+fn fnv1a_u64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+pub(crate) fn content_digest(bytes: &[u8]) -> ContentDigest {
+    ContentDigest {
+        hash: fnv1a_u64(bytes),
+        len: bytes.len(),
+    }
+}
+
+fn decoded_stream_bytes(stream: &lopdf::Stream) -> Vec<u8> {
+    match stream.decompressed_content() {
+        Ok(data) => data,
+        Err(_) => stream.content.clone(),
+    }
+}
+
+fn dict_from<'a>(doc: &'a Document, obj: &'a Object) -> Option<&'a lopdf::Dictionary> {
+    match obj {
+        Object::Dictionary(d) => Some(d),
+        Object::Reference(id) => doc.get_dictionary(*id).ok(),
+        _ => None,
+    }
+}
+
+fn page_form_xobject_bytes(doc: &Document, page_id: ObjectId) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let Ok((inline, inherited_ids)) = doc.get_page_resources(page_id) else {
+        return out;
+    };
+    let mut resource_dicts: Vec<&lopdf::Dictionary> = Vec::new();
+    if let Some(d) = inline {
+        resource_dicts.push(d);
+    }
+    for id in inherited_ids {
+        if let Ok(d) = doc.get_dictionary(id) {
+            resource_dicts.push(d);
+        }
+    }
+    for resources in resource_dicts {
+        let Ok(xo_obj) = resources.get(b"XObject") else {
+            continue;
+        };
+        let Some(xobjects) = dict_from(doc, xo_obj) else {
+            continue;
+        };
+        for (_, obj) in xobjects.iter() {
+            let Ok(id) = obj.as_reference() else {
+                continue;
+            };
+            let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) else {
+                continue;
+            };
+            let subtype = stream
+                .dict
+                .get(b"Subtype")
+                .ok()
+                .and_then(|o| o.as_name().ok());
+            if subtype != Some(b"Form") {
+                continue;
+            }
+            out.push(decoded_stream_bytes(stream));
+        }
+    }
+    out
+}
+
+fn dest_page_digests(doc: &Document, page_id: ObjectId) -> Vec<ContentDigest> {
+    let mut out = Vec::new();
+    if let Ok(bytes) = doc.get_page_content(page_id) {
+        out.push(content_digest(&bytes));
+    }
+    for id in doc.get_page_contents(page_id) {
+        if let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) {
+            out.push(content_digest(&decoded_stream_bytes(stream)));
+        }
+    }
+    for bytes in page_form_xobject_bytes(doc, page_id) {
+        out.push(content_digest(&bytes));
+    }
+    out
+}
+
 /// Validate a dest-sibling staged PDF against `snapshot` using `run_check` for `qpdf --check`.
 ///
 /// `run_check` receives an argv array (no shell), typically `["--check", <staged>]`,
@@ -227,6 +325,14 @@ pub fn validate_staged_pdf(
                 format!("Page {page_no} /UserUnit does not match the source."),
             ));
         }
+        let candidates = dest_page_digests(&doc, id);
+        if !candidates.iter().any(|d| *d == expected.content_digest) {
+            return Err(fatal_staged(
+                staged,
+                format!("Page {page_no} content does not match the source."),
+            ));
+        }
+        abort_if_cancelled(staged, cancel)?;
     }
 
     if snapshot.catalog.outlines && !has_catalog_key(&doc, b"Outlines") {
@@ -335,6 +441,15 @@ mod tests {
             trim_box: None,
             rotate: 0,
             user_unit: 1.0,
+            content_digest: content_digest(b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET"),
+        }
+    }
+
+    fn letter_page_labeled(label: &str) -> PageSnapshot {
+        let bytes = format!("BT /F1 12 Tf 72 720 Td ({label}) Tj ET").into_bytes();
+        PageSnapshot {
+            content_digest: content_digest(&bytes),
+            ..letter_page()
         }
     }
 
@@ -606,6 +721,7 @@ mod tests {
                 trim_box: None,
                 rotate: 0,
                 user_unit: 1.0,
+                content_digest: content_digest(b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET"),
             }],
             catalog: empty_catalog(),
         };
@@ -675,6 +791,152 @@ mod tests {
         assert!(
             !staged.exists(),
             "C1: cancel must delete staged .offpdf-*.pdf.tmp"
+        );
+    }
+
+    // --- R1 / R1b -----------------------------------------------------------
+
+    fn write_two_page_letter(path: &Path, label1: &str, label2: &str) {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let content1 = doc.add_object(Object::Stream(Stream::new(
+            Dictionary::new(),
+            format!("BT /F1 12 Tf 72 720 Td ({label1}) Tj ET").into_bytes(),
+        )));
+        let content2 = doc.add_object(Object::Stream(Stream::new(
+            Dictionary::new(),
+            format!("BT /F1 12 Tf 72 720 Td ({label2}) Tj ET").into_bytes(),
+        )));
+
+        let mut page1 = Dictionary::new();
+        page1.set("Type", "Page");
+        page1.set("Parent", pages_id);
+        page1.set("MediaBox", box_obj([0, 0, 612, 792]));
+        page1.set("Contents", content1);
+        let page1_id = doc.add_object(Object::Dictionary(page1));
+
+        let mut page2 = Dictionary::new();
+        page2.set("Type", "Page");
+        page2.set("Parent", pages_id);
+        page2.set("MediaBox", box_obj([0, 0, 612, 792]));
+        page2.set("Contents", content2);
+        let page2_id = doc.add_object(Object::Dictionary(page2));
+
+        let mut pages = Dictionary::new();
+        pages.set("Type", "Pages");
+        pages.set("Kids", vec![page1_id.into(), page2_id.into()]);
+        pages.set("Count", 2);
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", "Catalog");
+        catalog.set("Pages", pages_id);
+        let catalog_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", catalog_id);
+        doc.save(path).expect("write two-page fixture");
+    }
+
+    fn two_letter_snapshot() -> OutputSnapshot {
+        OutputSnapshot {
+            pages: vec![
+                letter_page_labeled("ALPHA-PAGE"),
+                letter_page_labeled("BETA-PAGE"),
+            ],
+            catalog: empty_catalog(),
+        }
+    }
+
+    fn swap_page_kids(path: &Path) {
+        let mut doc = Document::load(path).expect("load two-page pdf");
+        let root = doc
+            .trailer
+            .get(b"Root")
+            .expect("Root")
+            .as_reference()
+            .expect("Root ref");
+        let pages_id = doc
+            .get_dictionary(root)
+            .expect("catalog")
+            .get(b"Pages")
+            .expect("Pages")
+            .as_reference()
+            .expect("Pages ref");
+        let kids = match doc.get_dictionary(pages_id).expect("pages dict").get(b"Kids") {
+            Ok(Object::Array(a)) => a.clone(),
+            other => panic!("Kids must be an array, got {other:?}"),
+        };
+        assert_eq!(kids.len(), 2, "fixture must have two Kids");
+        let swapped = vec![kids[1].clone(), kids[0].clone()];
+        match doc.get_object_mut(pages_id) {
+            Ok(Object::Dictionary(pages)) => pages.set("Kids", swapped),
+            other => panic!("Pages object is not a dictionary: {other:?}"),
+        }
+        doc.save(path).expect("rewrite swapped Kids");
+    }
+
+    fn page_stream_text(path: &Path, page: u32) -> String {
+        let doc = Document::load(path).expect("load pdf");
+        let id = *doc.get_pages().get(&page).expect("page id");
+        let bytes = doc.get_page_content(id).expect("page contents");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[test]
+    fn validate_swapped_same_geometry_pages_is_invalid_output() {
+        let scratch = Scratch::new("r1-swap");
+        let dest = scratch.path().join("out.pdf");
+        let staged = scratch.path().join(".offpdf-r1.pdf.tmp");
+        write_two_page_letter(&staged, "ALPHA-PAGE", "BETA-PAGE");
+        std::fs::write(&dest, b"OLD-DEST").unwrap();
+        swap_page_kids(&staged);
+        assert!(
+            page_stream_text(&staged, 1).contains("BETA-PAGE"),
+            "swap must put BETA on dest page 1"
+        );
+        assert!(
+            page_stream_text(&staged, 2).contains("ALPHA-PAGE"),
+            "swap must put ALPHA on dest page 2"
+        );
+
+        let result = validate_staged_pdf(&staged, &two_letter_snapshot(), None, |_args| {
+            Ok((0, String::new()))
+        });
+        let err = result.expect_err(
+            "R1: same-geometry Kids swap must be INVALID_OUTPUT (presence of source Contents digest)",
+        );
+        assert_invalid_output(&err);
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"OLD-DEST",
+            "R1: dest bytes must stay OLD-DEST"
+        );
+        assert!(
+            !staged.exists(),
+            "R1: fatal validate must delete staged .offpdf-*.pdf.tmp"
+        );
+    }
+
+    #[test]
+    fn validate_in_order_same_geometry_pages_is_ok() {
+        let scratch = Scratch::new("r1b-order");
+        let dest = scratch.path().join("out.pdf");
+        let staged = scratch.path().join("staged.pdf");
+        write_two_page_letter(&staged, "ALPHA-PAGE", "BETA-PAGE");
+        std::fs::write(&dest, b"OLD-DEST").unwrap();
+        assert!(page_stream_text(&staged, 1).contains("ALPHA-PAGE"));
+        assert!(page_stream_text(&staged, 2).contains("BETA-PAGE"));
+
+        let result = validate_staged_pdf(&staged, &two_letter_snapshot(), None, |_args| {
+            Ok((0, String::new()))
+        });
+        assert!(
+            result.is_ok(),
+            "R1b: in-order two-page same-geometry dest must pass the gate; {result:?}"
+        );
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"OLD-DEST",
+            "R1b: gate must not publish; dest bytes must stay OLD"
         );
     }
 }

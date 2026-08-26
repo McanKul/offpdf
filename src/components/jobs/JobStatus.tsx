@@ -98,6 +98,7 @@ export function JobStatus({ job }: { job: JobController }) {
             ? "Your file is ready."
             : `${outputs.length} files are ready.`}
         </p>
+        {job.update?.message && <div className="job-log selectable">{job.update.message}</div>}
         <SizeReadout outputs={outputs} inputBytes={job.meta?.inputBytes} />
 
         <div className="result-files">

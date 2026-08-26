@@ -5,7 +5,8 @@
 use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
 use crate::pdf_engine::validate_output::{
-    catalog_flags_from_doc, validate_staged_pdf, OutputSnapshot, PageSnapshot,
+    catalog_flags_from_doc, content_digest, validate_staged_pdf, ContentDigest, OutputSnapshot,
+    PageSnapshot,
 };
 use crate::pdf_engine::{crop, edit_image, qpdf};
 use crate::utils::process::{run_qpdf, run_tracked};
@@ -799,6 +800,7 @@ struct OverlayPageGeom {
     trim: Option<[f64; 4]>,
     rotate: i64,
     user_unit: f64,
+    content_digest: ContentDigest,
 }
 
 fn boxes_near(a: [f64; 4], b: [f64; 4]) -> bool {
@@ -1038,6 +1040,9 @@ fn collect_source_pages(
                     format!("Page {p} is not in this PDF."),
                 )
             })?;
+            let content = doc.get_page_content(id).map_err(|e| {
+                AppError::engine_failed(format!("Could not read page content: {e}"))
+            })?;
             geoms.push(OverlayPageGeom {
                 visible: crop::visible_box(doc, id),
                 media: crop::media_box(doc, id),
@@ -1045,6 +1050,7 @@ fn collect_source_pages(
                 trim: crop::page_trim_box(doc, id),
                 rotate: crop::page_rotation(doc, id),
                 user_unit: crop::page_user_unit(doc, id),
+                content_digest: content_digest(&content),
             });
         }
     }
@@ -1109,6 +1115,7 @@ where
     export_edit_pdf_with_check_exe(
         groups, output, document, font_path, work, unique, cancel, &exe, None, run,
     )
+    .map(|(paths, _warnings)| paths)
 }
 
 /// Same as [`export_edit_pdf_with_runner`], with an explicit `qpdf --check` binary.
@@ -1123,7 +1130,7 @@ fn export_edit_pdf_with_check_exe<F>(
     qpdf_check: &Path,
     handle: Option<&Arc<JobHandle>>,
     mut run: F,
-) -> Result<Vec<String>, AppError>
+) -> Result<(Vec<String>, Vec<String>), AppError>
 where
     F: FnMut(&[String]) -> Result<(), AppError>,
 {
@@ -1144,7 +1151,7 @@ where
     let overlay = work.join("overlay.pdf");
     let overlay_str = overlay.to_string_lossy().to_string();
     let mut gate_passed = false;
-    let result = (|| -> Result<Vec<String>, AppError> {
+    let result = (|| -> Result<(Vec<String>, Vec<String>), AppError> {
         let (geoms, counts) = collect_source_pages(groups)?;
         if geoms.is_empty() {
             return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
@@ -1165,12 +1172,12 @@ where
             safe_output::replace_file(&cleaned, &tmp)?;
         }
         let snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
-        validate_staged_pdf(&tmp, &snapshot, cancel, |args| {
+        let vr = validate_staged_pdf(&tmp, &snapshot, cancel, |args| {
             run_qpdf_check_argv(qpdf_check, args, handle)
         })?;
         gate_passed = true;
         safe_output::replace_file(&tmp, dest)?;
-        Ok(vec![output.to_string()])
+        Ok((vec![output.to_string()], vr.warnings))
     })();
     // Keep tmp only if replace_file failed after a passed gate (Windows recover).
     // Spawn/validate errors (and leftover success tmp) delete the sibling.
@@ -1195,6 +1202,7 @@ fn output_snapshot_from_source(
                 trim_box: g.trim,
                 rotate: g.rotate,
                 user_unit: g.user_unit,
+                content_digest: g.content_digest,
             })
             .collect(),
         catalog: catalog_flags_from_doc(&doc),
@@ -1235,7 +1243,7 @@ pub fn edit_pdf_overlays(
     groups: &[PageGroup],
     output: &str,
     document: &EditDocumentIn,
-) -> Result<Vec<String>, AppError> {
+) -> Result<(Vec<String>, Vec<String>), AppError> {
     if groups.is_empty() {
         return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
     }
@@ -1258,7 +1266,7 @@ pub fn edit_pdf_overlays(
         .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
     let font_path = find_font_path(app)?;
 
-    let result = (|| -> Result<Vec<String>, AppError> {
+    let result = (|| -> Result<(Vec<String>, Vec<String>), AppError> {
         if handle.is_cancelled() {
             return Err(AppError::cancelled());
         }
@@ -2001,6 +2009,7 @@ mod tests {
             trim: None,
             rotate: 0,
             user_unit: 1.0,
+            content_digest: content_digest(b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET"),
         }
     }
 

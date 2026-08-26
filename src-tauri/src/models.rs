@@ -97,7 +97,6 @@ impl JobUpdate {
         self.percent = Some(p);
         self
     }
-    #[allow(dead_code)] // Part of the JobUpdate builder API.
     pub fn message(mut self, m: impl Into<String>) -> Self {
         self.message = Some(m.into());
         self

@@ -11,7 +11,21 @@ use tauri::Emitter;
 
 /// Helper: emit the final "completed" update and build the JobResult.
 fn completed(app: &tauri::AppHandle, job_id: String, output_paths: Vec<String>) -> JobResult {
-    let _ = app.emit("job:update", JobUpdate::new(&job_id, "completed", "Done"));
+    completed_with_message(app, job_id, output_paths, None)
+}
+
+/// Same as [`completed`], with an optional inspectable `JobUpdate.message`.
+fn completed_with_message(
+    app: &tauri::AppHandle,
+    job_id: String,
+    output_paths: Vec<String>,
+    message: Option<String>,
+) -> JobResult {
+    let mut update = JobUpdate::new(&job_id, "completed", "Done");
+    if let Some(m) = message.filter(|s| !s.is_empty()) {
+        update = update.message(m);
+    }
+    let _ = app.emit("job:update", update);
     JobResult {
         job_id,
         output_paths,
@@ -194,8 +208,21 @@ pub async fn edit_pdf_overlays(
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
     registry.remove(&job_id);
-    let output_paths = res?;
-    Ok(completed(&app, job_id, output_paths))
+    let (output_paths, warnings) = res?;
+    let message = {
+        let joined = warnings
+            .iter()
+            .map(|w| w.trim())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        }
+    };
+    Ok(completed_with_message(&app, job_id, output_paths, message))
 }
 
 #[tauri::command]
