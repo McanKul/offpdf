@@ -4,8 +4,12 @@
 
 use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
-use crate::pdf_engine::{crop, edit_image};
-use crate::utils::process::run_qpdf;
+use crate::pdf_engine::validate_output::{
+    catalog_flags_from_doc, content_digest, validate_staged_pdf, ContentDigest, OutputSnapshot,
+    PageSnapshot,
+};
+use crate::pdf_engine::{crop, edit_image, qpdf};
+use crate::utils::process::{run_qpdf, run_tracked};
 use crate::utils::safe_output;
 use crate::utils::temp;
 use lopdf::{Document, Object};
@@ -796,6 +800,7 @@ struct OverlayPageGeom {
     trim: Option<[f64; 4]>,
     rotate: i64,
     user_unit: f64,
+    content_digest: ContentDigest,
 }
 
 fn boxes_near(a: [f64; 4], b: [f64; 4]) -> bool {
@@ -1035,6 +1040,9 @@ fn collect_source_pages(
                     format!("Page {p} is not in this PDF."),
                 )
             })?;
+            let content = doc.get_page_content(id).map_err(|e| {
+                AppError::engine_failed(format!("Could not read page content: {e}"))
+            })?;
             geoms.push(OverlayPageGeom {
                 visible: crop::visible_box(doc, id),
                 media: crop::media_box(doc, id),
@@ -1042,6 +1050,7 @@ fn collect_source_pages(
                 trim: crop::page_trim_box(doc, id),
                 rotate: crop::page_rotation(doc, id),
                 user_unit: crop::page_user_unit(doc, id),
+                content_digest: content_digest(&content),
             });
         }
     }
@@ -1088,7 +1097,7 @@ pub(crate) fn build_edit_overlay_args(
     Ok(args)
 }
 
-/// Build the overlay and run qpdf via `run`. Used by the Tauri command and tests.
+/// Build the overlay and run qpdf via `run`. Used by tests (system/`"qpdf"`).
 pub(crate) fn export_edit_pdf_with_runner<F>(
     groups: &[PageGroup],
     output: &str,
@@ -1097,8 +1106,31 @@ pub(crate) fn export_edit_pdf_with_runner<F>(
     work: &Path,
     unique: &str,
     cancel: Option<&AtomicBool>,
-    mut run: F,
+    run: F,
 ) -> Result<Vec<String>, AppError>
+where
+    F: FnMut(&[String]) -> Result<(), AppError>,
+{
+    let exe = qpdf::resolve_qpdf_standalone();
+    export_edit_pdf_with_check_exe(
+        groups, output, document, font_path, work, unique, cancel, &exe, None, run,
+    )
+    .map(|(paths, _warnings)| paths)
+}
+
+/// Same as [`export_edit_pdf_with_runner`], with an explicit `qpdf --check` binary.
+fn export_edit_pdf_with_check_exe<F>(
+    groups: &[PageGroup],
+    output: &str,
+    document: &EditDocumentIn,
+    font_path: &Path,
+    work: &Path,
+    unique: &str,
+    cancel: Option<&AtomicBool>,
+    qpdf_check: &Path,
+    handle: Option<&Arc<JobHandle>>,
+    mut run: F,
+) -> Result<(Vec<String>, Vec<String>), AppError>
 where
     F: FnMut(&[String]) -> Result<(), AppError>,
 {
@@ -1118,7 +1150,8 @@ where
     let tmp_str = tmp.to_string_lossy().to_string();
     let overlay = work.join("overlay.pdf");
     let overlay_str = overlay.to_string_lossy().to_string();
-    let result = (|| -> Result<Vec<String>, AppError> {
+    let mut gate_passed = false;
+    let result = (|| -> Result<(Vec<String>, Vec<String>), AppError> {
         let (geoms, counts) = collect_source_pages(groups)?;
         if geoms.is_empty() {
             return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
@@ -1138,15 +1171,69 @@ where
             run(&[tmp_str.clone(), cleaned_str.clone()])?;
             safe_output::replace_file(&cleaned, &tmp)?;
         }
+        let snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
+        let vr = validate_staged_pdf(&tmp, &snapshot, cancel, |args| {
+            run_qpdf_check_argv(qpdf_check, args, handle)
+        })?;
+        gate_passed = true;
         safe_output::replace_file(&tmp, dest)?;
-        Ok(vec![output.to_string()])
+        Ok((vec![output.to_string()], vr.warnings))
     })();
-    // On success the temp was renamed away. On failure leave a dest-sibling
-    // tmp in place so a failed Windows replace still has a recoverable file.
-    if result.is_ok() && tmp.exists() {
+    // Keep tmp only if replace_file failed after a passed gate (Windows recover).
+    // Spawn/validate errors (and leftover success tmp) delete the sibling.
+    if !(gate_passed && result.is_err()) && tmp.exists() {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+fn output_snapshot_from_source(
+    geoms: &[OverlayPageGeom],
+    primary: &Path,
+) -> Result<OutputSnapshot, AppError> {
+    let doc = Document::load(primary)
+        .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
+    Ok(OutputSnapshot {
+        pages: geoms
+            .iter()
+            .map(|g| PageSnapshot {
+                media_box: g.media,
+                crop_box: g.crop,
+                trim_box: g.trim,
+                rotate: g.rotate,
+                user_unit: g.user_unit,
+                content_digest: g.content_digest,
+            })
+            .collect(),
+        catalog: catalog_flags_from_doc(&doc),
+    })
+}
+
+fn run_qpdf_check_argv(
+    exe: &Path,
+    args: &[String],
+    handle: Option<&Arc<JobHandle>>,
+) -> Result<(i32, String), AppError> {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    if let Some(h) = handle {
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::piped());
+        let (status, stderr) = run_tracked(h, cmd)?;
+        return Ok((status.and_then(|s| s.code()).unwrap_or(1), stderr));
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| AppError::io("qpdf --check failed to start", e))?;
+    Ok((
+        output.status.code().unwrap_or(1),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
 }
 
 pub fn edit_pdf_overlays(
@@ -1156,7 +1243,7 @@ pub fn edit_pdf_overlays(
     groups: &[PageGroup],
     output: &str,
     document: &EditDocumentIn,
-) -> Result<Vec<String>, AppError> {
+) -> Result<(Vec<String>, Vec<String>), AppError> {
     if groups.is_empty() {
         return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
     }
@@ -1179,11 +1266,12 @@ pub fn edit_pdf_overlays(
         .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
     let font_path = find_font_path(app)?;
 
-    let result = (|| -> Result<Vec<String>, AppError> {
+    let result = (|| -> Result<(Vec<String>, Vec<String>), AppError> {
         if handle.is_cancelled() {
             return Err(AppError::cancelled());
         }
-        export_edit_pdf_with_runner(
+        let qpdf_exe = qpdf::resolve_qpdf(app);
+        export_edit_pdf_with_check_exe(
             groups,
             output,
             document,
@@ -1191,6 +1279,8 @@ pub fn edit_pdf_overlays(
             &work,
             job_id,
             Some(&handle.cancelled),
+            &qpdf_exe,
+            Some(handle),
             |args| run_qpdf(app, handle, job_id, args, "Saving", None),
         )
     })();
@@ -1919,6 +2009,7 @@ mod tests {
             trim: None,
             rotate: 0,
             user_unit: 1.0,
+            content_digest: content_digest(b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET"),
         }
     }
 
