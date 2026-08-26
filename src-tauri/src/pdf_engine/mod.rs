@@ -25,6 +25,7 @@ pub mod qpdf;
 pub mod render;
 pub mod stamp;
 pub mod textexport;
+pub mod validate_output;
 
 use crate::error::AppError;
 use crate::models::{JobHandle, JobUpdate, PageGroup, PagePick, RotateGroup, SplitMode};
