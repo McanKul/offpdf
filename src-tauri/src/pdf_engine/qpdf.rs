@@ -14,20 +14,11 @@ fn exe_name() -> &'static str {
     }
 }
 
-/// Locate the qpdf binary. Prefers a bundled copy under `binaries/`, falling
-/// back to the system PATH (by returning the bare exe name).
-pub fn resolve_qpdf(app: &tauri::AppHandle) -> PathBuf {
+/// Locate qpdf without a Tauri handle (Edit PDF `--check`, tests).
+pub fn resolve_qpdf_standalone() -> PathBuf {
     let exe = exe_name();
 
-    // 1. Bundled next to app resources.
-    if let Ok(res) = app.path().resource_dir() {
-        let candidate = res.join("binaries").join(exe);
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-
-    // 2. Bundled next to the executable.
+    // Bundled next to the executable.
     if let Ok(cur) = std::env::current_exe() {
         if let Some(parent) = cur.parent() {
             let candidate = parent.join("binaries").join(exe);
@@ -37,9 +28,9 @@ pub fn resolve_qpdf(app: &tauri::AppHandle) -> PathBuf {
         }
     }
 
-    // 3. Common absolute install locations. A Finder-launched .app does NOT
-    //    inherit the shell PATH (so Homebrew/MacPorts dirs are missing), so we
-    //    probe them explicitly before relying on PATH.
+    // Common absolute install locations. A Finder-launched .app does NOT
+    // inherit the shell PATH (so Homebrew/MacPorts dirs are missing), so we
+    // probe them explicitly before relying on PATH.
     #[cfg(not(windows))]
     {
         for candidate in [
@@ -55,8 +46,24 @@ pub fn resolve_qpdf(app: &tauri::AppHandle) -> PathBuf {
         }
     }
 
-    // 4. Fall back to PATH (works when launched from a terminal / dev).
+    // Fall back to PATH (works when launched from a terminal / dev).
     PathBuf::from(exe)
+}
+
+/// Locate the qpdf binary. Prefers a bundled copy under `binaries/`, falling
+/// back to the system PATH (by returning the bare exe name).
+pub fn resolve_qpdf(app: &tauri::AppHandle) -> PathBuf {
+    let exe = exe_name();
+
+    // 1. Bundled next to app resources.
+    if let Ok(res) = app.path().resource_dir() {
+        let candidate = res.join("binaries").join(exe);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    resolve_qpdf_standalone()
 }
 
 /// Return the number of pages in `input` via `qpdf --show-npages`.

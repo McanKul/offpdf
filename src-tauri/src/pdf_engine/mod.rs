@@ -12,6 +12,8 @@ pub mod edit_image;
 pub mod edit_overlay;
 #[cfg(test)]
 mod edit_overlay_integ;
+#[cfg(test)]
+mod source_edit_fixtures;
 pub mod metadata;
 pub mod nup;
 pub mod ocr;
@@ -23,6 +25,7 @@ pub mod qpdf;
 pub mod render;
 pub mod stamp;
 pub mod textexport;
+pub mod validate_output;
 
 use crate::error::AppError;
 use crate::models::{JobHandle, JobUpdate, PageGroup, PagePick, RotateGroup, SplitMode};
