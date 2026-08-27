@@ -10,11 +10,13 @@ icons/icon.icns   (macOS)
 icons/icon.ico    (Windows)
 ```
 
-Generate them from a single 1024x1024 PNG with the Tauri CLI:
+The canonical SVG artwork and its 1024x1024 launcher PNG live in `source/`.
+Generate all platform files from that source with:
 
 ```bash
-npm run tauri icon path/to/source-1024.png
+node scripts/gen-icon.mjs
+npm run tauri icon scripts/icon-src.png
 ```
 
-This command writes all required sizes/formats into this folder. It is only
-needed for `tauri build` (release bundles); `tauri dev` runs without them.
+The Tauri command writes all required sizes and formats into this folder. It is
+only needed for `tauri build` (release bundles); `tauri dev` runs without them.
