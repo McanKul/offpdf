@@ -43,6 +43,7 @@ describe("isImagePath", () => {
   it("accepts mixed-case extensions", () => {
     expect(isImagePath("photo.PNG")).toBe(true);
     expect(isImagePath("photo.JpEg")).toBe(true);
+    expect(isImagePath("photo.HEIF")).toBe(true);
   });
 
   it("accepts POSIX and Windows-style paths", () => {
@@ -64,6 +65,7 @@ describe("isPdfPath", () => {
   it("accepts .pdf in any case", () => {
     expect(isPdfPath("report.pdf")).toBe(true);
     expect(isPdfPath("report.PDF")).toBe(true);
+    expect(isPdfPath("report.PdF")).toBe(true);
   });
 
   it("accepts POSIX and Windows-style paths", () => {
@@ -119,6 +121,7 @@ describe("isSupportedPath", () => {
 
   it("rejects unsupported extensions", () => {
     expect(isSupportedPath("archive.zip")).toBe(false);
+    expect(isSupportedPath("archive.tar.gz")).toBe(false);
     expect(isSupportedPath("drawing.svg")).toBe(false);
     expect(isSupportedPath("report.docm")).toBe(false);
   });
