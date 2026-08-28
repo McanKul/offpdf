@@ -24,6 +24,8 @@ import { useSettingsStore } from "@/state/settingsStore";
 import { useWorkspace } from "@/state/workspaceStore";
 import {
   clampPageIndex,
+  emptyObjectsBlockSave,
+  incompleteSourcePaths,
   makeLinkObject,
   planKeyRebind,
   rebindNeedsConfirm,
@@ -68,6 +70,7 @@ export function EditPdfPage() {
   const doc = session.document;
   const hydratedUids = useRef(new Set<string>());
   const hydrateErrors = useRef(new Map<string, AppError>());
+  const hydratedLinkUids = useRef(new Set<string>());
   const [hydrateReady, setHydrateReady] = useState(
     () => files.every((f) => (f.pageCount ?? 0) === 0),
   );
@@ -78,6 +81,7 @@ export function EditPdfPage() {
       if (!live.has(uid)) {
         hydratedUids.current.delete(uid);
         hydrateErrors.current.delete(uid);
+        hydratedLinkUids.current.delete(uid);
       }
     }
     const pending = files.filter((f) => (f.pageCount ?? 0) > 0 && !hydratedUids.current.has(f.uid));
@@ -109,6 +113,11 @@ export function EditPdfPage() {
                 ? crypto.randomUUID()
                 : `link-${file.uid}-${link.pageIndex}-${mapped.length}`;
             mapped.push(makeLinkObject(id, pageIndex, link.rect, action));
+          }
+          if (listed.length > 0) {
+            hydratedLinkUids.current.add(file.uid);
+          } else {
+            hydratedLinkUids.current.delete(file.uid);
           }
           hydrateErrors.current.delete(file.uid);
           finished.push(file.uid);
@@ -168,7 +177,14 @@ export function EditPdfPage() {
   const start = async () => {
     if (refs.length === 0) return toast({ title: "Add a PDF first", variant: "error" });
     if (!hydrateReady) return toast({ title: "Still reading links from the PDF", variant: "error" });
-    if (doc.objects.length === 0) return toast({ title: "Add something to the page first", variant: "error" });
+    if (
+      emptyObjectsBlockSave({
+        objectCount: doc.objects.length,
+        hadHydratedLinks: hydratedLinkUids.current.size > 0,
+      })
+    ) {
+      return toast({ title: "Add something to the page first", variant: "error" });
+    }
     if (!folder) return toast({ title: "Choose an output folder", variant: "error" });
     const nameRes = validateOutputName(name);
     if (!nameRes.ok) return toast({ title: "Invalid file name", description: nameRes.error, variant: "error" });
@@ -182,10 +198,20 @@ export function EditPdfPage() {
     if (failedLinkErr) {
       return toast({ title: failedLinkErr.title, description: failedLinkErr.message, variant: "error" });
     }
-    const linksComplete = files.every((f) => !hydrateErrors.current.has(f.uid));
+    const incompletePaths = incompleteSourcePaths(
+      files,
+      new Set(hydrateErrors.current.keys()),
+    );
 
     await job.run(
-      (id) => editPdfOverlays(id, outputPath, buildGroups(refs), toExportDocument(doc), linksComplete),
+      (id) =>
+        editPdfOverlays(
+          id,
+          outputPath,
+          buildGroups(refs),
+          toExportDocument(doc),
+          incompletePaths,
+        ),
       { tool: "editPdf", label: `Edit PDF · ${doc.objects.length} object${doc.objects.length === 1 ? "" : "s"}` },
     );
   };

@@ -218,12 +218,12 @@ pub async fn edit_pdf_overlays(
     output_path: String,
     groups: Vec<PageGroup>,
     document: crate::pdf_engine::edit_overlay::EditDocumentIn,
-    links_complete: Option<bool>,
+    incomplete_source_paths: Option<Vec<String>>,
 ) -> Result<JobResult, AppError> {
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
-    let complete = links_complete.unwrap_or(true);
+    let incomplete = incomplete_source_paths.unwrap_or_default();
     let res = tauri::async_runtime::spawn_blocking(move || {
         crate::pdf_engine::edit_overlay::edit_pdf_overlays(
             &app2,
@@ -232,7 +232,7 @@ pub async fn edit_pdf_overlays(
             &groups,
             &output_path,
             &document,
-            complete,
+            &incomplete,
         )
     })
     .await

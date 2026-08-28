@@ -1,17 +1,17 @@
 //! PDF `/Link` annotations for Edit PDF (issue #35).
 //!
-//! Shared classifier + list/apply surface. Bodies are fail-today stubs so
-//! tests compile and fail on assertions until impl lands.
+//! Shared classifier + list/apply surface. Per-source dest ranges skip
+//! unlistable files so a mixed workspace can still rewrite complete sources.
 
 use crate::error::AppError;
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Outline-sized load gate — same bound as [`super::outline`].
 const MAX_LINK_BYTES: u64 = 400 * 1024 * 1024;
-const MAX_LINKS: usize = 5000;
+pub(crate) const MAX_LINKS: usize = 5000;
 
 /// Classification of a link action (URI / in-document GoTo / leave-alone).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,67 +151,7 @@ pub fn list_link_annots(path: &Path) -> Result<Vec<ListedLink>, AppError> {
 /// Copy through every non-Link annot and every unsupported Link. Reject
 /// writing a non-allowlisted URI with an actionable [`AppError`].
 pub fn apply_link_annots(staged: &Path, links: &[SessionLink]) -> Result<(), AppError> {
-    for link in links {
-        if let LinkAction::Uri { uri } = &link.action {
-            if !uri_is_allowed(uri) {
-                return Err(unsafe_uri_error(uri));
-            }
-        }
-    }
-
-    let mut doc = Document::load(staged)
-        .map_err(|e| AppError::engine_failed(format!("Could not read the staged PDF: {e}")))?;
-    let pages = doc.get_pages();
-    let page_index_of = page_index_map(&doc);
-    let mut page_ids: Vec<(u32, ObjectId)> = pages.iter().map(|(&n, &id)| (n, id)).collect();
-    page_ids.sort_by_key(|(n, _)| *n);
-
-    let mut by_page: HashMap<u32, Vec<&SessionLink>> = HashMap::new();
-    for link in links {
-        if (link.page_index as usize) >= page_ids.len() {
-            return Err(AppError::new(
-                "BAD_EDIT",
-                "Link page is out of range",
-                format!(
-                    "A link points at page {}, but this PDF has {} page{}.",
-                    link.page_index + 1,
-                    page_ids.len(),
-                    if page_ids.len() == 1 { "" } else { "s" }
-                ),
-            )
-            .with_suggestion("Pick a page that exists in the document."));
-        }
-        by_page.entry(link.page_index).or_default().push(link);
-    }
-
-    for (num, page_id) in &page_ids {
-        let page_index = num.saturating_sub(1);
-        let existing = page_annot_objects(&doc, *page_id);
-        let mut kept: Vec<Object> = Vec::new();
-        let mut session: Vec<&SessionLink> = by_page.get(&page_index).cloned().unwrap_or_default();
-        for raw in existing {
-            if let Some(listed) = listed_from_annot(&doc, &raw, page_index, &page_index_of) {
-                if let Some(i) = session
-                    .iter()
-                    .position(|l| session_matches_listed(l, &listed))
-                {
-                    session.remove(i);
-                    kept.push(raw);
-                }
-                continue;
-            }
-            kept.push(raw);
-        }
-        for link in session {
-            let annot_id = add_session_link(&mut doc, link, &page_ids)?;
-            kept.push(annot_id.into());
-        }
-        set_page_annots(&mut doc, *page_id, kept)?;
-    }
-
-    doc.save(staged)
-        .map_err(|e| AppError::io("Could not write link annotations.", e))?;
-    Ok(())
+    apply_link_annots_impl(staged, links, None)
 }
 
 /// True when dest will still have any annot after apply (leftover ∪ added).
@@ -249,6 +189,118 @@ pub fn should_rewrite_supported_links(complete: bool, session_len: usize, dest_h
         return true;
     }
     dest_has
+}
+
+/// Dest 0-based page ranges Save should rewrite for this assemble.
+///
+/// Each complete source's dest pages. Incomplete sources are skipped so
+/// their assembled annots stay.
+pub fn dest_ranges_to_rewrite(
+    groups: &[(&str, u32)],
+    incomplete_paths: &[&str],
+) -> Vec<std::ops::Range<u32>> {
+    let mut start = 0u32;
+    let mut out = Vec::with_capacity(groups.len());
+    for &(path, n) in groups {
+        let end = start.saturating_add(n);
+        let incomplete = incomplete_paths.iter().any(|&p| p == path);
+        if !incomplete && n > 0 {
+            out.push(start..end);
+        }
+        start = end;
+    }
+    out
+}
+
+/// Apply session links, limited to `dest_pages` (0-based dest indexes).
+///
+/// An empty page list is a no-op. Pages not in `dest_pages` are left
+/// unchanged.
+pub fn apply_link_annots_for_pages(
+    staged: &Path,
+    links: &[SessionLink],
+    dest_pages: &[u32],
+) -> Result<(), AppError> {
+    if dest_pages.is_empty() {
+        return Ok(());
+    }
+    apply_link_annots_impl(staged, links, Some(dest_pages))
+}
+
+fn apply_link_annots_impl(
+    staged: &Path,
+    links: &[SessionLink],
+    dest_pages: Option<&[u32]>,
+) -> Result<(), AppError> {
+    for link in links {
+        if let LinkAction::Uri { uri } = &link.action {
+            if !uri_is_allowed(uri) {
+                return Err(unsafe_uri_error(uri));
+            }
+        }
+    }
+
+    let mut doc = Document::load(staged)
+        .map_err(|e| AppError::engine_failed(format!("Could not read the staged PDF: {e}")))?;
+    let pages = doc.get_pages();
+    let page_index_of = page_index_map(&doc);
+    let mut page_ids: Vec<(u32, ObjectId)> = pages.iter().map(|(&n, &id)| (n, id)).collect();
+    page_ids.sort_by_key(|(n, _)| *n);
+
+    let mut by_page: HashMap<u32, Vec<&SessionLink>> = HashMap::new();
+    for link in links {
+        if (link.page_index as usize) >= page_ids.len() {
+            return Err(AppError::new(
+                "BAD_EDIT",
+                "Link page is out of range",
+                format!(
+                    "A link points at page {}, but this PDF has {} page{}.",
+                    link.page_index + 1,
+                    page_ids.len(),
+                    if page_ids.len() == 1 { "" } else { "s" }
+                ),
+            )
+            .with_suggestion("Pick a page that exists in the document."));
+        }
+        by_page.entry(link.page_index).or_default().push(link);
+    }
+
+    let dest_filter: Option<HashSet<u32>> = dest_pages.map(|p| p.iter().copied().collect());
+
+    for (num, page_id) in &page_ids {
+        let page_index = num.saturating_sub(1);
+        if dest_filter
+            .as_ref()
+            .is_some_and(|set| !set.contains(&page_index))
+        {
+            continue;
+        }
+        let existing = page_annot_objects(&doc, *page_id);
+        let mut kept: Vec<Object> = Vec::new();
+        let mut session: Vec<&SessionLink> = by_page.get(&page_index).cloned().unwrap_or_default();
+        for raw in existing {
+            if let Some(listed) = listed_from_annot(&doc, &raw, page_index, &page_index_of) {
+                if let Some(i) = session
+                    .iter()
+                    .position(|l| session_matches_listed(l, &listed))
+                {
+                    session.remove(i);
+                    kept.push(raw);
+                }
+                continue;
+            }
+            kept.push(raw);
+        }
+        for link in session {
+            let annot_id = add_session_link(&mut doc, link, &page_ids)?;
+            kept.push(annot_id.into());
+        }
+        set_page_annots(&mut doc, *page_id, kept)?;
+    }
+
+    doc.save(staged)
+        .map_err(|e| AppError::io("Could not write link annotations.", e))?;
+    Ok(())
 }
 
 /// Command helper: size-gated list as JSON DTOs.
@@ -1566,5 +1618,90 @@ mod tests {
         std::fs::write(&path, b"not a pdf").unwrap();
         let err = list_link_annots(&path).expect_err("H4: load fail must be AppError, not Ok([])");
         assert_actionable(&err, "H4 load fail");
+    }
+
+    // --- H7 per-source rewrite ---------------------------------------------
+
+    fn page_uris(path: &Path, page_1based: u32) -> Vec<String> {
+        inspect_page_annots(path, page_1based)
+            .into_iter()
+            .filter(|a| a.subtype == "Link" && a.action_s.as_deref() == Some("URI"))
+            .filter_map(|a| a.uri)
+            .collect()
+    }
+
+    #[test]
+    fn incomplete_a_session_on_b_rewrites_b_range_not_a() {
+        let groups = [("/a.pdf", 1u32), ("/b.pdf", 1)];
+        let ranges = dest_ranges_to_rewrite(&groups, &["/a.pdf"]);
+        assert_eq!(
+            ranges,
+            vec![1..2],
+            "H7-range: incomplete A + session links only on B must rewrite B dest pages, not A; got {ranges:?}"
+        );
+        assert!(
+            !ranges.iter().any(|r| r.contains(&0)),
+            "H7-range: must not rewrite A's dest page 0; got {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_source_b_uri_change_applied_a_unchanged() {
+        let scratch = Scratch::new("h7-edit");
+        let dest = scratch.file("dest.pdf");
+        let mut pdf = PdfFix::new(2, 0, None);
+        pdf.add_link_uri(0, URI_RECT_PDF, "https://a.example/keep");
+        pdf.add_link_uri(1, GOTO_RECT_PDF, "https://b.example/old");
+        pdf.save(&dest);
+
+        let session = [SessionLink {
+            page_index: 1,
+            rect: GOTO_RECT_XYWH,
+            action: LinkAction::Uri {
+                uri: "https://b.example/new".into(),
+            },
+        }];
+        let ranges = dest_ranges_to_rewrite(&[("/a.pdf", 1), ("/b.pdf", 1)], &["/a.pdf"]);
+        let pages: Vec<u32> = ranges.into_iter().flatten().collect();
+        apply_link_annots_for_pages(&dest, &session, &pages).expect("H7-edit apply");
+
+        let a_uris = page_uris(&dest, 1);
+        assert_eq!(
+            a_uris,
+            vec!["https://a.example/keep".to_string()],
+            "H7-edit: A dest URI must stay unchanged; got {a_uris:?}"
+        );
+        let b_uris = page_uris(&dest, 2);
+        assert_eq!(
+            b_uris,
+            vec!["https://b.example/new".to_string()],
+            "H7-edit: B dest URI must be the session URI; got {b_uris:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_source_b_links_removed_a_remain() {
+        let scratch = Scratch::new("h7-delete");
+        let dest = scratch.file("dest.pdf");
+        let mut pdf = PdfFix::new(2, 0, None);
+        pdf.add_link_uri(0, URI_RECT_PDF, "https://a.example/keep");
+        pdf.add_link_uri(1, GOTO_RECT_PDF, "https://b.example/old");
+        pdf.save(&dest);
+
+        let ranges = dest_ranges_to_rewrite(&[("/a.pdf", 1), ("/b.pdf", 1)], &["/a.pdf"]);
+        let pages: Vec<u32> = ranges.into_iter().flatten().collect();
+        apply_link_annots_for_pages(&dest, &[], &pages).expect("H7-delete apply");
+
+        let a_uris = page_uris(&dest, 1);
+        assert_eq!(
+            a_uris,
+            vec!["https://a.example/keep".to_string()],
+            "H7-delete: A dest links must remain; got {a_uris:?}"
+        );
+        let b_uris = page_uris(&dest, 2);
+        assert!(
+            b_uris.is_empty(),
+            "H7-delete: B dest supported links must be gone; got {b_uris:?}"
+        );
     }
 }

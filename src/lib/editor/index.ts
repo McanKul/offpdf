@@ -109,3 +109,9 @@ export { moveSelectedRects, selectedIdsOnPage } from "./moveSelection";
 export { shouldShowEditCanvas } from "./editVisibility";
 export type { EditCanvasVisibility } from "./editVisibility";
 export { clampPageIndex } from "./pageIndex";
+export {
+  emptyObjectsBlockSave,
+  incompleteSourceIds,
+  incompleteSourcePaths,
+  shouldRewriteSourceLinks,
+} from "./linkSavePolicy";
