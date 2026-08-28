@@ -481,6 +481,14 @@ fn strip_markup_annots(doc: &mut Document) {
 }
 
 fn flatten_with_qpdf(staged: &Path) -> Result<(), AppError> {
+    #[cfg(test)]
+    {
+        if staged.file_name().and_then(|n| n.to_str()) == Some("c10-qpdf-fail.pdf") {
+            return Err(AppError::engine_failed(
+                "qpdf --flatten-annotations=all failed: injected",
+            ));
+        }
+    }
     let unique = format!(
         "flatten-{}-{}",
         std::process::id(),
@@ -548,17 +556,11 @@ pub fn apply_markup_annots(
         .map_err(|e| AppError::io("Could not write annotations.", e))?;
 
     if flatten {
-        if flatten_with_qpdf(staged).is_err() {
-            let mut doc = load_doc(staged)?;
-            strip_markup_annots(&mut doc);
-            doc.save(staged)
-                .map_err(|e| AppError::io("Could not flatten annotations.", e))?;
-        } else {
-            let mut doc = load_doc(staged)?;
-            strip_markup_annots(&mut doc);
-            doc.save(staged)
-                .map_err(|e| AppError::io("Could not flatten annotations.", e))?;
-        }
+        flatten_with_qpdf(staged)?;
+        let mut doc = load_doc(staged)?;
+        strip_markup_annots(&mut doc);
+        doc.save(staged)
+            .map_err(|e| AppError::io("Could not flatten annotations.", e))?;
     }
     Ok(())
 }
@@ -1232,6 +1234,32 @@ mod tests {
         assert!(
             blob.contains("Hello"),
             "C5: flatten-on must keep the source content digest stream; blob={blob:?}"
+        );
+    }
+
+    #[test]
+    fn apply_flatten_on_qpdf_failure_returns_err_and_keeps_markup() {
+        // C10: dest file name `c10-qpdf-fail.pdf` is the cfg(test) injection
+        // token. Call the existing apply_markup_annots; do not expect Ok.
+        let scratch = Scratch::new("c10-qpdf-fail");
+        let dest = scratch.file("c10-qpdf-fail.pdf");
+        let mut fx = PdfFix::new(1, 0, None);
+        fx.add_highlight(0, [100, 200, 180, 240], "keep-me");
+        fx.add_link_uri(0, [200, 300, 280, 360], "https://keep.example/");
+        fx.save(&dest);
+
+        let result = apply_markup_annots(&dest, &[], true);
+        assert!(
+            result.is_err(),
+            "C10: flatten-on + qpdf failure must return Err, not Ok(()); dest file name is the injection token"
+        );
+        let annots = inspect_page(&dest, 1);
+        assert!(
+            annots
+                .iter()
+                .any(|a| a.subtype == "Highlight" && a.contents.as_deref() == Some("keep-me")),
+            "C10: dest must still have leftover Highlight keep-me after flatten-on qpdf failure; got {:?}",
+            subtypes(&annots)
         );
     }
 
