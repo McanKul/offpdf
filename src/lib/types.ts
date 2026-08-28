@@ -38,6 +38,17 @@ export interface OutlineItem {
   level: number;
 }
 
+/** One supported `/Link` from `list_pdf_links` (unrotated `[x,y,w,h]` as a box). */
+export type PdfLinkAction =
+  | { type: "uri"; uri: string }
+  | { type: "goto"; destPageIndex: number };
+
+export interface PdfLink {
+  pageIndex: number;
+  rect: { x: number; y: number; w: number; h: number };
+  action: PdfLinkAction;
+}
+
 /** Bounded editor image preview (Rust `ImagePreview`). */
 export interface ImagePreview {
   dataUrl: string;

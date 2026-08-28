@@ -50,13 +50,14 @@ function newObjectId(): string {
 const MAIN_TOOLS: {
   id: EditorTool;
   label: string;
-  icon: "mousePointer" | "hand" | "type" | "image" | "pencil";
+  icon: "mousePointer" | "hand" | "type" | "image" | "pencil" | "external";
 }[] = [
   { id: "select", label: "Select", icon: "mousePointer" },
   { id: "hand", label: "Hand", icon: "hand" },
   { id: "text", label: "Text", icon: "type" },
   { id: "image", label: "Image", icon: "image" },
   { id: "ink", label: "Draw", icon: "pencil" },
+  { id: "link", label: "Link", icon: "external" },
 ];
 
 function isTextEntryTarget(t: EventTarget | null): boolean {
@@ -443,7 +444,7 @@ export function PdfEditorCanvas({
           <Icon name="clipboard" size={15} />
         </Button>
         <span className="pdf-editor__sep" />
-        {MAIN_TOOLS.filter((t) => t.id !== "ink").map((t) => (
+        {MAIN_TOOLS.filter((t) => t.id !== "ink" && t.id !== "link").map((t) => (
           <Button
             key={t.id}
             size="sm"
@@ -481,6 +482,16 @@ export function PdfEditorCanvas({
           onClick={() => setTool("ink")}
         >
           <Icon name="pencil" size={16} />
+        </Button>
+        <Button
+          size="sm"
+          variant={tool === "link" ? "primary" : "ghost"}
+          title="Link — draw a hotspot (does not open the address)"
+          aria-label="Link"
+          aria-pressed={tool === "link"}
+          onClick={() => setTool("link")}
+        >
+          <Icon name="external" size={16} />
         </Button>
         <span className="pdf-editor__sep" />
         <Button size="sm" variant="ghost" onClick={() => setZoomSafe((z) => z - STEP)} title="Zoom out" aria-label="Zoom out">
@@ -522,6 +533,7 @@ export function PdfEditorCanvas({
             <ObjectInspector
               obj={selected}
               picking={colorPick}
+              pageCount={pageCount}
               layerIndex={pageObjects.findIndex((object) => object.id === selected.id) + 1}
               layerCount={pageObjects.length}
               onChange={(patch) => {
@@ -600,6 +612,10 @@ export function PdfEditorCanvas({
                   }}
                   onCreateText={(rect) => {
                     session.addText(pageIndex, rect);
+                    setTool("select");
+                  }}
+                  onCreateLink={(rect) => {
+                    session.addLink(pageIndex, rect);
                     setTool("select");
                   }}
                   onCreateLine={(a, b) => {

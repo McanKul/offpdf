@@ -8,6 +8,7 @@ import {
   makeImageObject,
   makeInkObject,
   makeLineObject,
+  makeLinkObject,
   makeRectObject,
   makeTextObject,
   mapPointsToRect,
@@ -15,6 +16,7 @@ import {
   type ClosedShapeKind,
   type EditDocument,
   type EditObject,
+  type LinkAction,
   type ShapeStyle,
   type LayerDir,
   type PdfRect,
@@ -91,6 +93,18 @@ export function useEditSession(
   const addInk = useCallback((pageIndex: number, points: Point[]) => {
     if (points.length < 2) return;
     dispatch({ type: "ADD", object: makeInkObject(newId(), pageIndex, points) });
+  }, []);
+
+  const addLink = useCallback((pageIndex: number, rect: PdfRect, action?: LinkAction) => {
+    dispatch({
+      type: "ADD",
+      object: makeLinkObject(newId(), pageIndex, rect, action ?? { type: "uri", uri: "https://" }),
+    });
+  }, []);
+
+  const hydrateObjects = useCallback((objects: EditObject[]) => {
+    if (objects.length === 0) return;
+    dispatch({ type: "HYDRATE", objects });
   }, []);
 
   const addMany = useCallback((objects: EditObject[]) => {
@@ -227,6 +241,8 @@ export function useEditSession(
     addImage,
     addLine,
     addInk,
+    addLink,
+    hydrateObjects,
     addMany,
     updateRect,
     updateObject,

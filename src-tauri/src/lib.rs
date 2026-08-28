@@ -91,6 +91,7 @@ pub fn run() {
             commands::render::pdf_text,
             commands::render::page_pdf,
             commands::render::pdf_outline,
+            commands::render::list_pdf_links,
             commands::render::diff_pages,
             commands::render::office_available,
             commands::render::office_to_pdf,

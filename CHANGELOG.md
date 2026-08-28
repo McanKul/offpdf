@@ -4,9 +4,20 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+## 0.3.1 - 2026-08-28
+
+### Added
+
+- Edit PDF: staged output is checked with `qpdf --check` and reopened for page boxes, per-page content identity, and catalog data before the destination file is replaced. A failed check leaves the original and any existing destination untouched. `qpdf --check` warnings (exit 3) still publish and appear on the completed job update.
+- Edit PDF: add, edit, and remove URI (`https` / `http` / `mailto`) and in-document GoTo link annotations. Unsupported actions are left unchanged. The original file is never overwritten.
+
 ### Fixed
 
 - HEIC/HEIF import refuses to copy pixels when the decoded plane size does not match the image handle, so a tiled or rotated phone photo cannot walk off the buffer. Invalid files still return an in-app error.
+
+### Contributors
+
+- Thank you to @nonamexishere, @alexsmolya, and @YatoVoid for their contributions to this release.
 
 ## 0.3.0 - 2026-08-15
 

@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "license": "synthetic; OffPDF MIT; no third-party PDFs",
+  "fixtures": [
+    {
+      "id": "text-tj",
+      "path": "text-tj.pdf",
+      "structures": ["Tj", "rotate-0"],
+      "intent": "try-edit",
+      "failureMode": "baseline show-string",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "text-tj-kerned",
+      "path": "text-tj-kerned.pdf",
+      "structures": ["TJ"],
+      "intent": "try-edit",
+      "failureMode": "kerning array with numeric offset",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "text-cid-tounicode",
+      "path": "text-cid-tounicode.pdf",
+      "structures": ["CID+ToUnicode"],
+      "intent": "try-edit",
+      "failureMode": "Type0/CID with usable ToUnicode CMap",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "text-cid-no-tounicode",
+      "path": "text-cid-no-tounicode.pdf",
+      "structures": ["CID-no-ToUnicode"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "Type0/CID without usable ToUnicode CMap",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "text-type3",
+      "path": "text-type3.pdf",
+      "structures": ["Type3"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "Type 3 CharProcs",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "text-nested-form",
+      "path": "text-nested-form.pdf",
+      "structures": ["nested-form"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "text inside nested Form XObject",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "text-rotated",
+      "path": "text-rotated.pdf",
+      "structures": ["text-rotated"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "rotated text matrix",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "text-skewed",
+      "path": "text-skewed.pdf",
+      "structures": ["text-skewed"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "skewed text matrix",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "image-unique",
+      "path": "image-unique.pdf",
+      "structures": ["image-unique"],
+      "intent": "try-edit",
+      "failureMode": "unique Image XObject on one page",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "image-reused",
+      "path": "image-reused.pdf",
+      "structures": ["image-reused"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "same Image XObject on two pages",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "image-in-form",
+      "path": "image-in-form.pdf",
+      "structures": ["image-in-form"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "Image painted from a Form",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "image-inline",
+      "path": "image-inline.pdf",
+      "structures": ["image-inline"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "inline image BI/EI",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "image-mask",
+      "path": "image-mask.pdf",
+      "structures": ["image-mask"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "Image with SMask",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "geom-crop-offset",
+      "path": "geom-crop-offset.pdf",
+      "structures": ["crop-offset"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "CropBox origin offset from MediaBox",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 1.0, "cropOffset": true }
+    },
+    {
+      "id": "geom-user-unit",
+      "path": "geom-user-unit.pdf",
+      "structures": ["user-unit"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "UserUnit not 1",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 0, "userUnit": 2.0, "cropOffset": false }
+    },
+    {
+      "id": "geom-rotate-90",
+      "path": "geom-rotate-90.pdf",
+      "structures": ["rotate-90"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "page Rotate 90",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 90, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "geom-rotate-180",
+      "path": "geom-rotate-180.pdf",
+      "structures": ["rotate-180"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "page Rotate 180",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 180, "userUnit": 1.0, "cropOffset": false }
+    },
+    {
+      "id": "geom-rotate-270",
+      "path": "geom-rotate-270.pdf",
+      "structures": ["rotate-270"],
+      "intent": "unsupported-stand-in",
+      "failureMode": "page Rotate 270",
+      "qpdf": "must-pass",
+      "geometry": { "rotate": 270, "userUnit": 1.0, "cropOffset": false }
+    }
+  ]
+}

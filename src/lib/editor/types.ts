@@ -55,7 +55,8 @@ export type EditObjectKind =
   | "text"
   | "image"
   | "line"
-  | "ink";
+  | "ink"
+  | "link";
 
 export type ClosedShapeKind =
   | "rect"
@@ -187,6 +188,16 @@ export interface InkObject extends EditObjectBase {
   opacity?: number;
 }
 
+/** URI or in-document GoTo. Same unrotated `rect` space as overlay stamps. */
+export type LinkAction =
+  | { type: "uri"; uri: string }
+  | { type: "goto"; destPageIndex: number };
+
+export interface LinkObject extends EditObjectBase {
+  kind: "link";
+  action: LinkAction;
+}
+
 export type EditObject =
   | RectObject
   | RoundRectObject
@@ -199,7 +210,8 @@ export type EditObject =
   | TextObject
   | ImageObject
   | LineObject
-  | InkObject;
+  | InkObject
+  | LinkObject;
 
 /** Bounds of a line segment. */
 export function lineBounds(x1: number, y1: number, x2: number, y2: number): PdfRect {

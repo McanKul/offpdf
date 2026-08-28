@@ -167,6 +167,152 @@ fn write_catalog_fixture(path: &Path) {
     doc.save(path).expect("write catalog fixture");
 }
 
+fn write_two_page_letter(path: &Path, label1: &str, label2: &str) {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let content1 = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        format!("BT /F1 12 Tf 72 720 Td ({label1}) Tj ET").into_bytes(),
+    )));
+    let content2 = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        format!("BT /F1 12 Tf 72 720 Td ({label2}) Tj ET").into_bytes(),
+    )));
+
+    let mut page1 = Dictionary::new();
+    page1.set("Type", "Page");
+    page1.set("Parent", pages_id);
+    page1.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page1.set("Contents", content1);
+    let page1_id = doc.add_object(Object::Dictionary(page1));
+
+    let mut page2 = Dictionary::new();
+    page2.set("Type", "Page");
+    page2.set("Parent", pages_id);
+    page2.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page2.set("Contents", content2);
+    let page2_id = doc.add_object(Object::Dictionary(page2));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page1_id.into(), page2_id.into()]);
+    pages.set("Count", 2);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path).expect("write two-page letter fixture");
+}
+
+fn write_catalog_annots_fixture(
+    path: &Path,
+    rotate: i64,
+    crop: Option<[i64; 4]>,
+    trim: Option<[i64; 4]>,
+) {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET".to_vec(),
+    )));
+
+    let mut annot = Dictionary::new();
+    annot.set("Type", "Annot");
+    annot.set("Subtype", "Text");
+    annot.set("Rect", box_obj([72, 700, 120, 740]));
+    annot.set("Contents", Object::string_literal("note"));
+    let annot_id = doc.add_object(Object::Dictionary(annot));
+
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    if let Some(b) = crop {
+        page.set("CropBox", box_obj(b));
+    }
+    if let Some(b) = trim {
+        page.set("TrimBox", box_obj(b));
+    }
+    if rotate != 0 {
+        page.set("Rotate", Object::Integer(rotate));
+    }
+    page.set("Contents", content_id);
+    page.set("Annots", vec![annot_id.into()]);
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut item = Dictionary::new();
+    item.set("Title", Object::string_literal("Chapter 1"));
+    item.set("Dest", vec![page_id.into(), Object::Name(b"Fit".to_vec())]);
+    let item_id = doc.add_object(Object::Dictionary(item));
+
+    let mut outlines = Dictionary::new();
+    outlines.set("Type", "Outlines");
+    outlines.set("First", item_id);
+    outlines.set("Last", item_id);
+    outlines.set("Count", 1);
+    let outlines_id = doc.add_object(Object::Dictionary(outlines));
+    if let Ok(Object::Dictionary(d)) = doc.get_object_mut(item_id) {
+        d.set("Parent", outlines_id);
+    }
+
+    let mut acro = Dictionary::new();
+    acro.set("Fields", Vec::<Object>::new());
+    let acro_id = doc.add_object(Object::Dictionary(acro));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    catalog.set("Outlines", outlines_id);
+    catalog.set("AcroForm", acro_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+
+    let mut info = Dictionary::new();
+    info.set("Title", Object::string_literal("Fixture Doc"));
+    info.set("Author", Object::string_literal("OffPDF"));
+    let info_id = doc.add_object(Object::Dictionary(info));
+    doc.trailer.set("Info", info_id);
+    doc.save(path).expect("write catalog+annots fixture");
+}
+
+fn assert_catalog_annots_survived(dest: &Path) {
+    let out = Document::load(dest).expect("load dest");
+    let info = match out.trailer.get(b"Info").ok() {
+        Some(Object::Reference(id)) => out.get_dictionary(*id).ok().cloned(),
+        Some(Object::Dictionary(d)) => Some(d.clone()),
+        _ => None,
+    }
+    .expect("Info");
+    let title = match info.get(b"Title").ok() {
+        Some(Object::String(b, _)) => String::from_utf8_lossy(b).into_owned(),
+        _ => String::new(),
+    };
+    assert!(title.contains("Fixture Doc"), "title={title:?}");
+    let root_id = out.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let cat = out.get_dictionary(root_id).unwrap();
+    assert!(cat.get(b"Outlines").is_ok(), "Outlines missing");
+    assert!(cat.get(b"AcroForm").is_ok(), "AcroForm missing");
+    let page = first_page_dict(&out);
+    assert!(page.get(b"Annots").is_ok(), "page /Annots missing");
+}
+
+fn page_rotate(dict: &Dictionary) -> i64 {
+    match dict.get(b"Rotate") {
+        Ok(Object::Integer(i)) => *i,
+        _ => 0,
+    }
+}
+
 fn dump_streams(path: &Path) -> String {
     let mut doc = Document::load(path).expect("load pdf");
     let _ = doc.decompress();
@@ -340,10 +486,14 @@ impl Harness {
     }
 
     fn export(&self, document: &EditDocumentIn) -> Result<(), AppError> {
+        self.export_pages("1", document)
+    }
+
+    fn export_pages(&self, pages: &str, document: &EditDocumentIn) -> Result<(), AppError> {
         let qpdf = self.qpdf.clone();
         let groups = [PageGroup {
             path: self.src.to_string_lossy().into_owned(),
-            pages: "1".into(),
+            pages: pages.into(),
         }];
         export_edit_pdf_with_runner(
             &groups,
@@ -434,6 +584,7 @@ fn write_tiny_png(path: &Path, w: u32, h: u32) {
         .unwrap();
 }
 
+// L4 keepGreen: overlay-only stamp save keeps catalog keys.
 #[test]
 fn integ_catalog_survives_and_original_stream_stays() {
     let Some(fx) = Harness::new("catalog") else {
@@ -1073,5 +1224,63 @@ fn integ_user_unit_10000_copied_not_clamped() {
         dest_ops.contains("72.00 100.00 50.00 20.00 re"),
         "dest rect must stay in raw user units, not divided by UserUnit: {dest_ops}"
     );
+    fx.cleanup();
+}
+
+#[test]
+fn integ_two_page_overlay_keeps_source_streams_by_presence() {
+    let Some(fx) = Harness::new("r1b-twopage") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_two_page_letter(&fx.src, "ALPHA-PAGE", "BETA-PAGE");
+    fx.export_pages("1-z", &text_box())
+        .expect("R1b: in-order two-page overlay must publish");
+    assert!(fx.dest.exists(), "R1b: dest must be published");
+
+    let dest = Document::load(&fx.dest).expect("load dest");
+    assert_eq!(dest.get_pages().len(), 2, "R1b: dest must keep two pages");
+    let blob = dump_streams(&fx.dest);
+    assert!(
+        blob.contains("ALPHA-PAGE"),
+        "R1b: source page 1 stream must still be present after overlay (Form XObject or Contents): {blob:?}"
+    );
+    assert!(
+        blob.contains("BETA-PAGE"),
+        "R1b: source page 2 stream must still be present after overlay (Form XObject or Contents): {blob:?}"
+    );
+    fx.cleanup();
+}
+
+#[test]
+fn integ_catalog_annots_survive_rotate_90() {
+    let Some(fx) = Harness::new("r2-rot90-annots") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_catalog_annots_fixture(&fx.src, 90, None, None);
+    fx.export(&text_box()).expect("export catalog+annots rotate 90");
+    assert_catalog_annots_survived(&fx.dest);
+    let page = first_page_dict(&Document::load(&fx.dest).unwrap());
+    assert_eq!(page_rotate(&page), 90, "page /Rotate 90 must survive overlay");
+    fx.cleanup();
+}
+
+#[test]
+fn integ_catalog_annots_survive_trim_inside_crop() {
+    let Some(fx) = Harness::new("r2b-crop-annots") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_catalog_annots_fixture(
+        &fx.src,
+        0,
+        Some([0, 0, 612, 792]),
+        Some([100, 100, 400, 500]),
+    );
+    fx.export(&text_box())
+        .expect("export catalog+annots Trim⊂Crop");
+    assert_catalog_annots_survived(&fx.dest);
+    assert_dest_boxes_trim_inside_crop(&fx.dest);
     fx.cleanup();
 }

@@ -1,4 +1,4 @@
-import type { SelectHTMLAttributes, ReactNode } from "react";
+import { useId, type SelectHTMLAttributes, type ReactNode } from "react";
 
 export interface SelectOption {
   value: string;
@@ -15,7 +15,8 @@ export interface SelectProps
 }
 
 export function Select({ label, hint, options, value, onChange, id, name, ...rest }: SelectProps) {
-  const selectId = id ?? name;
+  const generatedId = useId();
+  const selectId = id ?? name ?? `select-${generatedId.replace(/:/g, "")}`;
   return (
     <div className="field">
       {label && (

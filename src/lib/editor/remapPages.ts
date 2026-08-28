@@ -31,6 +31,15 @@ export function remapEditDocument(
     }
     const clone = cloneObject(o);
     clone.pageIndex = next;
+    if (clone.kind === "link" && clone.action.type === "goto") {
+      const destKey = oldKeys[clone.action.destPageIndex];
+      const nextDest = destKey === undefined ? undefined : indexOf.get(destKey);
+      if (nextDest === undefined) {
+        droppedIds.push(o.id);
+        continue;
+      }
+      clone.action = { type: "goto", destPageIndex: nextDest };
+    }
     objects.push(clone);
   }
   const keep = new Set(objects.map((o) => o.id));

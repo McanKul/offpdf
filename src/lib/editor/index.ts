@@ -20,6 +20,8 @@ export type {
   ImageObject,
   LineObject,
   InkObject,
+  LinkAction,
+  LinkObject,
   TextAlign,
   EditObject,
   EditDocument,
@@ -66,6 +68,7 @@ export {
   makeImageObject,
   makeLineObject,
   makeInkObject,
+  makeLinkObject,
 } from "./editReducer";
 
 export type { ResizeHandle } from "./resizeRect";
@@ -106,3 +109,9 @@ export { moveSelectedRects, selectedIdsOnPage } from "./moveSelection";
 export { shouldShowEditCanvas } from "./editVisibility";
 export type { EditCanvasVisibility } from "./editVisibility";
 export { clampPageIndex } from "./pageIndex";
+export {
+  emptyObjectsBlockSave,
+  incompleteSourceIds,
+  incompleteSourcePaths,
+  shouldRewriteSourceLinks,
+} from "./linkSavePolicy";

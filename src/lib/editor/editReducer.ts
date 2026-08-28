@@ -16,7 +16,7 @@ import {
   type PdfRect,
   type Point,
 } from "./types";
-import { cloneDocument } from "./serialize";
+import { cloneDocument, cloneObject } from "./serialize";
 
 export const MAX_HISTORY = 100;
 
@@ -45,6 +45,7 @@ export type EditAction =
   | { type: "REDO" }
   | { type: "REPLACE"; document: EditDocument }
   | { type: "REBIND"; present: EditDocument; past: EditDocument[]; future: EditDocument[] }
+  | { type: "HYDRATE"; objects: EditObject[] }
   | { type: "RESET" };
 
 /** Later objects on the same page paint in front. `null` if the move is a no-op. */
@@ -243,6 +244,24 @@ export function editReducer(state: HistoryState, action: EditAction): HistorySta
         gestureCommitted: false,
       };
 
+    case "HYDRATE": {
+      if (action.objects.length === 0) return state;
+      const added = action.objects.map((o) => {
+        const next = { ...o, rect: normalizePdfRect(o.rect) } as EditObject;
+        return next;
+      });
+      const inject = (doc: EditDocument): EditDocument => ({
+        ...doc,
+        objects: [...doc.objects, ...added.map(cloneObject)],
+      });
+      return {
+        ...state,
+        present: inject(state.present),
+        past: state.past.map(inject),
+        future: state.future.map(inject),
+      };
+    }
+
     case "RESET":
       return createHistoryState();
 
@@ -374,5 +393,20 @@ export function makeInkObject(
     stroke: "#111827",
     strokeWidth: 2.5,
     opacity: 1,
+  };
+}
+
+export function makeLinkObject(
+  id: string,
+  pageIndex: number,
+  rect: PdfRect,
+  action: import("./types").LinkAction,
+): import("./types").LinkObject {
+  return {
+    id,
+    kind: "link",
+    pageIndex,
+    rect: normalizePdfRect(rect),
+    action,
   };
 }

@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes, ReactNode } from "react";
+import { useId, type InputHTMLAttributes, type ReactNode } from "react";
 
 export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: ReactNode;
@@ -7,7 +7,8 @@ export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 export function Input({ label, hint, error, className, id, ...rest }: InputProps) {
-  const inputId = id ?? rest.name;
+  const generatedId = useId();
+  const inputId = id ?? rest.name ?? `input-${generatedId.replace(/:/g, "")}`;
   return (
     <div className="field">
       {label && (

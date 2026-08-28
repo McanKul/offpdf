@@ -1,7 +1,7 @@
 {
   "name": "offpdf",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Free, open-source, offline-first desktop PDF utility.",
   "license": "MIT",
