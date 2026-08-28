@@ -1566,9 +1566,15 @@ where
             .flatten()
             .collect();
         // Skip dest_has load when no complete source remains (e.g. 400 MiB
-        // unlistable file). Complete empty still deletes when dest has links (L7).
+        // unlistable file). L7: complete *empty document* still deletes dest
+        // supported links. Stamp-only / markup-only (C3) must not rewrite —
+        // leftover /Link copies through overlay. Flatten-only empty lets
+        // qpdf flatten remaining annots instead of wiping links first.
         let rewrite_links = !dest_pages.is_empty()
-            && (!links.is_empty() || dest_has_supported_links(&tmp)?);
+            && (!links.is_empty()
+                || (!flatten
+                    && document.objects.is_empty()
+                    && dest_has_supported_links(&tmp)?));
         if rewrite_links {
             apply_link_annots_for_pages(&tmp, &links, &dest_pages)?;
             let cleaned = work.join("dest-links.pdf");
