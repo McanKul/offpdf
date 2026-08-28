@@ -586,6 +586,8 @@ fn write_tiny_png(path: &Path, w: u32, h: u32) {
 
 // L4 keepGreen: overlay-only stamp save keeps catalog keys.
 #[test]
+// F11 keepGreen: overlay stamp save still leaves catalog /AcroForm + Outlines + Info
+// and the source content stream. Form-apply leftover lock lives in edit_forms.rs.
 fn integ_catalog_survives_and_original_stream_stays() {
     let Some(fx) = Harness::new("catalog") else {
         eprintln!("skip: qpdf not available");
@@ -1253,6 +1255,7 @@ fn integ_two_page_overlay_keeps_source_streams_by_presence() {
 }
 
 #[test]
+// F11 keepGreen: leftover /Subtype /Text /Annots after overlay + /Rotate 90.
 fn integ_catalog_annots_survive_rotate_90() {
     let Some(fx) = Harness::new("r2-rot90-annots") else {
         eprintln!("skip: qpdf not available");
@@ -1267,6 +1270,7 @@ fn integ_catalog_annots_survive_rotate_90() {
 }
 
 #[test]
+// F11 keepGreen: leftover /Annots after Trim⊂Crop overlay.
 fn integ_catalog_annots_survive_trim_inside_crop() {
     let Some(fx) = Harness::new("r2b-crop-annots") else {
         eprintln!("skip: qpdf not available");

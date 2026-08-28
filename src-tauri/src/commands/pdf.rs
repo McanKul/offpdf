@@ -219,11 +219,15 @@ pub async fn edit_pdf_overlays(
     groups: Vec<PageGroup>,
     document: crate::pdf_engine::edit_overlay::EditDocumentIn,
     incomplete_source_paths: Option<Vec<String>>,
+    form_values: Option<Vec<crate::pdf_engine::edit_forms::FormValue>>,
+    flatten_form: Option<bool>,
 ) -> Result<JobResult, AppError> {
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
     let incomplete = incomplete_source_paths.unwrap_or_default();
+    let form_values = form_values.unwrap_or_default();
+    let flatten_form = flatten_form.unwrap_or(false);
     let res = tauri::async_runtime::spawn_blocking(move || {
         crate::pdf_engine::edit_overlay::edit_pdf_overlays(
             &app2,
@@ -233,6 +237,8 @@ pub async fn edit_pdf_overlays(
             &output_path,
             &document,
             &incomplete,
+            &form_values,
+            flatten_form,
         )
     })
     .await

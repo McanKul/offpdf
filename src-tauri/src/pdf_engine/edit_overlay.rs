@@ -4,6 +4,9 @@
 
 use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
+use crate::pdf_engine::edit_forms::{
+    apply_form_values, extra_files_have_fields, qpdf_rewrite, FormValue,
+};
 use crate::pdf_engine::edit_links::{
     apply_link_annots_for_pages, dest_has_supported_links, dest_ranges_to_rewrite,
     expected_dest_has_annots, list_link_annots, unsafe_uri_error, uri_is_allowed, LinkAction,
@@ -1096,6 +1099,50 @@ fn collect_source_pages(
     Ok((geoms, counts))
 }
 
+fn extra_group_paths(groups: &[PageGroup]) -> Vec<&str> {
+    let mut seen = std::collections::HashSet::new();
+    let mut extra = Vec::new();
+    for (i, g) in groups.iter().enumerate() {
+        if i == 0 {
+            seen.insert(g.path.as_str());
+            continue;
+        }
+        if seen.insert(g.path.as_str()) {
+            extra.push(g.path.as_str());
+        }
+    }
+    extra
+}
+
+/// Copy or assemble the primary infile onto `dest` (never `--empty`).
+fn assemble_primary_to_tmp<F>(
+    groups: &[PageGroup],
+    page_counts: &[u32],
+    dest: &str,
+    run: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(&[String]) -> Result<(), AppError>,
+{
+    if groups.is_empty() {
+        return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
+    }
+    let identity = groups.len() == 1 && super::spec_is_full_range(&groups[0].pages, page_counts[0]);
+    if identity {
+        std::fs::copy(&groups[0].path, dest)
+            .map_err(|e| AppError::io("Could not stage the PDF.", e))?;
+        return Ok(());
+    }
+    let mut args = vec![groups[0].path.clone(), "--pages".into(), ".".into(), groups[0].pages.clone()];
+    for g in &groups[1..] {
+        args.push(g.path.clone());
+        args.push(g.pages.clone());
+    }
+    args.push("--".into());
+    args.push(dest.to_string());
+    run(&args)
+}
+
 /// qpdf argv for Edit PDF. Never uses `--empty`: the first source is the
 /// primary input so bookmarks, Info/XMP, and AcroForm survive when possible.
 pub(crate) fn build_edit_overlay_args(
@@ -1242,6 +1289,8 @@ where
         &exe,
         None,
         &[],
+        &[],
+        false,
         run,
     )
     .map(|(paths, _warnings)| paths)
@@ -1259,11 +1308,15 @@ fn export_edit_pdf_with_check_exe<F>(
     qpdf_check: &Path,
     handle: Option<&Arc<JobHandle>>,
     incomplete_source_paths: &[String],
+    form_values: &[FormValue],
+    flatten_form: bool,
     mut run: F,
 ) -> Result<(Vec<String>, Vec<String>), AppError>
 where
     F: FnMut(&[String]) -> Result<(), AppError>,
 {
+    // H6: empty document is Ok (link remove-all). Form-only still proceeds
+    // because apply_form_values runs when values/flatten are set.
     validate_doc(document)?;
     let dest = Path::new(output);
     for g in groups {
@@ -1282,19 +1335,21 @@ where
     let overlay_str = overlay.to_string_lossy().to_string();
     let mut gate_passed = false;
     let result = (|| -> Result<(Vec<String>, Vec<String>), AppError> {
+        let extra: Vec<&str> = extra_group_paths(groups);
+        extra_files_have_fields(&extra)?;
         let (geoms, counts) = collect_source_pages(groups)?;
         if geoms.is_empty() {
             return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
         }
-        let font_bytes = std::fs::read(font_path)
-            .map_err(|e| AppError::io("Could not read the editor font.", e))?;
-        let font = FontInfo::parse(font_bytes)?;
         let links = session_links_from_doc(document);
         let has_paint = document
             .objects
             .iter()
             .any(|o| !matches!(o, EditObjectIn::Link { .. }));
         if has_paint {
+            let font_bytes = std::fs::read(font_path)
+                .map_err(|e| AppError::io("Could not read the editor font.", e))?;
+            let font = FontInfo::parse(font_bytes)?;
             write_overlay_pdf(&overlay_str, &geoms, document, &font, cancel)?;
             let (mapped, restore_boxes) = remap_groups_to_visible_box(groups, work)?;
             let args = build_edit_overlay_args(&mapped, &counts, &overlay_str, &tmp_str)?;
@@ -1327,8 +1382,13 @@ where
             .collect();
         // Skip dest_has load when no complete source remains (e.g. 400 MiB
         // unlistable file). Complete empty still deletes when dest has links (L7).
+        // Form-only / flatten-form is not remove-all — leftover links stay.
         let rewrite_links = !dest_pages.is_empty()
-            && (!links.is_empty() || dest_has_supported_links(&tmp)?);
+            && (!links.is_empty()
+                || (document.objects.is_empty()
+                    && form_values.is_empty()
+                    && !flatten_form
+                    && dest_has_supported_links(&tmp)?));
         if rewrite_links {
             apply_link_annots_for_pages(&tmp, &links, &dest_pages)?;
             let cleaned = work.join("dest-links.pdf");
@@ -1336,8 +1396,20 @@ where
             run(&[tmp_str.clone(), cleaned_str.clone()])?;
             safe_output::replace_file(&cleaned, &tmp)?;
         }
+        if !form_values.is_empty() || flatten_form {
+            apply_form_values(&tmp_str, form_values, flatten_form)?;
+            let cleaned = work.join("dest-forms.pdf");
+            qpdf_rewrite(&tmp, &cleaned)?;
+            safe_output::replace_file(&cleaned, &tmp)?;
+        }
         let mut snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
         snapshot.catalog.annots = expected_annots;
+        if flatten_form {
+            let dest_doc = Document::load(&tmp).map_err(|e| {
+                AppError::engine_failed(format!("Could not reopen the filled PDF: {e}"))
+            })?;
+            snapshot.catalog.acro_form = catalog_flags_from_doc(&dest_doc).acro_form;
+        }
         let vr = validate_staged_pdf(&tmp, &snapshot, cancel, |args| {
             run_qpdf_check_argv(qpdf_check, args, handle)
         })?;
@@ -1410,6 +1482,8 @@ pub fn edit_pdf_overlays(
     output: &str,
     document: &EditDocumentIn,
     incomplete_source_paths: &[String],
+    form_values: &[FormValue],
+    flatten_form: bool,
 ) -> Result<(Vec<String>, Vec<String>), AppError> {
     if groups.is_empty() {
         return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
@@ -1431,7 +1505,15 @@ pub fn edit_pdf_overlays(
     let work = temp::root(app)?.join("work").join(job_id);
     std::fs::create_dir_all(&work)
         .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
-    let font_path = find_font_path(app)?;
+    let has_paint = document
+        .objects
+        .iter()
+        .any(|o| !matches!(o, EditObjectIn::Link { .. }));
+    let font_path = if has_paint {
+        find_font_path(app)?
+    } else {
+        std::path::PathBuf::new()
+    };
 
     let result = (|| -> Result<(Vec<String>, Vec<String>), AppError> {
         if handle.is_cancelled() {
@@ -1449,6 +1531,8 @@ pub fn edit_pdf_overlays(
             &qpdf_exe,
             Some(handle),
             incomplete_source_paths,
+            form_values,
+            flatten_form,
             |args| run_qpdf(app, handle, job_id, args, "Saving", None),
         )
     })();
@@ -2081,6 +2165,7 @@ mod tests {
         }
     }
 
+
     #[test]
     fn validate_allows_empty() {
         let d = EditDocumentIn {
@@ -2147,6 +2232,23 @@ mod tests {
             Ok(()) => {}
             Err(err) => panic!("H8-mix: 5,000 links must be Ok, not {}", err.code),
         }
+    }
+
+    #[test]
+    fn form_only_save_is_not_no_edits() {
+        use crate::pdf_engine::edit_forms::{has_edits, FormValue};
+        let values = [FormValue {
+            name: "Name".into(),
+            value: "Ada".into(),
+        }];
+        assert!(
+            has_edits(0, &values),
+            "F14: form values and zero stamps must be saveable, not NO_EDITS"
+        );
+        assert!(
+            !has_edits(0, &[]),
+            "F14: neither stamps nor form values stays NO_EDITS"
+        );
     }
 
     #[test]
@@ -2632,6 +2734,7 @@ mod tests {
 
     // L5 keepGreen: hard-linked dest stays OVERWRITE.
     #[test]
+    // F16 keepGreen: apply / flatten stay on sibling tmp + same_file_identity.
     fn export_rejects_hard_linked_destination() {
         let Some(qpdf) = test_qpdf() else {
             eprintln!("skip: qpdf not available");

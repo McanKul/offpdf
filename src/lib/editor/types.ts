@@ -252,6 +252,29 @@ export interface EditDocument {
   selectedIds: string[];
 }
 
+/** Fillable AcroForm control from `list_pdf_form_fields` (lopdf walker). */
+export type FormFieldKind = "text" | "checkbox" | "radio" | "combo" | "list";
+
+export interface FormField {
+  name: string;
+  kind: FormFieldKind;
+  pageIndex: number | null;
+  rect: PdfRect | null;
+  value: string | null;
+  exportValues: string[];
+  choices: string[];
+  readOnly: boolean;
+  hidden: boolean;
+  maxLen: number | null;
+  multiline: boolean;
+  comboEdit: boolean;
+}
+
+export interface FormValue {
+  name: string;
+  value: string;
+}
+
 export function createEmptyDocument(): EditDocument {
   return { version: 1, objects: [], selectedIds: [] };
 }

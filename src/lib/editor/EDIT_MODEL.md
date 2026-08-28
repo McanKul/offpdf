@@ -77,6 +77,13 @@ Source path and 1-based page number are **session props**, not part of the
 document, so the same model can be reapplied after reordering tools assemble a
 job.
 
+Existing AcroForm fill is **not** an overlay stamp. `list_form_fields` walks
+catalog `/AcroForm` on the **source path** (never `pagePdf --empty`). Widget
+`/Rect [llx lly urx ury]` is listed as `{x: llx, y: lly, w, h}` in the same
+unrotated user space as `EditObject.rect`. Preview chrome maps those rects with
+`pdfRectToViewport` / `geometry.box`. Live values stay in a session map (field
+name → value), not on the undo stamp stack.
+
 ## History rules
 
 - `ADD` / `UPDATE` / `DELETE` create undo steps.

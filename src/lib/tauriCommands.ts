@@ -26,7 +26,7 @@ import type {
   RotationAngle,
   SplitMode,
 } from "./types";
-import type { EditDocument } from "./editor";
+import type { EditDocument, FormField, FormValue } from "./editor";
 
 /** Generate a unique job id on the frontend (passed into every operation). */
 export function newJobId(): string {
@@ -286,12 +286,18 @@ export function ocrPdf(
 }
 
 /** Stamp a line of text (typed signature / "APPROVED" / date) on one page. */
+export function listPdfFormFields(inputPath: string): Promise<FormField[]> {
+  return invoke<FormField[]>("list_pdf_form_fields", { inputPath });
+}
+
 export function editPdfOverlays(
   jobId: string,
   outputPath: string,
   groups: PageGroup[],
   document: EditDocument,
   incompleteSourcePaths: string[] = [],
+  formValues: FormValue[] = [],
+  flattenForm = false,
 ): Promise<JobResult> {
   return invoke<JobResult>("edit_pdf_overlays", {
     jobId,
@@ -299,6 +305,8 @@ export function editPdfOverlays(
     groups,
     document,
     incompleteSourcePaths,
+    formValues,
+    flattenForm,
   });
 }
 

@@ -90,8 +90,9 @@ export const TOOLS: ToolMeta[] = [
   {
     id: "editPdf",
     name: "Edit PDF",
-    description: "Add text, images and shapes to a PDF.",
-    longDescription: "Add text, images and shapes to a PDF, then save a new copy.",
+    description: "Add text, images and shapes, or fill existing form fields.",
+    longDescription:
+      "Add text, images and shapes, or fill existing AcroForm fields, then save a new copy.",
     icon: "fileText",
     path: "/tools/edit-pdf",
     category: "Organize",

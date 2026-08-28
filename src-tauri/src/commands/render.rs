@@ -113,6 +113,18 @@ pub async fn page_pdf(app: tauri::AppHandle, input_path: String, page: u32) -> R
         .map_err(|e| AppError::io("Could not read the page.", e))?
 }
 
+/// AcroForm fields on `input_path` (paths in, JSON out). Never PDF bytes.
+#[tauri::command]
+pub async fn list_pdf_form_fields(
+    input_path: String,
+) -> Result<Vec<crate::pdf_engine::edit_forms::FormField>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::pdf_engine::edit_forms::list_form_fields(&input_path)
+    })
+    .await
+    .map_err(|e| AppError::io("Could not read the form fields.", e))?
+}
+
 /// A PDF's bookmarks/outline (flattened). Empty for files with no outline or
 /// files too large to parse safely.
 #[tauri::command]
