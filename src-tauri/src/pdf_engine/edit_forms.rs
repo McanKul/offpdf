@@ -1156,8 +1156,11 @@ fn flatten_page_widgets(doc: &mut Document, page_id: ObjectId) -> Result<(), App
             keep.push(annot.clone());
             continue;
         }
+        // Unflattenable widgets stay on /Annots — do not paint or drop.
         if let (Some(rect), Some(ap_id)) = (dict_rect(dict), appearance_stream_id(doc, dict)) {
             paints.push((rect, ap_id));
+        } else {
+            keep.push(annot.clone());
         }
     }
 
@@ -1165,20 +1168,8 @@ fn flatten_page_widgets(doc: &mut Document, page_id: ObjectId) -> Result<(), App
         return Ok(());
     }
 
-    let mut xobjects = Dictionary::new();
-    let mut ops = String::new();
-    for (i, (rect, ap_id)) in paints.iter().enumerate() {
-        let name = format!("Ff{i}");
-        xobjects.set(name.as_bytes().to_vec(), Object::Reference(*ap_id));
-        // Form BBox is [0 0 w h]; place at the widget's lower-left.
-        ops.push_str(&format!(
-            "q\n1 0 0 1 {:.4} {:.4} cm\n/{name} Do\nQ\n",
-            rect.x, rect.y
-        ));
-    }
-
     if !paints.is_empty() {
-        attach_xobjects_and_content(doc, page_id, xobjects, ops.into_bytes())?;
+        attach_xobjects_and_content(doc, page_id, &paints)?;
     }
 
     if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
@@ -1223,14 +1214,8 @@ fn pick_state_stream(_doc: &Document, widget: &Dictionary, states: &Dictionary) 
 fn attach_xobjects_and_content(
     doc: &mut Document,
     page_id: ObjectId,
-    xobjects: Dictionary,
-    ops: Vec<u8>,
+    paints: &[(FormRect, ObjectId)],
 ) -> Result<(), AppError> {
-    let xo_id = doc.add_object(Object::Dictionary(xobjects));
-    let mut stream_dict = Dictionary::new();
-    stream_dict.set("Length", Object::Integer(ops.len() as i64));
-    let content_id = doc.add_object(Object::Stream(Stream::new(stream_dict, ops)));
-
     let resources_id = {
         let page = doc
             .get_dictionary(page_id)
@@ -1241,20 +1226,27 @@ fn attach_xobjects_and_content(
         }
     };
 
-    if let Some(rid) = resources_id {
-        if let Ok(Object::Dictionary(res)) = doc.get_object_mut(rid) {
-            res.set("XObject", Object::Reference(xo_id));
-        }
-    } else if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
-        let mut res = Dictionary::new();
-        if let Ok(existing) = page.get(b"Resources") {
-            if let Object::Dictionary(d) = existing {
-                res = d.clone();
-            }
-        }
-        res.set("XObject", Object::Reference(xo_id));
-        page.set("Resources", Object::Dictionary(res));
+    let existing_entries = collect_xobject_entries(doc, page_id, resources_id);
+    let mut used: HashSet<Vec<u8>> = existing_entries.iter().map(|(k, _)| k.clone()).collect();
+    let mut ops = String::new();
+    let mut added: Vec<(Vec<u8>, ObjectId)> = Vec::new();
+    for (rect, ap_id) in paints {
+        let name = unused_flatten_name(&mut used);
+        // Form BBox is [0 0 w h]; place at the widget's lower-left.
+        ops.push_str(&format!(
+            "q\n1 0 0 1 {:.4} {:.4} cm\n/{} Do\nQ\n",
+            rect.x,
+            rect.y,
+            String::from_utf8_lossy(&name)
+        ));
+        added.push((name, *ap_id));
     }
+
+    merge_xobjects_onto_resources(doc, page_id, resources_id, &existing_entries, &added);
+
+    let mut stream_dict = Dictionary::new();
+    stream_dict.set("Length", Object::Integer(ops.len() as i64));
+    let content_id = doc.add_object(Object::Stream(Stream::new(stream_dict, ops.into_bytes())));
 
     let existing = {
         let page = doc
@@ -1273,6 +1265,80 @@ fn attach_xobjects_and_content(
         page.set("Contents", Object::Array(arr));
     }
     Ok(())
+}
+
+/// Existing `/XObject` name → object, whether `/Resources` / `/XObject` are
+/// inline dicts or references. Empty when the page has neither.
+fn collect_xobject_entries(
+    doc: &Document,
+    page_id: ObjectId,
+    resources_id: Option<ObjectId>,
+) -> Vec<(Vec<u8>, Object)> {
+    let res = if let Some(rid) = resources_id {
+        match doc.get_dictionary(rid) {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        }
+    } else {
+        match doc.get_dictionary(page_id).ok().and_then(|p| p.get(b"Resources").ok()) {
+            Some(Object::Dictionary(d)) => d,
+            _ => return Vec::new(),
+        }
+    };
+    match res.get(b"XObject").ok() {
+        Some(Object::Dictionary(d)) => d.iter().map(|(k, v)| (k.to_vec(), v.clone())).collect(),
+        Some(Object::Reference(id)) => match doc.get_dictionary(*id) {
+            Ok(d) => d.iter().map(|(k, v)| (k.to_vec(), v.clone())).collect(),
+            Err(_) => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+fn unused_flatten_name(used: &mut HashSet<Vec<u8>>) -> Vec<u8> {
+    let mut i = 0usize;
+    loop {
+        let name = format!("Ff{i}").into_bytes();
+        i += 1;
+        if used.insert(name.clone()) {
+            return name;
+        }
+    }
+}
+
+/// Merge flatten paints into the existing `/XObject` on the same Resources
+/// object. No-Resources / no-XObject creates a flatten-only dict (F12).
+fn merge_xobjects_onto_resources(
+    doc: &mut Document,
+    page_id: ObjectId,
+    resources_id: Option<ObjectId>,
+    existing_entries: &[(Vec<u8>, Object)],
+    added: &[(Vec<u8>, ObjectId)],
+) {
+    let mut merged = Dictionary::new();
+    for (k, v) in existing_entries {
+        merged.set(k.clone(), v.clone());
+    }
+    for (name, ap_id) in added {
+        merged.set(name.clone(), Object::Reference(*ap_id));
+    }
+
+    if let Some(rid) = resources_id {
+        if let Ok(Object::Dictionary(res)) = doc.get_object_mut(rid) {
+            res.set("XObject", Object::Dictionary(merged));
+        }
+        return;
+    }
+
+    if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
+        if let Ok(Object::Dictionary(res)) = page.get_mut(b"Resources") {
+            res.set("XObject", Object::Dictionary(merged));
+        } else {
+            let mut res = Dictionary::new();
+            res.set("XObject", Object::Dictionary(merged));
+            page.set("Resources", Object::Dictionary(res));
+        }
+    }
 }
 
 struct NotoFont {
@@ -2051,6 +2117,47 @@ mod tests {
             self.leftover_annots.push(id.into());
         }
 
+        /// F19: `/Widget` with `/Rect` but no `/AP` (omit from apply values).
+        fn push_widget_rect_no_ap(&mut self, name: &str, rect: [i64; 4]) -> ObjectId {
+            let mut d = Dictionary::new();
+            d.set("FT", pdf_name("Tx"));
+            d.set("T", Object::string_literal(name));
+            d.set("V", Object::string_literal("stuck"));
+            d.set("Type", "Annot");
+            d.set("Subtype", "Widget");
+            d.set("Rect", box_obj(rect));
+            d.set("P", self.page_id);
+            let id = self.doc.add_object(Object::Dictionary(d));
+            self.fields.push(id.into());
+            self.annots.push(id.into());
+            id
+        }
+
+        /// F18: page `/Resources /XObject /Im0` as a Form XObject stream.
+        /// `resources_as_reference` = `/Resources` is a `Reference`; otherwise a direct dict.
+        fn with_page_im0(&mut self, resources_as_reference: bool) {
+            let mut im_dict = Dictionary::new();
+            im_dict.set("Type", "XObject");
+            im_dict.set("Subtype", "Form");
+            im_dict.set("BBox", box_obj([0, 0, 20, 20]));
+            let im0 = self.doc.add_object(Object::Stream(Stream::new(
+                im_dict,
+                b"%IM0-KEEP\nq 0 0 20 20 re f\nQ\n".to_vec(),
+            )));
+            let mut xo = Dictionary::new();
+            xo.set("Im0", Object::Reference(im0));
+            let mut res = Dictionary::new();
+            res.set("XObject", Object::Dictionary(xo));
+            let resources = if resources_as_reference {
+                Object::Reference(self.doc.add_object(Object::Dictionary(res)))
+            } else {
+                Object::Dictionary(res)
+            };
+            if let Ok(Object::Dictionary(page)) = self.doc.get_object_mut(self.page_id) {
+                page.set("Resources", resources);
+            }
+        }
+
         fn save(mut self, path: &Path) {
             if let Ok(Object::Dictionary(page)) = self.doc.get_object_mut(self.page_id) {
                 if self.rotate != 0 {
@@ -2361,6 +2468,25 @@ mod tests {
         f.save(path);
     }
 
+    /// F18: flattenable Rect+AP widget plus page `/XObject /Im0`.
+    /// Does not change `write_flatten_fixture`.
+    fn write_flatten_im0_fixture(path: &Path, resources_as_reference: bool) {
+        let mut f = FormDoc::new();
+        f.push_merged_text("Name", "OldName", [72, 640, 240, 664], "OLD-NAME");
+        f.with_page_im0(resources_as_reference);
+        f.save(path);
+    }
+
+    /// F19: flattenable sibling + `/Widget` with `/Rect` and no `/AP` + leftover Text/Link.
+    fn write_unflattenable_widget_fixture(path: &Path) {
+        let mut f = FormDoc::new();
+        f.push_merged_text("Name", "OldName", [72, 640, 240, 664], "OLD-NAME");
+        f.push_widget_rect_no_ap("Broken", [72, 600, 240, 624]);
+        f.push_leftover_text();
+        f.push_leftover_link();
+        f.save(path);
+    }
+
     fn write_rotate_crop_fixture(path: &Path) {
         let mut f = FormDoc::new();
         f.rotate = 90;
@@ -2584,6 +2710,87 @@ mod tests {
                     _ => None,
                 }
             })
+            .collect()
+    }
+
+    fn dest_annot_dicts<'a>(doc: &'a Document) -> Vec<&'a Dictionary> {
+        let page = first_page(doc);
+        let Ok(Object::Array(annots)) = page.get(b"Annots") else {
+            return Vec::new();
+        };
+        annots.iter().filter_map(|a| resolve(doc, a)).collect()
+    }
+
+    fn dest_widget_named<'a>(doc: &'a Document, name: &str) -> Option<&'a Dictionary> {
+        dest_annot_dicts(doc).into_iter().find(|d| {
+            matches!(d.get(b"Subtype").ok(), Some(Object::Name(n)) if n == b"Widget")
+                && dict_t(d).as_deref() == Some(name)
+        })
+    }
+
+    fn dest_widget_names(doc: &Document) -> Vec<String> {
+        dest_annot_dicts(doc)
+            .into_iter()
+            .filter(|d| matches!(d.get(b"Subtype").ok(), Some(Object::Name(n)) if n == b"Widget"))
+            .filter_map(dict_t)
+            .collect()
+    }
+
+    fn page_xobject_dict<'a>(doc: &'a Document) -> Option<&'a Dictionary> {
+        let page = first_page(doc);
+        let res = match page.get(b"Resources").ok()? {
+            Object::Dictionary(d) => d,
+            Object::Reference(id) => doc.get_dictionary(*id).ok()?,
+            _ => return None,
+        };
+        match res.get(b"XObject").ok()? {
+            Object::Dictionary(d) => Some(d),
+            Object::Reference(id) => doc.get_dictionary(*id).ok(),
+            _ => None,
+        }
+    }
+
+    fn xobject_names(doc: &Document) -> Vec<String> {
+        let Some(xo) = page_xobject_dict(doc) else {
+            return Vec::new();
+        };
+        xo.iter()
+            .map(|(k, _)| String::from_utf8_lossy(k).into_owned())
+            .collect()
+    }
+
+    fn xobject_entry<'a>(doc: &'a Document, name: &str) -> Option<&'a Object> {
+        page_xobject_dict(doc)?.get(name.as_bytes()).ok()
+    }
+
+    fn all_stream_blob(path: &Path) -> String {
+        let mut d = load(path);
+        let _ = d.decompress();
+        let mut out = String::new();
+        for obj in d.objects.values() {
+            if let Object::Stream(s) = obj {
+                let bytes = s.get_plain_content().unwrap_or_else(|_| s.content.clone());
+                out.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        }
+        out
+    }
+
+    fn flatten_do_names(blob: &str) -> Vec<String> {
+        let tokens: Vec<&str> = blob.split_whitespace().collect();
+        let mut out = Vec::new();
+        for w in tokens.windows(2) {
+            if w[1] == "Do" && w[0].starts_with("/Ff") {
+                out.push(w[0].trim_start_matches('/').to_string());
+            }
+        }
+        out
+    }
+
+    fn flatten_paint_names(doc: &Document) -> Vec<String> {
+        xobject_names(doc)
+            .into_iter()
+            .filter(|n| n.starts_with("Ff"))
             .collect()
     }
 
@@ -3310,6 +3517,144 @@ mod tests {
         assert_eq!(
             flags.acro_form, has_key,
             "F12: snapshot.catalog.acro_form must equal whether dest still has the key"
+        );
+    }
+
+    // --- F18 ----------------------------------------------------------------
+
+    fn assert_f18_im0_survives_flatten(dest: &Path, shape: &str) {
+        apply_form_values(dest.to_str().unwrap(), &[v("Name", "Ada")], true)
+            .expect("F18: flatten-on apply");
+        let doc = load(dest);
+        let names = xobject_names(&doc);
+        assert!(
+            names.iter().any(|n| n == "Im0"),
+            "F18: dest /Resources /XObject must still have /Im0 after flatten-on ({shape}); names={names:?}"
+        );
+        let entry = xobject_entry(&doc, "Im0").expect("F18: /Im0 entry");
+        let resolved = deref_obj(&doc, entry);
+        assert!(
+            matches!(resolved, Object::Stream(_)),
+            "F18: /Im0 must still be a stream (or ref to stream) after flatten-on ({shape}); got {}",
+            object_kind(resolved)
+        );
+        let im0_text = match resolved {
+            Object::Stream(s) => stream_text(s),
+            _ => String::new(),
+        };
+        assert!(
+            im0_text.contains("IM0-KEEP"),
+            "F18: dest /Im0 must be the existing Form XObject, not a replaced flatten paint ({shape}); got {im0_text:?}"
+        );
+        let paints = flatten_paint_names(&doc);
+        assert!(
+            !paints.is_empty(),
+            "F18: flatten paints must be additional /XObject names (e.g. /Ff0); names={names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "Im0") && paints.iter().all(|n| n != "Im0"),
+            "F18: flatten paints are additional names, not a rename of /Im0; names={names:?} paints={paints:?}"
+        );
+        let blob = all_stream_blob(dest);
+        let dos = flatten_do_names(&blob);
+        assert!(
+            dos.iter().any(|n| n.starts_with("Ff")),
+            "F18: dest content must include a flatten /Ff* Do op ({shape}); dos={dos:?} blob={blob:?}"
+        );
+    }
+
+    #[test]
+    fn apply_flatten_keeps_existing_im0_resources_reference() {
+        let scratch = Scratch::new("f18-ref");
+        let dest = scratch.pdf("dest.pdf");
+        write_flatten_im0_fixture(&dest, true);
+        {
+            let src = load(&dest);
+            let page = first_page(&src);
+            assert!(
+                matches!(page.get(b"Resources").ok(), Some(Object::Reference(_))),
+                "F18 fixture: /Resources must be a Reference"
+            );
+            let entry = xobject_entry(&src, "Im0").expect("F18 fixture: /Im0");
+            assert!(
+                matches!(entry, Object::Reference(_)),
+                "F18 fixture: /Im0 is a Reference to a stream"
+            );
+            assert!(
+                matches!(deref_obj(&src, entry), Object::Stream(_)),
+                "F18 fixture: /Im0 must resolve to a Stream"
+            );
+        }
+        assert_f18_im0_survives_flatten(&dest, "resources-as-reference");
+    }
+
+    #[test]
+    fn apply_flatten_keeps_existing_im0_resources_direct_dict() {
+        let scratch = Scratch::new("f18-dict");
+        let dest = scratch.pdf("dest.pdf");
+        write_flatten_im0_fixture(&dest, false);
+        {
+            let src = load(&dest);
+            let page = first_page(&src);
+            assert!(
+                matches!(page.get(b"Resources").ok(), Some(Object::Dictionary(_))),
+                "F18 fixture: /Resources must be a direct dict"
+            );
+            let entry = xobject_entry(&src, "Im0").expect("F18 fixture: /Im0");
+            assert!(
+                matches!(deref_obj(&src, entry), Object::Stream(_)),
+                "F18 fixture: /Im0 must resolve to a Stream"
+            );
+        }
+        assert_f18_im0_survives_flatten(&dest, "resources-as-direct-dict");
+    }
+
+    // --- F19 ----------------------------------------------------------------
+
+    #[test]
+    fn apply_flatten_keeps_widget_without_ap() {
+        let scratch = Scratch::new("f19-keep");
+        let dest = scratch.pdf("dest.pdf");
+        write_unflattenable_widget_fixture(&dest);
+        // Flattenable sibling Name is in values (write regenerates /AP).
+        // Broken has /Rect but no /AP and is omitted so write will not regenerate /AP.
+        apply_form_values(dest.to_str().unwrap(), &[v("Name", "Ada")], true)
+            .expect("F19: flatten-on apply");
+        let doc = load(&dest);
+        let subtypes = annot_subtypes(&doc);
+        let widgets = dest_widget_names(&doc);
+        let broken = dest_widget_named(&doc, "Broken");
+        assert!(
+            broken.is_some(),
+            "F19: /Widget without usable /AP must stay on dest /Annots; widgets={widgets:?} subtypes={subtypes:?}"
+        );
+        assert!(
+            subtypes.iter().any(|s| s == "Widget"),
+            "F19: dest /Annots must still have /Subtype /Widget; subtypes={subtypes:?}"
+        );
+        assert!(
+            !widgets.iter().any(|n| n == "Name"),
+            "F19: flattenable sibling /Widget still drops (F12); widgets={widgets:?}"
+        );
+        assert!(
+            subtypes.iter().any(|s| s == "Text"),
+            "F19: leftover /Text must stay; subtypes={subtypes:?}"
+        );
+        assert!(
+            subtypes.iter().any(|s| s == "Link"),
+            "F19: leftover /Link must stay; subtypes={subtypes:?}"
+        );
+        let broken = broken.expect("F19: Broken widget");
+        assert!(
+            broken.get(b"AP").is_err(),
+            "F19: unflattenable widget must not be dummy-painted with a new /AP"
+        );
+        let blob = all_stream_blob(&dest);
+        let dos = flatten_do_names(&blob);
+        assert_eq!(
+            dos.len(),
+            1,
+            "F19: only the flattenable sibling is painted (no /Ff* Do of a missing /AP); dos={dos:?}"
         );
     }
 
