@@ -4,6 +4,11 @@
 
 use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
+use crate::pdf_engine::edit_links::{
+    apply_link_annots_for_pages, dest_has_supported_links, dest_ranges_to_rewrite,
+    expected_dest_has_annots, list_link_annots, unsafe_uri_error, uri_is_allowed, LinkAction,
+    SessionLink, MAX_LINKS,
+};
 use crate::pdf_engine::validate_output::{
     catalog_flags_from_doc, content_digest, validate_staged_pdf, ContentDigest, OutputSnapshot,
     PageSnapshot,
@@ -196,6 +201,24 @@ pub enum EditObjectIn {
         #[serde(default, rename = "objectRotate")]
         object_rotate: f64,
     },
+    Link {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        action: LinkActionIn,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum LinkActionIn {
+    Uri {
+        uri: String,
+    },
+    Goto {
+        #[serde(rename = "destPageIndex")]
+        dest_page_index: u32,
+    },
 }
 
 impl EditObjectIn {
@@ -212,11 +235,13 @@ impl EditObjectIn {
             | Self::Text { page_index, .. }
             | Self::Image { page_index, .. }
             | Self::Line { page_index, .. }
-            | Self::Ink { page_index, .. } => *page_index,
+            | Self::Ink { page_index, .. }
+            | Self::Link { page_index, .. } => *page_index,
         }
     }
     fn opacity(&self) -> f64 {
         let o = match self {
+            Self::Link { .. } => return 1.0,
             Self::Rect { opacity, .. }
             | Self::Ellipse { opacity, .. }
             | Self::Triangle { opacity, .. }
@@ -235,6 +260,7 @@ impl EditObjectIn {
 
     fn object_rotate(&self) -> f64 {
         match self {
+            Self::Link { .. } => 0.0,
             Self::Rect { object_rotate, .. }
             | Self::Ellipse { object_rotate, .. }
             | Self::Triangle { object_rotate, .. }
@@ -287,7 +313,8 @@ impl EditObjectIn {
             | Self::Bubble { rect, .. }
             | Self::Arrow { rect, .. }
             | Self::Text { rect, .. }
-            | Self::Image { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
+            | Self::Image { rect, .. }
+            | Self::Link { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
         }
     }
 }
@@ -750,18 +777,27 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
             "This edit was created with a newer OffPDF version.",
         ));
     }
-    if doc.objects.is_empty() {
-        return Err(AppError::new(
-            "NO_EDITS",
-            "Nothing to save",
-            "Add text, an image or a shape before saving.",
-        ));
+    let mut paint = 0usize;
+    let mut links = 0usize;
+    for o in &doc.objects {
+        if matches!(o, EditObjectIn::Link { .. }) {
+            links += 1;
+        } else {
+            paint += 1;
+        }
     }
-    if doc.objects.len() > MAX_OBJECTS {
+    if paint > MAX_OBJECTS {
         return Err(AppError::new(
             "TOO_MANY_OBJECTS",
             "Too many objects",
             format!("This edit has more than {MAX_OBJECTS} objects."),
+        ));
+    }
+    if links > MAX_LINKS {
+        return Err(AppError::new(
+            "TOO_MANY_LINKS",
+            "Too many links",
+            format!("This edit has more than {MAX_LINKS} links."),
         ));
     }
     for o in &doc.objects {
@@ -779,6 +815,12 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
                     "Drawing is too complex",
                     "Use a shorter stroke.",
                 ));
+            }
+            EditObjectIn::Link {
+                action: LinkActionIn::Uri { uri },
+                ..
+            } if !uri_is_allowed(uri) => {
+                return Err(unsafe_uri_error(uri));
             }
             _ => {}
         }
@@ -869,14 +911,11 @@ fn remap_groups_to_visible_box(
         if !copies.contains_key(&g.path) {
             let doc = Document::load(&g.path)
                 .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
-            let needs = doc
-                .get_pages()
-                .values()
-                .any(|&id| {
-                    let visible = crop::visible_box(&doc, id);
-                    !boxes_near(crop::align_box(&doc, id), visible)
-                        || !boxes_near(crop::media_box(&doc, id), visible)
-                });
+            let needs = doc.get_pages().values().any(|&id| {
+                let visible = crop::visible_box(&doc, id);
+                !boxes_near(crop::align_box(&doc, id), visible)
+                    || !boxes_near(crop::media_box(&doc, id), visible)
+            });
             if needs {
                 let dest = work.join(format!("src-{n_copies}.pdf"));
                 n_copies += 1;
@@ -1097,6 +1136,86 @@ pub(crate) fn build_edit_overlay_args(
     Ok(args)
 }
 
+/// When hydrate failed for a source, a session `kind: "link"` on that file's
+/// dest pages must return the same list `AppError` instead of rewriting.
+fn reject_links_on_unlistable_sources(
+    groups: &[PageGroup],
+    counts: &[u32],
+    links: &[SessionLink],
+) -> Result<(), AppError> {
+    let mut dest_base = 0u32;
+    for (g, &n) in groups.iter().zip(counts.iter()) {
+        let end = dest_base.saturating_add(n);
+        let has = links
+            .iter()
+            .any(|l| l.page_index >= dest_base && l.page_index < end);
+        dest_base = end;
+        if !has {
+            continue;
+        }
+        list_link_annots(Path::new(&g.path))?;
+    }
+    Ok(())
+}
+
+fn session_links_from_doc(doc: &EditDocumentIn) -> Vec<SessionLink> {
+    doc.objects
+        .iter()
+        .filter_map(|o| match o {
+            EditObjectIn::Link {
+                page_index,
+                rect,
+                action,
+            } => Some(SessionLink {
+                page_index: *page_index,
+                rect: [rect.x, rect.y, rect.w, rect.h],
+                action: match action {
+                    LinkActionIn::Uri { uri } => LinkAction::Uri { uri: uri.clone() },
+                    LinkActionIn::Goto { dest_page_index } => LinkAction::GoTo {
+                        dest_page_index: *dest_page_index,
+                    },
+                },
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Link-only save: assemble to dest without `--empty` and without overlay paint.
+fn assemble_to_tmp<F>(
+    groups: &[PageGroup],
+    page_counts: &[u32],
+    tmp: &Path,
+    tmp_str: &str,
+    run: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(&[String]) -> Result<(), AppError>,
+{
+    if groups.is_empty() {
+        return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
+    }
+    let identity = groups.len() == 1 && super::spec_is_full_range(&groups[0].pages, page_counts[0]);
+    if identity {
+        std::fs::copy(&groups[0].path, tmp)
+            .map_err(|e| AppError::io("Could not prepare the output file.", e))?;
+        return Ok(());
+    }
+    let mut args = vec![
+        groups[0].path.clone(),
+        "--pages".into(),
+        ".".into(),
+        groups[0].pages.clone(),
+    ];
+    for g in &groups[1..] {
+        args.push(g.path.clone());
+        args.push(g.pages.clone());
+    }
+    args.push("--".into());
+    args.push(tmp_str.to_string());
+    run(&args)
+}
+
 /// Build the overlay and run qpdf via `run`. Used by tests (system/`"qpdf"`).
 pub(crate) fn export_edit_pdf_with_runner<F>(
     groups: &[PageGroup],
@@ -1113,7 +1232,17 @@ where
 {
     let exe = qpdf::resolve_qpdf_standalone();
     export_edit_pdf_with_check_exe(
-        groups, output, document, font_path, work, unique, cancel, &exe, None, run,
+        groups,
+        output,
+        document,
+        font_path,
+        work,
+        unique,
+        cancel,
+        &exe,
+        None,
+        &[],
+        run,
     )
     .map(|(paths, _warnings)| paths)
 }
@@ -1129,6 +1258,7 @@ fn export_edit_pdf_with_check_exe<F>(
     cancel: Option<&AtomicBool>,
     qpdf_check: &Path,
     handle: Option<&Arc<JobHandle>>,
+    incomplete_source_paths: &[String],
     mut run: F,
 ) -> Result<(Vec<String>, Vec<String>), AppError>
 where
@@ -1159,19 +1289,55 @@ where
         let font_bytes = std::fs::read(font_path)
             .map_err(|e| AppError::io("Could not read the editor font.", e))?;
         let font = FontInfo::parse(font_bytes)?;
-        write_overlay_pdf(&overlay_str, &geoms, document, &font, cancel)?;
-        let (mapped, restore_boxes) = remap_groups_to_visible_box(groups, work)?;
-        let args = build_edit_overlay_args(&mapped, &counts, &overlay_str, &tmp_str)?;
-        run(&args)?;
-        if restore_boxes {
-            restore_dest_page_boxes(&tmp, &geoms)?;
-            // lopdf xref can look damaged; qpdf rewrite before the atomic replace.
-            let cleaned = work.join("dest-boxes.pdf");
+        let links = session_links_from_doc(document);
+        let has_paint = document
+            .objects
+            .iter()
+            .any(|o| !matches!(o, EditObjectIn::Link { .. }));
+        if has_paint {
+            write_overlay_pdf(&overlay_str, &geoms, document, &font, cancel)?;
+            let (mapped, restore_boxes) = remap_groups_to_visible_box(groups, work)?;
+            let args = build_edit_overlay_args(&mapped, &counts, &overlay_str, &tmp_str)?;
+            run(&args)?;
+            if restore_boxes {
+                restore_dest_page_boxes(&tmp, &geoms)?;
+                // lopdf xref can look damaged; qpdf rewrite before the atomic replace.
+                let cleaned = work.join("dest-boxes.pdf");
+                let cleaned_str = cleaned.to_string_lossy().to_string();
+                run(&[tmp_str.clone(), cleaned_str.clone()])?;
+                safe_output::replace_file(&cleaned, &tmp)?;
+            }
+        } else {
+            assemble_to_tmp(groups, &counts, &tmp, &tmp_str, &mut run)?;
+        }
+        let expected_annots = expected_dest_has_annots(&tmp, &links)?;
+        if !incomplete_source_paths.is_empty() && !links.is_empty() {
+            reject_links_on_unlistable_sources(groups, &counts, &links)?;
+        }
+        let group_pairs: Vec<(&str, u32)> = groups
+            .iter()
+            .zip(counts.iter())
+            .map(|(g, &n)| (g.path.as_str(), n))
+            .collect();
+        let incomplete_refs: Vec<&str> =
+            incomplete_source_paths.iter().map(String::as_str).collect();
+        let dest_pages: Vec<u32> = dest_ranges_to_rewrite(&group_pairs, &incomplete_refs)
+            .into_iter()
+            .flatten()
+            .collect();
+        // Skip dest_has load when no complete source remains (e.g. 400 MiB
+        // unlistable file). Complete empty still deletes when dest has links (L7).
+        let rewrite_links = !dest_pages.is_empty()
+            && (!links.is_empty() || dest_has_supported_links(&tmp)?);
+        if rewrite_links {
+            apply_link_annots_for_pages(&tmp, &links, &dest_pages)?;
+            let cleaned = work.join("dest-links.pdf");
             let cleaned_str = cleaned.to_string_lossy().to_string();
             run(&[tmp_str.clone(), cleaned_str.clone()])?;
             safe_output::replace_file(&cleaned, &tmp)?;
         }
-        let snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
+        let mut snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
+        snapshot.catalog.annots = expected_annots;
         let vr = validate_staged_pdf(&tmp, &snapshot, cancel, |args| {
             run_qpdf_check_argv(qpdf_check, args, handle)
         })?;
@@ -1243,6 +1409,7 @@ pub fn edit_pdf_overlays(
     groups: &[PageGroup],
     output: &str,
     document: &EditDocumentIn,
+    incomplete_source_paths: &[String],
 ) -> Result<(Vec<String>, Vec<String>), AppError> {
     if groups.is_empty() {
         return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
@@ -1281,6 +1448,7 @@ pub fn edit_pdf_overlays(
             Some(&handle.cancelled),
             &qpdf_exe,
             Some(handle),
+            incomplete_source_paths,
             |args| run_qpdf(app, handle, job_id, args, "Saving", None),
         )
     })();
@@ -1491,6 +1659,9 @@ fn write_overlay_pdf(
         let mut content = String::new();
         for (oi, obj) in document.objects.iter().enumerate() {
             if obj.page_index() as usize != pi {
+                continue;
+            }
+            if matches!(obj, EditObjectIn::Link { .. }) {
                 continue;
             }
             let op100 = (obj.opacity() * 100.0).round() as i32;
@@ -1722,6 +1893,7 @@ fn write_overlay_pdf(
                         content.push_str("S\n");
                     }
                 }
+                EditObjectIn::Link { .. } => {}
             }
             if rotated {
                 content.push_str("Q\n");
@@ -1877,13 +2049,104 @@ mod tests {
         }
     }
 
+    fn sample_link_obj() -> EditObjectIn {
+        EditObjectIn::Link {
+            page_index: 0,
+            rect: PdfRectIn {
+                x: 10.0,
+                y: 20.0,
+                w: 80.0,
+                h: 40.0,
+            },
+            action: LinkActionIn::Uri {
+                uri: "https://example.com/h8".into(),
+            },
+        }
+    }
+
+    fn sample_rect_obj() -> EditObjectIn {
+        EditObjectIn::Rect {
+            page_index: 0,
+            rect: PdfRectIn {
+                x: 10.0,
+                y: 20.0,
+                w: 80.0,
+                h: 40.0,
+            },
+            fill: None,
+            stroke: None,
+            stroke_width: None,
+            opacity: None,
+            object_rotate: 0.0,
+        }
+    }
+
     #[test]
-    fn validate_rejects_empty() {
+    fn validate_allows_empty() {
         let d = EditDocumentIn {
             version: 1,
             objects: vec![],
         };
-        assert!(validate_doc(&d).is_err());
+        match validate_doc(&d) {
+            Ok(()) => {}
+            Err(err) => panic!("H6-doc: validate_doc([]) must be Ok, not {}", err.code),
+        }
+    }
+
+    #[test]
+    fn validate_allows_501_links() {
+        let d = EditDocumentIn {
+            version: 1,
+            objects: (0..501).map(|_| sample_link_obj()).collect(),
+        };
+        match validate_doc(&d) {
+            Ok(()) => {}
+            Err(err) => panic!(
+                "H8-links: 501 Link objects must pass validate_doc, not {}",
+                err.code
+            ),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_501_paint() {
+        let d = EditDocumentIn {
+            version: 1,
+            objects: (0..501).map(|_| sample_rect_obj()).collect(),
+        };
+        let err =
+            validate_doc(&d).expect_err("H8-paint: 501 paint objects must be TOO_MANY_OBJECTS");
+        assert_eq!(
+            err.code, "TOO_MANY_OBJECTS",
+            "H8-paint: 501 paint objects must be TOO_MANY_OBJECTS, not {}",
+            err.code
+        );
+    }
+
+    #[test]
+    fn validate_allows_500_paint_plus_one_link() {
+        let mut objects: Vec<EditObjectIn> = (0..500).map(|_| sample_rect_obj()).collect();
+        objects.push(sample_link_obj());
+        let d = EditDocumentIn {
+            version: 1,
+            objects,
+        };
+        match validate_doc(&d) {
+            Ok(()) => {}
+            Err(err) => panic!("H8-mix: 500 paint + 1 link must be Ok, not {}", err.code),
+        }
+    }
+
+    #[test]
+    fn validate_allows_5000_links() {
+        let d = EditDocumentIn {
+            version: 1,
+            objects: (0..5000).map(|_| sample_link_obj()).collect(),
+        };
+        match validate_doc(&d) {
+            Ok(()) => {}
+            Err(err) => panic!("H8-mix: 5,000 links must be Ok, not {}", err.code),
+        }
     }
 
     #[test]
@@ -2367,6 +2630,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // L5 keepGreen: hard-linked dest stays OVERWRITE.
     #[test]
     fn export_rejects_hard_linked_destination() {
         let Some(qpdf) = test_qpdf() else {

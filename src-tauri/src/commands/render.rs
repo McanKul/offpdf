@@ -122,6 +122,20 @@ pub async fn pdf_outline(input_path: String) -> Result<Vec<crate::models::Outlin
         .map_err(|e| AppError::io("Could not read the outline.", e))?
 }
 
+/// Supported URI / in-document GoTo `/Link` annots. Paths in, JSON out; never
+/// fetches a URI. Files over 400 MiB or with more than 5,000 supported links
+/// return an actionable error (not a silent empty or truncated list).
+#[tauri::command]
+pub async fn list_pdf_links(
+    input_path: String,
+) -> Result<Vec<crate::pdf_engine::edit_links::PdfLinkDto>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::pdf_engine::edit_links::list_pdf_links_cmd(&input_path)
+    })
+    .await
+    .map_err(|e| AppError::io("Could not read the links.", e))?
+}
+
 /// Visually compare two pages; returns a diff-overlay image + changed percent.
 #[tauri::command]
 pub async fn diff_pages(

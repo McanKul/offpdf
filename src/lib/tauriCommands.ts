@@ -18,6 +18,7 @@ import type {
   JobResult,
   JobUpdate,
   OutlineItem,
+  PdfLink,
   PageGroup,
   PagePick,
   RenderedThumb,
@@ -253,6 +254,11 @@ export function pdfOutline(inputPath: string): Promise<OutlineItem[]> {
   return invoke<OutlineItem[]>("pdf_outline", { inputPath });
 }
 
+/** Supported URI / GoTo `/Link` annots. Paths in; never fetches a URI. */
+export function listPdfLinks(inputPath: string): Promise<PdfLink[]> {
+  return invoke<PdfLink[]>("list_pdf_links", { inputPath });
+}
+
 /** Visually compare two pages; returns a diff-overlay image + changed percent. */
 export function diffPages(
   aPath: string,
@@ -285,8 +291,15 @@ export function editPdfOverlays(
   outputPath: string,
   groups: PageGroup[],
   document: EditDocument,
+  incompleteSourcePaths: string[] = [],
 ): Promise<JobResult> {
-  return invoke<JobResult>("edit_pdf_overlays", { jobId, outputPath, groups, document });
+  return invoke<JobResult>("edit_pdf_overlays", {
+    jobId,
+    outputPath,
+    groups,
+    document,
+    incompleteSourcePaths,
+  });
 }
 
 export function stampPdf(

@@ -6,7 +6,9 @@
 //! removed AFTER the worker joins.
 
 use crate::error::AppError;
-use crate::models::{JobRegistry, JobResult, JobUpdate, PageGroup, PagePick, RotateGroup, SplitMode};
+use crate::models::{
+    JobRegistry, JobResult, JobUpdate, PageGroup, PagePick, RotateGroup, SplitMode,
+};
 use tauri::Emitter;
 
 /// Helper: emit the final "completed" update and build the JobResult.
@@ -155,7 +157,15 @@ pub async fn watermark_pdf(
     let app2 = app.clone();
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::pdf_engine::overlay::add_watermark(&app2, &handle, &jid, &groups, &output_path, &text, opacity)
+        crate::pdf_engine::overlay::add_watermark(
+            &app2,
+            &handle,
+            &jid,
+            &groups,
+            &output_path,
+            &text,
+            opacity,
+        )
     })
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
@@ -181,7 +191,17 @@ pub async fn crop_pdf(
     let app2 = app.clone();
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::pdf_engine::crop::crop(&app2, &handle, &jid, &groups, &output_path, left, top, right, bottom)
+        crate::pdf_engine::crop::crop(
+            &app2,
+            &handle,
+            &jid,
+            &groups,
+            &output_path,
+            left,
+            top,
+            right,
+            bottom,
+        )
     })
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
@@ -198,12 +218,22 @@ pub async fn edit_pdf_overlays(
     output_path: String,
     groups: Vec<PageGroup>,
     document: crate::pdf_engine::edit_overlay::EditDocumentIn,
+    incomplete_source_paths: Option<Vec<String>>,
 ) -> Result<JobResult, AppError> {
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
+    let incomplete = incomplete_source_paths.unwrap_or_default();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::pdf_engine::edit_overlay::edit_pdf_overlays(&app2, &handle, &jid, &groups, &output_path, &document)
+        crate::pdf_engine::edit_overlay::edit_pdf_overlays(
+            &app2,
+            &handle,
+            &jid,
+            &groups,
+            &output_path,
+            &document,
+            &incomplete,
+        )
     })
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
@@ -243,7 +273,18 @@ pub async fn stamp_pdf(
     let app2 = app.clone();
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::pdf_engine::stamp::stamp_text(&app2, &handle, &jid, &groups, &output_path, page, &anchor, &text, color, size_pct)
+        crate::pdf_engine::stamp::stamp_text(
+            &app2,
+            &handle,
+            &jid,
+            &groups,
+            &output_path,
+            page,
+            &anchor,
+            &text,
+            color,
+            size_pct,
+        )
     })
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
@@ -270,7 +311,18 @@ pub async fn poster_pdf(
     let app2 = app.clone();
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::pdf_engine::poster::poster(&app2, &handle, &jid, &groups, &output_path, page, tile_w, tile_h, overlap, marks)
+        crate::pdf_engine::poster::poster(
+            &app2,
+            &handle,
+            &jid,
+            &groups,
+            &output_path,
+            page,
+            tile_w,
+            tile_h,
+            overlap,
+            marks,
+        )
     })
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
@@ -295,7 +347,16 @@ pub async fn nup_pdf(
     let app2 = app.clone();
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::pdf_engine::nup::nup(&app2, &handle, &jid, &groups, &output_path, &mode, sheet_w, sheet_h)
+        crate::pdf_engine::nup::nup(
+            &app2,
+            &handle,
+            &jid,
+            &groups,
+            &output_path,
+            &mode,
+            sheet_w,
+            sheet_h,
+        )
     })
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
@@ -333,7 +394,14 @@ pub async fn add_page_numbers(
             None
         };
         crate::pdf_engine::overlay::add_page_numbers_formatted(
-            &app2, &handle, &jid, &groups, &output_path, &position, start, format,
+            &app2,
+            &handle,
+            &jid,
+            &groups,
+            &output_path,
+            &position,
+            start,
+            format,
         )
     })
     .await
@@ -357,7 +425,15 @@ pub async fn protect_pdf(
     let app2 = app.clone();
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::pdf_engine::protect(&app2, &handle, &jid, &groups, &user_password, &owner_password, &output_path)
+        crate::pdf_engine::protect(
+            &app2,
+            &handle,
+            &jid,
+            &groups,
+            &user_password,
+            &owner_password,
+            &output_path,
+        )
     })
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
@@ -424,7 +500,15 @@ pub async fn rotate_pages(
     let app2 = app.clone();
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::pdf_engine::rotate(&app2, &handle, &jid, &groups, angle, &rotate_pages, &output_path)
+        crate::pdf_engine::rotate(
+            &app2,
+            &handle,
+            &jid,
+            &groups,
+            angle,
+            &rotate_pages,
+            &output_path,
+        )
     })
     .await
     .map_err(|e| AppError::engine_failed(format!("worker join error: {e}")))?;
@@ -471,7 +555,14 @@ pub async fn compress_pdf(
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
         crate::pdf_engine::compress::compress(
-            &app2, &handle, &jid, &picks, &output_path, dpi, quality, target_bytes,
+            &app2,
+            &handle,
+            &jid,
+            &picks,
+            &output_path,
+            dpi,
+            quality,
+            target_bytes,
         )
     })
     .await

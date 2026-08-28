@@ -16,7 +16,7 @@ import {
 } from "@/components/pdf";
 import { useEditSession } from "@/components/pdf/editor";
 import { useJob, JobStatus, useDiskGuard } from "@/components/jobs";
-import { editPdfOverlays } from "@/lib/tauriCommands";
+import { editPdfOverlays, listPdfLinks } from "@/lib/tauriCommands";
 import { getTool } from "@/lib/tools";
 import { estimateRequiredBytes, validateOutputName, joinPath } from "@/lib/validation";
 import { stripExt } from "@/lib/formatBytes";
@@ -24,6 +24,9 @@ import { useSettingsStore } from "@/state/settingsStore";
 import { useWorkspace } from "@/state/workspaceStore";
 import {
   clampPageIndex,
+  emptyObjectsBlockSave,
+  incompleteSourcePaths,
+  makeLinkObject,
   planKeyRebind,
   rebindNeedsConfirm,
   resolveViewPageIndex,
@@ -32,6 +35,7 @@ import {
   toExportDocument,
 } from "@/lib/editor";
 import { isTauriRuntime } from "@/lib/tauriEnv";
+import { toAppError, type AppError } from "@/lib/types";
 import { Alert } from "@/components/ui/Alert";
 
 const tool = getTool("editPdf");
@@ -64,6 +68,76 @@ export function EditPdfPage() {
 
   const session = useEditSession(pageKeys);
   const doc = session.document;
+  const hydratedUids = useRef(new Set<string>());
+  const hydrateErrors = useRef(new Map<string, AppError>());
+  const hydratedLinkUids = useRef(new Set<string>());
+  const [hydrateReady, setHydrateReady] = useState(
+    () => files.every((f) => (f.pageCount ?? 0) === 0),
+  );
+
+  useEffect(() => {
+    const live = new Set(files.map((f) => f.uid));
+    for (const uid of [...hydratedUids.current]) {
+      if (!live.has(uid)) {
+        hydratedUids.current.delete(uid);
+        hydrateErrors.current.delete(uid);
+        hydratedLinkUids.current.delete(uid);
+      }
+    }
+    const pending = files.filter((f) => (f.pageCount ?? 0) > 0 && !hydratedUids.current.has(f.uid));
+    if (pending.length === 0) {
+      setHydrateReady(true);
+      return;
+    }
+    setHydrateReady(false);
+    let cancelled = false;
+    void (async () => {
+      const mapped: import("@/lib/editor").EditObject[] = [];
+      const finished: string[] = [];
+      for (const file of pending) {
+        try {
+          const listed = await listPdfLinks(file.path);
+          if (cancelled) return;
+          for (const link of listed) {
+            const pageIndex = refs.findIndex((r) => r.key === `${file.uid}#${link.pageIndex + 1}`);
+            if (pageIndex < 0) continue;
+            let action = link.action;
+            if (action.type === "goto") {
+              const destPage = action.destPageIndex;
+              const dest = refs.findIndex((r) => r.key === `${file.uid}#${destPage + 1}`);
+              if (dest < 0) continue;
+              action = { type: "goto", destPageIndex: dest };
+            }
+            const id =
+              typeof crypto !== "undefined" && "randomUUID" in crypto
+                ? crypto.randomUUID()
+                : `link-${file.uid}-${link.pageIndex}-${mapped.length}`;
+            mapped.push(makeLinkObject(id, pageIndex, link.rect, action));
+          }
+          if (listed.length > 0) {
+            hydratedLinkUids.current.add(file.uid);
+          } else {
+            hydratedLinkUids.current.delete(file.uid);
+          }
+          hydrateErrors.current.delete(file.uid);
+          finished.push(file.uid);
+        } catch (e) {
+          if (cancelled) return;
+          const err = toAppError(e);
+          hydrateErrors.current.set(file.uid, err);
+          toast({ title: err.title, description: err.message, variant: "error" });
+          finished.push(file.uid);
+        }
+      }
+      if (cancelled) return;
+      if (mapped.length > 0) session.hydrateObjects(mapped);
+      for (const uid of finished) hydratedUids.current.add(uid);
+      setHydrateReady(pending.every((f) => hydratedUids.current.has(f.uid)));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [files, refs, session.hydrateObjects]);
 
   const first = files[0];
   useEffect(() => {
@@ -102,7 +176,15 @@ export function EditPdfPage() {
 
   const start = async () => {
     if (refs.length === 0) return toast({ title: "Add a PDF first", variant: "error" });
-    if (doc.objects.length === 0) return toast({ title: "Add something to the page first", variant: "error" });
+    if (!hydrateReady) return toast({ title: "Still reading links from the PDF", variant: "error" });
+    if (
+      emptyObjectsBlockSave({
+        objectCount: doc.objects.length,
+        hadHydratedLinks: hydratedLinkUids.current.size > 0,
+      })
+    ) {
+      return toast({ title: "Add something to the page first", variant: "error" });
+    }
     if (!folder) return toast({ title: "Choose an output folder", variant: "error" });
     const nameRes = validateOutputName(name);
     if (!nameRes.ok) return toast({ title: "Invalid file name", description: nameRes.error, variant: "error" });
@@ -112,13 +194,29 @@ export function EditPdfPage() {
     }
     if (!(await disk.ensure(folder, estimateRequiredBytes("editPdf", files.map((f) => f.sizeBytes))))) return;
 
+    const failedLinkErr = sessionLinkErrorOnFailedFile(doc.objects, refs, hydrateErrors.current);
+    if (failedLinkErr) {
+      return toast({ title: failedLinkErr.title, description: failedLinkErr.message, variant: "error" });
+    }
+    const incompletePaths = incompleteSourcePaths(
+      files,
+      new Set(hydrateErrors.current.keys()),
+    );
+
     await job.run(
-      (id) => editPdfOverlays(id, outputPath, buildGroups(refs), toExportDocument(doc)),
+      (id) =>
+        editPdfOverlays(
+          id,
+          outputPath,
+          buildGroups(refs),
+          toExportDocument(doc),
+          incompletePaths,
+        ),
       { tool: "editPdf", label: `Edit PDF · ${doc.objects.length} object${doc.objects.length === 1 ? "" : "s"}` },
     );
   };
 
-  const canStart = !job.isBusy && inTauri;
+  const canStart = !job.isBusy && inTauri && hydrateReady;
 
   return (
     <ToolPage tool={tool}>
@@ -191,4 +289,24 @@ export function EditPdfPage() {
       </Modal>
     </ToolPage>
   );
+}
+
+function fileUidFromPageKey(key: string): string {
+  const hash = key.lastIndexOf("#");
+  return hash >= 0 ? key.slice(0, hash) : key;
+}
+
+function sessionLinkErrorOnFailedFile(
+  objects: { kind: string; pageIndex: number }[],
+  refs: { key: string }[],
+  errors: Map<string, AppError>,
+): AppError | undefined {
+  for (const o of objects) {
+    if (o.kind !== "link") continue;
+    const ref = refs[o.pageIndex];
+    if (!ref) continue;
+    const err = errors.get(fileUidFromPageKey(ref.key));
+    if (err) return err;
+  }
+  return undefined;
 }
