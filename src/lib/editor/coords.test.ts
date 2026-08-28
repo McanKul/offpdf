@@ -197,3 +197,21 @@ describe("pdfRectToViewport / viewportRectToPdf", () => {
     approx(back.h, rect.h, 1e-5);
   });
 });
+
+describe("C6 markup rect space (rotate 90 + Crop ≠ Media)", () => {
+  it("stores highlight rubber-band as unrotated PDF, not display-swapped", () => {
+    const cropBox = { x: 72, y: 72, w: 468, h: 648 };
+    const g = geom(cropBox, 90);
+    const size = displayedSize(g);
+    const m = makeMapping(g, size.w, size.h);
+    const unrotated: PdfRect = { x: 100, y: 200, w: 80, h: 40 };
+    const css = pdfRectToViewport(unrotated, m);
+    const back = viewportRectToPdf(css, m);
+    approx(back.x, unrotated.x, 1e-5);
+    approx(back.y, unrotated.y, 1e-5);
+    approx(back.w, unrotated.w, 1e-5);
+    approx(back.h, unrotated.h, 1e-5);
+    // Display size is swapped; stored /Rect + /QuadPoints stay unrotated.
+    expect(size).toEqual({ w: 648, h: 468 });
+  });
+});

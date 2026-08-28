@@ -49,6 +49,18 @@ export interface PdfLink {
   action: PdfLinkAction;
 }
 
+/** One leftover or session annot listed from a PDF (Rust `ListedMarkup`). */
+export interface ListedMarkup {
+  pageIndex: number;
+  subtype: string;
+  rect: [number, number, number, number];
+  author?: string | null;
+  color?: number[] | null;
+  contents?: string | null;
+  quadPoints?: number[] | null;
+  sessionId?: string | null;
+}
+
 /** Bounded editor image preview (Rust `ImagePreview`). */
 export interface ImagePreview {
   dataUrl: string;

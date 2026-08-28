@@ -51,6 +51,7 @@ export function EditPdfPage() {
   const lastFolder = useSettingsStore((s) => s.lastOutputFolder);
   const [folder, setFolder] = useState<string | null>(lastFolder);
   const [name, setName] = useState("edited.pdf");
+  const [flattenAnnotations, setFlattenAnnotations] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
   const [discardPrompt, setDiscardPrompt] = useState<{ count: number; historyOnly: boolean } | null>(null);
   const discardResolve = useRef<((ok: boolean) => void) | undefined>(undefined);
@@ -211,6 +212,7 @@ export function EditPdfPage() {
           buildGroups(refs),
           toExportDocument(doc),
           incompletePaths,
+          flattenAnnotations,
         ),
       { tool: "editPdf", label: `Edit PDF · ${doc.objects.length} object${doc.objects.length === 1 ? "" : "s"}` },
     );
@@ -233,6 +235,14 @@ export function EditPdfPage() {
         <div className="col">
           <Input label="File name" value={name} onChange={(e) => setName(e.target.value)} placeholder="edited.pdf" />
           <OutputFolderPicker value={folder} onChange={setFolder} />
+          <label className="field__label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={flattenAnnotations}
+              onChange={(e) => setFlattenAnnotations(e.target.checked)}
+            />
+            Flatten annotations
+          </label>
           <div className="row">
             <Button variant="primary" size="lg" onClick={start} disabled={!canStart} loading={job.isBusy} leftIcon={<Icon name="fileText" size={18} />}>
               Save PDF
