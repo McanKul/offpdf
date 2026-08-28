@@ -5,14 +5,14 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 
 ## Current release
 
-- **v0.2.2** is the latest published release. Its historical Windows package is
-  unsigned and remains available through GitHub Releases.
+- **v0.3.0** is the latest published release. Its Windows package is unsigned
+  and remains available through GitHub Releases.
 - The Apple Silicon macOS build is signed and notarized. It bundles qpdf,
   Poppler, and Tesseract; LibreOffice remains optional for Office and PDF/A work.
 
 ## Next release
 
-- **v0.3.0** is being prepared for distribution through GitHub Releases and
+- **v0.3.1** is being prepared for distribution through GitHub Releases and
   [offpdf.com](https://offpdf.com).
 - The Windows x64 installer bundles qpdf, Poppler, Tesseract, and LibreOffice so
   the supported workflows run offline. It is distributed through GitHub Releases
