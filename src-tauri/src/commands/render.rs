@@ -113,6 +113,18 @@ pub async fn page_pdf(app: tauri::AppHandle, input_path: String, page: u32) -> R
         .map_err(|e| AppError::io("Could not read the page.", e))?
 }
 
+/// List leftover and session markup annots (paths in, JSON out). Never PDF bytes.
+#[tauri::command]
+pub async fn list_pdf_annots(
+    input_path: String,
+) -> Result<Vec<crate::pdf_engine::edit_annots::ListedMarkup>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::pdf_engine::edit_annots::list_markup_annots(std::path::Path::new(&input_path))
+    })
+    .await
+    .map_err(|e| AppError::io("Could not list annotations.", e))?
+}
+
 /// A PDF's bookmarks/outline (flattened). Empty for files with no outline or
 /// files too large to parse safely.
 #[tauri::command]

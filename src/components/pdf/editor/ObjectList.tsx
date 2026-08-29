@@ -25,6 +25,11 @@ function labelFor(obj: EditObject, layer: string): string {
     }
     return `Link: page ${obj.action.destPageIndex + 1} · ${page}`;
   }
+  if (obj.kind === "note") return `Note · ${page} · ${layer}`;
+  if (obj.kind === "highlight") return `Highlight · ${page} · ${layer}`;
+  if (obj.kind === "underline") return `Underline · ${page} · ${layer}`;
+  if (obj.kind === "strikeout") return `Strikeout · ${page} · ${layer}`;
+  if (obj.kind === "markupInk") return `Ink annot · ${page} · ${layer}`;
   return `${isNearlySquare(obj.rect) ? "Square" : "Rectangle"} · ${page} · ${layer}`;
 }
 

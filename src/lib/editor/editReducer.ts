@@ -111,6 +111,12 @@ function applyUpdate(
       const next = { ...o, ...patch } as EditObject;
       if (patch.rect) {
         next.rect = normalizePdfRect(patch.rect);
+        if (
+          (next.kind === "highlight" || next.kind === "underline" || next.kind === "strikeout") &&
+          !("quads" in patch)
+        ) {
+          next.quads = quadsFromRect(next.rect);
+        }
       }
       return next;
     }),
@@ -408,5 +414,113 @@ export function makeLinkObject(
     pageIndex,
     rect: normalizePdfRect(rect),
     action,
+  };
+}
+
+function quadsFromRect(rect: PdfRect): number[] {
+  const r = normalizePdfRect(rect);
+  return [r.x, r.y, r.x + r.w, r.y, r.x + r.w, r.y + r.h, r.x, r.y + r.h];
+}
+
+export function makeNoteObject(
+  id: string,
+  pageIndex: number,
+  rect: PdfRect,
+  author: string,
+  color = "#f59e0b",
+  comment?: string,
+): import("./types").NoteObject {
+  return {
+    id,
+    kind: "note",
+    pageIndex,
+    rect: normalizePdfRect(rect),
+    author,
+    color,
+    comment,
+  };
+}
+
+export function makeHighlightObject(
+  id: string,
+  pageIndex: number,
+  rect: PdfRect,
+  author: string,
+  color = "#facc15",
+  comment?: string,
+): import("./types").HighlightObject {
+  const box = normalizePdfRect(rect);
+  return {
+    id,
+    kind: "highlight",
+    pageIndex,
+    rect: box,
+    author,
+    color,
+    comment,
+    quads: quadsFromRect(box),
+  };
+}
+
+export function makeUnderlineObject(
+  id: string,
+  pageIndex: number,
+  rect: PdfRect,
+  author: string,
+  color = "#2563eb",
+  comment?: string,
+): import("./types").UnderlineObject {
+  const box = normalizePdfRect(rect);
+  return {
+    id,
+    kind: "underline",
+    pageIndex,
+    rect: box,
+    author,
+    color,
+    comment,
+    quads: quadsFromRect(box),
+  };
+}
+
+export function makeStrikeoutObject(
+  id: string,
+  pageIndex: number,
+  rect: PdfRect,
+  author: string,
+  color = "#dc2626",
+  comment?: string,
+): import("./types").StrikeoutObject {
+  const box = normalizePdfRect(rect);
+  return {
+    id,
+    kind: "strikeout",
+    pageIndex,
+    rect: box,
+    author,
+    color,
+    comment,
+    quads: quadsFromRect(box),
+  };
+}
+
+export function makeMarkupInkObject(
+  id: string,
+  pageIndex: number,
+  strokes: Point[][],
+  author: string,
+  color = "#111827",
+  comment?: string,
+): import("./types").MarkupInkObject {
+  const points = strokes.flat();
+  return {
+    id,
+    kind: "markupInk",
+    pageIndex,
+    rect: pointsBounds(points),
+    strokes: strokes.map((s) => s.map((p) => ({ ...p }))),
+    author,
+    color,
+    comment,
   };
 }

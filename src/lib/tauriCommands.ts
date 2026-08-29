@@ -17,6 +17,7 @@ import type {
   ImagePreview,
   JobResult,
   JobUpdate,
+  ListedMarkup,
   OutlineItem,
   PdfLink,
   PageGroup,
@@ -259,6 +260,11 @@ export function listPdfLinks(inputPath: string): Promise<PdfLink[]> {
   return invoke<PdfLink[]>("list_pdf_links", { inputPath });
 }
 
+/** List leftover and session markup annots (paths in, JSON out). */
+export function listPdfAnnots(inputPath: string): Promise<ListedMarkup[]> {
+  return invoke<ListedMarkup[]>("list_pdf_annots", { inputPath });
+}
+
 /** Visually compare two pages; returns a diff-overlay image + changed percent. */
 export function diffPages(
   aPath: string,
@@ -292,6 +298,7 @@ export function editPdfOverlays(
   groups: PageGroup[],
   document: EditDocument,
   incompleteSourcePaths: string[] = [],
+  flattenAnnotations = false,
 ): Promise<JobResult> {
   return invoke<JobResult>("edit_pdf_overlays", {
     jobId,
@@ -299,6 +306,7 @@ export function editPdfOverlays(
     groups,
     document,
     incompleteSourcePaths,
+    flattenAnnotations,
   });
 }
 

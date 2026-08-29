@@ -69,12 +69,7 @@ fn write_letter_page(path: &Path, extras: &[(&[u8], Object)]) {
     doc.save(path).expect("write letter fixture");
 }
 
-fn write_visual_page(
-    path: &Path,
-    rotate: i64,
-    crop: Option<[i64; 4]>,
-    trim: Option<[i64; 4]>,
-) {
+fn write_visual_page(path: &Path, rotate: i64, crop: Option<[i64; 4]>, trim: Option<[i64; 4]>) {
     let mut doc = Document::with_version("1.5");
     let pages_id = doc.new_object_id();
     // All paint is resource-free vector content. The green rectangle is where
@@ -285,6 +280,162 @@ fn write_catalog_annots_fixture(
     doc.save(path).expect("write catalog+annots fixture");
 }
 
+/// Catalog fixture plus leftover `/Highlight` + leftover `/Link` (C3 / C5).
+fn write_leftover_highlight_link_fixture(path: &Path) {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET".to_vec(),
+    )));
+
+    let mut highlight = Dictionary::new();
+    highlight.set("Type", "Annot");
+    highlight.set("Subtype", "Highlight");
+    highlight.set("Rect", box_obj([100, 200, 180, 240]));
+    highlight.set("Contents", Object::string_literal("keep-me"));
+    highlight.set(
+        "QuadPoints",
+        Object::Array(vec![
+            Object::Integer(100),
+            Object::Integer(200),
+            Object::Integer(180),
+            Object::Integer(200),
+            Object::Integer(180),
+            Object::Integer(240),
+            Object::Integer(100),
+            Object::Integer(240),
+        ]),
+    );
+    let highlight_id = doc.add_object(Object::Dictionary(highlight));
+
+    let mut action = Dictionary::new();
+    action.set("S", "URI");
+    action.set("URI", Object::string_literal("https://keep.example/"));
+    let mut link = Dictionary::new();
+    link.set("Type", "Annot");
+    link.set("Subtype", "Link");
+    link.set("Rect", box_obj([200, 300, 280, 360]));
+    link.set("A", Object::Dictionary(action));
+    let link_id = doc.add_object(Object::Dictionary(link));
+
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set("Contents", content_id);
+    page.set("Annots", vec![highlight_id.into(), link_id.into()]);
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path)
+        .expect("write leftover highlight+link fixture");
+}
+
+fn write_malformed_annots_fixture(path: &Path) {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET".to_vec(),
+    )));
+
+    let mut missing_rect = Dictionary::new();
+    missing_rect.set("Type", "Annot");
+    missing_rect.set("Subtype", "Text");
+    missing_rect.set("Contents", Object::string_literal("no-rect"));
+    let missing_id = doc.add_object(Object::Dictionary(missing_rect));
+
+    let mut odd_quads = Dictionary::new();
+    odd_quads.set("Type", "Annot");
+    odd_quads.set("Subtype", "Highlight");
+    odd_quads.set("Rect", box_obj([100, 200, 180, 240]));
+    odd_quads.set(
+        "QuadPoints",
+        Object::Array(vec![
+            Object::Integer(100),
+            Object::Integer(200),
+            Object::Integer(180),
+            Object::Integer(200),
+            Object::Integer(180),
+            Object::Integer(240),
+            Object::Integer(100),
+        ]),
+    );
+    odd_quads.set("Contents", Object::string_literal("odd-quads"));
+    let odd_id = doc.add_object(Object::Dictionary(odd_quads));
+
+    let mut unknown = Dictionary::new();
+    unknown.set("Type", "Annot");
+    unknown.set("Subtype", "FooBar");
+    unknown.set("Rect", box_obj([10, 10, 40, 40]));
+    unknown.set("Contents", Object::string_literal("mystery"));
+    let unknown_id = doc.add_object(Object::Dictionary(unknown));
+
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set("Contents", content_id);
+    page.set(
+        "Annots",
+        vec![missing_id.into(), odd_id.into(), unknown_id.into()],
+    );
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path).expect("write malformed annots fixture");
+}
+
+fn dest_annot_subtypes(path: &Path) -> Vec<String> {
+    let doc = Document::load(path).expect("load dest");
+    let page = first_page_dict(&doc);
+    let Ok(annots) = page.get(b"Annots") else {
+        return Vec::new();
+    };
+    let arr = match annots {
+        Object::Array(a) => a.clone(),
+        Object::Reference(id) => match doc.get_object(*id) {
+            Ok(Object::Array(a)) => a.clone(),
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    arr.iter()
+        .filter_map(|raw| {
+            let dict = match raw {
+                Object::Dictionary(d) => d,
+                Object::Reference(id) => doc.get_dictionary(*id).ok()?,
+                _ => return None,
+            };
+            match dict.get(b"Subtype") {
+                Ok(Object::Name(n)) => Some(String::from_utf8_lossy(n).into_owned()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 fn assert_catalog_annots_survived(dest: &Path) {
     let out = Document::load(dest).expect("load dest");
     let info = match out.trailer.get(b"Info").ok() {
@@ -331,7 +482,10 @@ fn dump_streams(path: &Path) -> String {
 fn listed_re_ops(blob: &str) -> String {
     let mut ops = Vec::new();
     for (i, _) in blob.match_indices(" re") {
-        let start = blob[..i].rfind(|c: char| c == '\n' || c == '\r').map(|j| j + 1).unwrap_or(0);
+        let start = blob[..i]
+            .rfind(|c: char| c == '\n' || c == '\r')
+            .map(|j| j + 1)
+            .unwrap_or(0);
         let frag = blob[start..i + 3].trim();
         if frag
             .split_whitespace()
@@ -395,7 +549,10 @@ fn form_streams(path: &Path) -> Vec<(Dictionary, String)> {
             let bytes = stream
                 .get_plain_content()
                 .unwrap_or_else(|_| stream.content.clone());
-            Some((stream.dict.clone(), String::from_utf8_lossy(&bytes).into_owned()))
+            Some((
+                stream.dict.clone(),
+                String::from_utf8_lossy(&bytes).into_owned(),
+            ))
         })
         .collect()
 }
@@ -407,7 +564,9 @@ fn form_matrix(dict: &Dictionary) -> [f64; 6] {
     if values.len() != 6 {
         return [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     }
-    [values[0], values[1], values[2], values[3], values[4], values[5]]
+    [
+        values[0], values[1], values[2], values[3], values[4], values[5],
+    ]
 }
 
 fn transform_rect(rect: [f64; 4], m: [f64; 6]) -> [f64; 4] {
@@ -513,7 +672,9 @@ impl Harness {
                 if out.status.success() || code == Some(3) {
                     Ok(())
                 } else {
-                    Err(AppError::engine_failed(String::from_utf8_lossy(&out.stderr).to_string()))
+                    Err(AppError::engine_failed(
+                        String::from_utf8_lossy(&out.stderr).to_string(),
+                    ))
                 }
             },
         )
@@ -584,7 +745,7 @@ fn write_tiny_png(path: &Path, w: u32, h: u32) {
         .unwrap();
 }
 
-// L4 keepGreen: overlay-only stamp save keeps catalog keys.
+// L4 / C3 keepGreen: overlay-only stamp save keeps catalog keys.
 #[test]
 fn integ_catalog_survives_and_original_stream_stays() {
     let Some(fx) = Harness::new("catalog") else {
@@ -615,7 +776,10 @@ fn integ_catalog_survives_and_original_stream_stays() {
     assert!(cat.get(b"AcroForm").is_ok(), "AcroForm missing");
 
     let blob = dump_streams(&fx.dest);
-    assert!(blob.contains("Hello"), "original page stream rasterized away: {blob:?}");
+    assert!(
+        blob.contains("Hello"),
+        "original page stream rasterized away: {blob:?}"
+    );
     fx.cleanup();
 }
 
@@ -634,7 +798,8 @@ fn integ_crop_trim_places_rect_at_visible_origin() {
     );
     // Visible origin is (72,72). Align is full Trim, so overlay must keep 72,72
     // (not 0,0 as if we had used Crop as align).
-    fx.export(&filled_rect(72.0, 72.0, 20.0, 10.00)).expect("export");
+    fx.export(&filled_rect(72.0, 72.0, 20.0, 10.00))
+        .expect("export");
     let overlay = dump_streams(&fx.overlay_pdf());
     assert!(
         overlay.contains("72.00 72.00 20.00 10.00 re"),
@@ -663,11 +828,15 @@ fn integ_user_unit_not_double_scaled() {
         return;
     };
     write_letter_page(&fx.src, &[(b"UserUnit", Object::Real(2.0))]);
-    fx.export(&filled_rect(72.0, 100.0, 50.0, 20.0)).expect("export");
+    fx.export(&filled_rect(72.0, 100.0, 50.0, 20.0))
+        .expect("export");
 
     let dest = Document::load(&fx.dest).expect("load dest");
     let page = first_page_dict(&dest);
-    assert!((page_user_unit(&page) - 2.0).abs() < 1e-6, "UserUnit stripped");
+    assert!(
+        (page_user_unit(&page) - 2.0).abs() < 1e-6,
+        "UserUnit stripped"
+    );
     let media = page_box(&page, b"MediaBox").unwrap_or_default();
     assert!(
         media.len() == 4 && (media[2] - 612.0).abs() < 1.0 && (media[3] - 792.0).abs() < 1.0,
@@ -733,10 +902,22 @@ fn integ_rotate_90_image_meets_not_stretches() {
     const STRETCH: &str = "200.00 0 0 200.00 100.00 312.00 cm";
     let overlay = dump_streams(&fx.overlay_pdf());
     let dest_ops = dump_streams(&fx.dest);
-    assert!(overlay.contains(MEET), "expected meet blit {MEET} in {overlay}");
-    assert!(dest_ops.contains(MEET), "qpdf dest missing meet blit {MEET}: {dest_ops}");
-    assert!(!overlay.contains(STRETCH) && !dest_ops.contains(STRETCH), "must not stretch");
-    assert!(overlay.contains("/Im0 Do") && dest_ops.contains("/Im0 Do"), "missing image Do");
+    assert!(
+        overlay.contains(MEET),
+        "expected meet blit {MEET} in {overlay}"
+    );
+    assert!(
+        dest_ops.contains(MEET),
+        "qpdf dest missing meet blit {MEET}: {dest_ops}"
+    );
+    assert!(
+        !overlay.contains(STRETCH) && !dest_ops.contains(STRETCH),
+        "must not stretch"
+    );
+    assert!(
+        overlay.contains("/Im0 Do") && dest_ops.contains("/Im0 Do"),
+        "missing image Do"
+    );
     fx.cleanup();
 }
 
@@ -753,13 +934,20 @@ fn integ_rotate_270_shape_uses_displayed_overlay() {
         w: 40.0,
         h: 20.0,
     };
-    fx.export(&filled_rect(rect.x, rect.y, rect.w, rect.h)).expect("export");
+    fx.export(&filled_rect(rect.x, rect.y, rect.w, rect.h))
+        .expect("export");
     // Independent of pdf_rect_to_overlay: displayed AABB after Rotate 270.
     const EXPECTED: &str = "700.00 72.00 20.00 40.00 re";
     let overlay = dump_streams(&fx.overlay_pdf());
     let dest_ops = dump_streams(&fx.dest);
-    assert!(overlay.contains(EXPECTED), "expected {EXPECTED} in {overlay}");
-    assert!(dest_ops.contains(EXPECTED), "qpdf dest missing {EXPECTED}: {dest_ops}");
+    assert!(
+        overlay.contains(EXPECTED),
+        "expected {EXPECTED} in {overlay}"
+    );
+    assert!(
+        dest_ops.contains(EXPECTED),
+        "qpdf dest missing {EXPECTED}: {dest_ops}"
+    );
     let dest_page = first_page_dict(&Document::load(&fx.dest).unwrap());
     let rot = match dest_page.get(b"Rotate") {
         Ok(Object::Integer(i)) => *i,
@@ -799,11 +987,19 @@ fn integ_repeated_image_embeds_once() {
     fx.export(&doc).expect("export");
     let overlay_bytes = std::fs::read(fx.overlay_pdf()).unwrap();
     let overlay_text = String::from_utf8_lossy(&overlay_bytes);
-    assert_eq!(overlay_text.matches("/Subtype /Image").count(), 1, "{overlay_text}");
+    assert_eq!(
+        overlay_text.matches("/Subtype /Image").count(),
+        1,
+        "{overlay_text}"
+    );
     let overlay = dump_streams(&fx.overlay_pdf());
     let dest_ops = dump_streams(&fx.dest);
     assert_eq!(overlay.matches("/Im0 Do").count(), 2, "{overlay}");
-    assert_eq!(dest_ops.matches("/Im0 Do").count(), 2, "qpdf dest should stamp both Dos: {dest_ops}");
+    assert_eq!(
+        dest_ops.matches("/Im0 Do").count(),
+        2,
+        "qpdf dest should stamp both Dos: {dest_ops}"
+    );
     assert!(!overlay.contains("/Im1 Do") && !dest_ops.contains("/Im1 Do"));
     assert!(fx.dest.exists());
     fx.cleanup();
@@ -840,7 +1036,10 @@ fn integ_oversized_jpeg_is_rejected_without_dest() {
     };
     let err = fx.export(&doc).expect_err("oversized must fail");
     assert_eq!(err.code, "IMAGE_TOO_LARGE");
-    assert!(!fx.dest.exists(), "dest must not be created on image reject");
+    assert!(
+        !fx.dest.exists(),
+        "dest must not be created on image reject"
+    );
     fx.cleanup();
 }
 
@@ -932,7 +1131,8 @@ fn integ_trim_inside_crop_stamp_inside_trim_unshifted() {
         return;
     };
     write_letter_trim_inside_crop(&fx.src);
-    fx.export(&filled_rect(120.0, 120.0, 20.0, 10.0)).expect("export");
+    fx.export(&filled_rect(120.0, 120.0, 20.0, 10.0))
+        .expect("export");
 
     let overlay = dump_streams(&fx.overlay_pdf());
     let dest = dump_streams(&fx.dest);
@@ -957,7 +1157,8 @@ fn integ_trim_inside_crop_stamp_outside_trim_survives() {
         return;
     };
     write_letter_trim_inside_crop(&fx.src);
-    fx.export(&filled_rect(72.0, 72.0, 20.0, 10.0)).expect("export");
+    fx.export(&filled_rect(72.0, 72.0, 20.0, 10.0))
+        .expect("export");
 
     let dest = dump_streams(&fx.dest);
     assert!(
@@ -977,7 +1178,8 @@ fn integ_t1v_dest_page_cm_no_translation() {
         return;
     };
     write_letter_trim_inside_crop(&fx.src);
-    fx.export(&filled_rect(120.0, 120.0, 20.0, 10.0)).expect("export");
+    fx.export(&filled_rect(120.0, 120.0, 20.0, 10.0))
+        .expect("export");
 
     let overlay = dump_streams(&fx.overlay_pdf());
     let dest = dump_streams(&fx.dest);
@@ -1028,7 +1230,8 @@ fn integ_r1_rotate_90_trim_inside_crop_uses_visible() {
             (b"Rotate", Object::Integer(90)),
         ],
     );
-    fx.export(&filled_rect(72.0, 72.0, 20.0, 10.0)).expect("export");
+    fx.export(&filled_rect(72.0, 72.0, 20.0, 10.0))
+        .expect("export");
 
     // Independent of pdf_rect_to_overlay: Rotate 90 of (72,72,20,10)
     // against visible 612×792 → (72, 612-72-20, 10, 20).
@@ -1196,7 +1399,8 @@ fn integ_user_unit_10000_copied_not_clamped() {
         return;
     };
     write_letter_page(&fx.src, &[(b"UserUnit", Object::Real(10000.0))]);
-    fx.export(&filled_rect(72.0, 100.0, 50.0, 20.0)).expect("export");
+    fx.export(&filled_rect(72.0, 100.0, 50.0, 20.0))
+        .expect("export");
 
     let dest_doc = Document::load(&fx.dest).expect("load dest");
     let dest_page = first_page_dict(&dest_doc);
@@ -1252,6 +1456,7 @@ fn integ_two_page_overlay_keeps_source_streams_by_presence() {
     fx.cleanup();
 }
 
+// C keepGreen: overlay stamp save must still leave the fixture /Subtype /Text /Annots key.
 #[test]
 fn integ_catalog_annots_survive_rotate_90() {
     let Some(fx) = Harness::new("r2-rot90-annots") else {
@@ -1259,13 +1464,19 @@ fn integ_catalog_annots_survive_rotate_90() {
         return;
     };
     write_catalog_annots_fixture(&fx.src, 90, None, None);
-    fx.export(&text_box()).expect("export catalog+annots rotate 90");
+    fx.export(&text_box())
+        .expect("export catalog+annots rotate 90");
     assert_catalog_annots_survived(&fx.dest);
     let page = first_page_dict(&Document::load(&fx.dest).unwrap());
-    assert_eq!(page_rotate(&page), 90, "page /Rotate 90 must survive overlay");
+    assert_eq!(
+        page_rotate(&page),
+        90,
+        "page /Rotate 90 must survive overlay"
+    );
     fx.cleanup();
 }
 
+// C keepGreen: Trim⊂Crop overlay must still leave /Annots.
 #[test]
 fn integ_catalog_annots_survive_trim_inside_crop() {
     let Some(fx) = Harness::new("r2b-crop-annots") else {
@@ -1282,5 +1493,66 @@ fn integ_catalog_annots_survive_trim_inside_crop() {
         .expect("export catalog+annots Trim⊂Crop");
     assert_catalog_annots_survived(&fx.dest);
     assert_dest_boxes_trim_inside_crop(&fx.dest);
+    fx.cleanup();
+}
+
+#[test]
+fn integ_leftover_highlight_and_link_survive_stamp_only_save() {
+    let Some(fx) = Harness::new("c3-stamp-leftover") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_leftover_highlight_link_fixture(&fx.src);
+    fx.export(&text_box())
+        .expect("C3: stamp-only save must publish");
+    let kinds = dest_annot_subtypes(&fx.dest);
+    assert!(
+        kinds.iter().any(|s| s == "Highlight"),
+        "C3: leftover Highlight must survive stamp-only Save; got {kinds:?}"
+    );
+    assert!(
+        kinds.iter().any(|s| s == "Link"),
+        "C3: leftover Link must survive stamp-only Save; got {kinds:?}"
+    );
+    fx.cleanup();
+}
+
+#[test]
+fn integ_flatten_default_off_keeps_annots() {
+    let Some(fx) = Harness::new("c5-flatten-off") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_leftover_highlight_link_fixture(&fx.src);
+    fx.export(&text_box())
+        .expect("C5: default Save (flatten off) must publish");
+    let page = first_page_dict(&Document::load(&fx.dest).unwrap());
+    assert!(
+        page.get(b"Annots").is_ok(),
+        "C5: flatten default off must keep dest /Annots"
+    );
+    let kinds = dest_annot_subtypes(&fx.dest);
+    assert!(
+        kinds.iter().any(|s| s == "Highlight"),
+        "C5: flatten default off must keep leftover markup; got {kinds:?}"
+    );
+    fx.cleanup();
+}
+
+#[test]
+fn integ_malformed_annots_stamp_save_still_validates() {
+    let Some(fx) = Harness::new("c8-malformed-save") else {
+        eprintln!("skip: qpdf not available");
+        return;
+    };
+    write_malformed_annots_fixture(&fx.src);
+    fx.export(&text_box()).expect(
+        "C8: Save of a file with malformed /Annots must still hit validate_staged_pdf and publish",
+    );
+    let kinds = dest_annot_subtypes(&fx.dest);
+    assert!(
+        kinds.iter().any(|s| s == "FooBar"),
+        "C8: leftover unknown /Subtype must copy through Save; got {kinds:?}"
+    );
     fx.cleanup();
 }
