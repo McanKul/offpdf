@@ -31,6 +31,9 @@ export type {
   TextAlign,
   EditObject,
   EditDocument,
+  FormFieldKind,
+  FormField,
+  FormValue,
 } from "./types";
 export {
   createEmptyDocument,

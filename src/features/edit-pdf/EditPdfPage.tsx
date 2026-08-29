@@ -16,8 +16,9 @@ import {
 } from "@/components/pdf";
 import { useEditSession } from "@/components/pdf/editor";
 import { useJob, JobStatus, useDiskGuard } from "@/components/jobs";
-import { editPdfOverlays, listPdfLinks } from "@/lib/tauriCommands";
+import { editPdfOverlays, listPdfFormFields, listPdfLinks } from "@/lib/tauriCommands";
 import { getTool } from "@/lib/tools";
+import type { FormField, FormValue } from "@/lib/editor";
 import { estimateRequiredBytes, validateOutputName, joinPath } from "@/lib/validation";
 import { stripExt } from "@/lib/formatBytes";
 import { useSettingsStore } from "@/state/settingsStore";
@@ -75,6 +76,10 @@ export function EditPdfPage() {
   const [hydrateReady, setHydrateReady] = useState(
     () => files.every((f) => (f.pageCount ?? 0) === 0),
   );
+  const [formFields, setFormFields] = useState<FormField[]>([]);
+  const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState<string | null>(null);
+  const [flattenForm, setFlattenForm] = useState(false);
 
   useEffect(() => {
     const live = new Set(files.map((f) => f.uid));
@@ -145,6 +150,64 @@ export function EditPdfPage() {
     if (first) setName(`${stripExt(first.name)}-edited.pdf`);
   }, [first?.path]);
 
+  useEffect(() => {
+    if (!inTauri || files.length === 0) {
+      setFormFields([]);
+      setFormValues({});
+      setFormError(null);
+      return;
+    }
+    let active = true;
+    const primary = files[0].path;
+    const extras = files.slice(1).map((f) => f.path);
+    (async () => {
+      try {
+        for (const extra of extras) {
+          try {
+            const extraFields = await listPdfFormFields(extra);
+            if (!active) return;
+            if (extraFields.length > 0) {
+              setFormFields([]);
+              setFormValues({});
+              setFormError(
+                "Only the first PDF's form can be filled. Remove extra files that have form fields.",
+              );
+              return;
+            }
+          } catch {
+            if (!active) return;
+            setFormFields([]);
+            setFormValues({});
+            setFormError(
+              "Only the first PDF's form can be filled. An extra file has a form OffPDF cannot merge.",
+            );
+            return;
+          }
+        }
+        const listed = await listPdfFormFields(primary);
+        if (!active) return;
+        setFormError(null);
+        setFormFields(listed);
+        setFormValues((prev) => {
+          const next: Record<string, string> = {};
+          for (const f of listed) {
+            next[f.name] = prev[f.name] ?? f.value ?? "";
+          }
+          return next;
+        });
+      } catch (e) {
+        if (!active) return;
+        const err = e as { title?: string; message?: string; code?: string };
+        setFormFields([]);
+        setFormValues({});
+        setFormError(err.message ?? "Could not read form fields.");
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [files, inTauri]);
+
   useEffect(
     () => () => {
       discardResolve.current?.(false);
@@ -175,14 +238,23 @@ export function EditPdfPage() {
   const current = refs[viewIndex];
   const editCanvas = shouldShowEditCanvas(files.length, refs.length, inTauri);
 
+  const formPayload: FormValue[] = formFields.map((f) => ({
+    name: f.name,
+    value: formValues[f.name] ?? f.value ?? "",
+  }));
+  const formDirty = formFields.some((f) => (formValues[f.name] ?? "") !== (f.value ?? ""));
+  const canSaveEdits = doc.objects.length > 0 || formDirty || (flattenForm && formFields.length > 0);
+
   const start = async () => {
     if (refs.length === 0) return toast({ title: "Add a PDF first", variant: "error" });
     if (!hydrateReady) return toast({ title: "Still reading links from the PDF", variant: "error" });
+    if (formError) return toast({ title: "Cannot fill this form", description: formError, variant: "error" });
     if (
       emptyObjectsBlockSave({
         objectCount: doc.objects.length,
         hadHydratedLinks: hydratedLinkUids.current.size > 0,
-      })
+      }) &&
+      !canSaveEdits
     ) {
       return toast({ title: "Add something to the page first", variant: "error" });
     }
@@ -203,7 +275,7 @@ export function EditPdfPage() {
       files,
       new Set(hydrateErrors.current.keys()),
     );
-
+    const values = formDirty || flattenForm ? formPayload : [];
     await job.run(
       (id) =>
         editPdfOverlays(
@@ -212,9 +284,14 @@ export function EditPdfPage() {
           buildGroups(refs),
           toExportDocument(doc),
           incompletePaths,
+          values,
+          flattenForm,
           flattenAnnotations,
         ),
-      { tool: "editPdf", label: `Edit PDF · ${doc.objects.length} object${doc.objects.length === 1 ? "" : "s"}` },
+      {
+        tool: "editPdf",
+        label: `Edit PDF · ${doc.objects.length} object${doc.objects.length === 1 ? "" : "s"}`,
+      },
     );
   };
 
@@ -235,13 +312,29 @@ export function EditPdfPage() {
         <div className="col">
           <Input label="File name" value={name} onChange={(e) => setName(e.target.value)} placeholder="edited.pdf" />
           <OutputFolderPicker value={folder} onChange={setFolder} />
+          {formFields.length > 0 && (
+            <label className="row" style={{ gap: 8, alignItems: "center", fontSize: 13.5 }}>
+              <input
+                type="checkbox"
+                checked={flattenForm}
+                onChange={(e) => {
+                  setFlattenForm(e.target.checked);
+                  if (!e.target.checked) setFlattenAnnotations(false);
+                }}
+              />
+              Flatten form fields (widgets become page content)
+            </label>
+          )}
           <label className="field__label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input
               type="checkbox"
               checked={flattenAnnotations}
-              onChange={(e) => setFlattenAnnotations(e.target.checked)}
+              onChange={(e) => {
+                setFlattenAnnotations(e.target.checked);
+                if (e.target.checked && formFields.length > 0) setFlattenForm(true);
+              }}
             />
-            Flatten annotations
+            Flatten annotations{formFields.length > 0 ? " (includes form fields)" : ""}
           </label>
           <div className="row">
             <Button variant="primary" size="lg" onClick={start} disabled={!canStart} loading={job.isBusy} leftIcon={<Icon name="fileText" size={18} />}>
@@ -255,6 +348,9 @@ export function EditPdfPage() {
 
       {editCanvas === "edit" && refs.length > 0 && (
         <ToolSection label="Edit">
+          {formError && (
+            <Alert variant="warning">{formError}</Alert>
+          )}
           <PdfEditorCanvas
             sourcePath={current.path}
             sourcePage={current.page}
@@ -262,6 +358,9 @@ export function EditPdfPage() {
             pageCount={refs.length}
             session={session}
             onPageChange={setPageIndex}
+            formFields={current.path === first?.path ? formFields : []}
+            formValues={formValues}
+            onFormChange={(name, value) => setFormValues((prev) => ({ ...prev, [name]: value }))}
           />
         </ToolSection>
       )}

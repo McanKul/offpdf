@@ -735,6 +735,8 @@ mod tests {
     // --- V6 -----------------------------------------------------------------
 
     #[test]
+    // F12 keepGreen: snapshot acro_form: true + dest without /AcroForm stays
+    // INVALID_OUTPUT. Flatten-on must flip the snapshot instead of weakening V6.
     fn validate_missing_catalog_keys_is_invalid_output() {
         let scratch = Scratch::new("v6-catalog");
         let staged = scratch.path().join("staged.pdf");

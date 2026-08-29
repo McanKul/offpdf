@@ -174,6 +174,27 @@ describe("rotation: PDF export coords stable across display rotation", () => {
   });
 });
 
+describe("F13 form widget chrome uses unrotated PDF rect", () => {
+  it("maps widget /Rect [llx lly urx ury] as {x:llx,y:lly,w,h} on rotate 90 + Crop ≠ Media", () => {
+    // Widget /Rect [100 200 180 240] → EditObject.rect { x: 100, y: 200, w: 80, h: 40 }.
+    // Crop [72 72 540 720] ≠ Media. Overlay chrome uses pdfRectToViewport / geometry.box.
+    const g = geom({ x: 72, y: 72, w: 468, h: 648 }, 90);
+    const size = displayedSize(g);
+    expect(size).toEqual({ w: 648, h: 468 });
+    const m = makeMapping(g, size.w, size.h);
+    const widget: PdfRect = { x: 100, y: 200, w: 80, h: 40 };
+    const css = pdfRectToViewport(widget, m);
+    const back = viewportRectToPdf(css, m);
+    approx(back.x, 100);
+    approx(back.y, 200);
+    approx(back.w, 80);
+    approx(back.h, 40);
+    // Not display-swapped as { x: 200, y: 100, w: 40, h: 80 }.
+    expect(Math.abs(back.w - 40)).toBeGreaterThan(1);
+    expect(Math.abs(back.h - 80)).toBeGreaterThan(1);
+  });
+});
+
 describe("pdfRectToViewport / viewportRectToPdf", () => {
   it("round-trips a rect at 0°", () => {
     const m = makeMapping(letter, 612, 792);

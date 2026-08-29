@@ -64,10 +64,7 @@ fn file_too_large(path: &Path) -> AppError {
     AppError::new(
         "PDF_TOO_LARGE",
         "This PDF is too large to read annotations",
-        format!(
-            "\"{}\" is larger than 400 MB.",
-            path.display()
-        ),
+        format!("\"{}\" is larger than 400 MB.", path.display()),
     )
     .with_suggestion("Use a smaller file.")
 }
@@ -146,12 +143,7 @@ fn rect_xywh(nums: &[f64]) -> [f64; 4] {
     let y1 = nums[1];
     let x2 = nums[2];
     let y2 = nums[3];
-    [
-        x1.min(x2),
-        y1.min(y2),
-        (x2 - x1).abs(),
-        (y2 - y1).abs(),
-    ]
+    [x1.min(x2), y1.min(y2), (x2 - x1).abs(), (y2 - y1).abs()]
 }
 
 fn real_array(vals: impl IntoIterator<Item = f64>) -> Object {
@@ -334,7 +326,12 @@ fn build_session_annot(doc: &mut Document, item: &SessionMarkup) -> ObjectId {
         MarkupKind::Note => {
             annot.set("Name", Object::Name(b"Comment".to_vec()));
             annot.set("Open", Object::Boolean(false));
-            attach_appearance(doc, &mut annot, appearance_stream(rect_pdf, note_ap_content(rect_pdf, item.color)), false);
+            attach_appearance(
+                doc,
+                &mut annot,
+                appearance_stream(rect_pdf, note_ap_content(rect_pdf, item.color)),
+                false,
+            );
         }
         MarkupKind::Highlight => {
             let quads = item
@@ -384,9 +381,7 @@ fn build_session_annot(doc: &mut Document, item: &SessionMarkup) -> ObjectId {
             let strokes = item.ink_list.clone().unwrap_or_default();
             let ink_list: Vec<Object> = strokes
                 .iter()
-                .map(|stroke| {
-                    real_array(stroke.iter().flat_map(|p| [p[0], p[1]]))
-                })
+                .map(|stroke| real_array(stroke.iter().flat_map(|p| [p[0], p[1]])))
                 .collect();
             annot.set("InkList", Object::Array(ink_list));
             attach_appearance(
@@ -401,11 +396,7 @@ fn build_session_annot(doc: &mut Document, item: &SessionMarkup) -> ObjectId {
     doc.add_object(Object::Dictionary(annot))
 }
 
-fn keep_existing_annot(
-    doc: &Document,
-    entry: &Object,
-    session_ids: &HashSet<String>,
-) -> bool {
+fn keep_existing_annot(doc: &Document, entry: &Object, session_ids: &HashSet<String>) -> bool {
     let Some(dict) = resolve_dict(doc, entry) else {
         return true;
     };
@@ -531,6 +522,14 @@ pub fn apply_markup_annots(
     flatten: bool,
 ) -> Result<(), AppError> {
     let mut doc = load_doc(staged)?;
+    if flatten && crate::pdf_engine::validate_output::catalog_flags_from_doc(&doc).acro_form {
+        return Err(AppError::new(
+            "FORM_FLATTEN_REQUIRED",
+            "Flatten form fields first",
+            "Flattening all annotations would also remove interactive form fields.",
+        )
+        .with_suggestion("Enable Flatten form fields, then save again."));
+    }
     let session_ids: HashSet<String> = session
         .iter()
         .filter(|s| !s.id.is_empty())
@@ -546,7 +545,9 @@ pub fn apply_markup_annots(
         let page_index = page_1based.saturating_sub(1);
         let empty: Vec<&SessionMarkup> = Vec::new();
         let items = by_page.get(&page_index).unwrap_or(&empty);
-        if items.is_empty() && session_ids.is_empty() && page_annot_objects(&doc, *page_id).is_empty()
+        if items.is_empty()
+            && session_ids.is_empty()
+            && page_annot_objects(&doc, *page_id).is_empty()
         {
             continue;
         }

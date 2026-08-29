@@ -18,7 +18,7 @@ import { useToast } from "@/components/ui/Toast";
 import { listPdfAnnots, pagePdf, pickImageFile, previewImage } from "@/lib/tauriCommands";
 import { toAppError } from "@/lib/types";
 import { base64ToBytes } from "@/lib/pdfjs";
-import type { EditObject, ShapeStyle } from "@/lib/editor";
+import type { EditObject, FormField, ShapeStyle } from "@/lib/editor";
 import type { ListedMarkup } from "@/lib/types";
 import {
   cloneObject,
@@ -33,6 +33,7 @@ import {
 } from "@/lib/editor";
 import { PageSurface, type PageLayout } from "./PageSurface";
 import { EditorOverlay, type EditorTool } from "./EditorOverlay";
+import { FormFieldsOverlay } from "./FormFieldsOverlay";
 import { ObjectList } from "./ObjectList";
 import { ObjectInspector, type ColorPickTarget } from "./ObjectInspector";
 import { ShapePicker, SHAPE_TOOLS } from "./ShapePicker";
@@ -83,6 +84,9 @@ export function PdfEditorCanvas({
   pageCount,
   session,
   onPageChange,
+  formFields = [],
+  formValues = {},
+  onFormChange,
 }: {
   sourcePath: string;
   /** 1-based page number inside `sourcePath` (pagePdf). */
@@ -92,6 +96,9 @@ export function PdfEditorCanvas({
   pageCount: number;
   session: EditSession;
   onPageChange?: (pageIndex: number) => void;
+  formFields?: FormField[];
+  formValues?: Record<string, string>;
+  onFormChange?: (name: string, value: string) => void;
 }) {
   const { toast } = useToast();
   const [zoom, setZoom] = useState(1);
@@ -653,6 +660,15 @@ export function PdfEditorCanvas({
                 onLayout={setLayout}
                 onFail={(reason) => setLoadError(reason ?? "Could not render this page.")}
               />
+              {layout && onFormChange && (
+                <FormFieldsOverlay
+                  layout={layout}
+                  fields={formFields}
+                  values={formValues}
+                  sourcePage={sourcePage}
+                  onChange={onFormChange}
+                />
+              )}
               {layout && (
                 <EditorOverlay
                   layout={layout}

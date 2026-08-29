@@ -93,7 +93,11 @@ pub async fn pdf_to_images(
     registry.remove(&job_id);
     let output_paths = res?;
     let _ = app.emit("job:update", JobUpdate::new(&job_id, "completed", "Done"));
-    Ok(JobResult { job_id, output_paths, status: "completed".to_string() })
+    Ok(JobResult {
+        job_id,
+        output_paths,
+        status: "completed".to_string(),
+    })
 }
 
 /// Per-page text of a PDF, for in-app search. Only text crosses IPC.
@@ -107,10 +111,26 @@ pub async fn pdf_text(app: tauri::AppHandle, input_path: String) -> Result<Vec<S
 /// One page as a small standalone PDF (base64), for true-vector zoom with pdf.js.
 /// Returns null when the page is too large to load into the webview.
 #[tauri::command]
-pub async fn page_pdf(app: tauri::AppHandle, input_path: String, page: u32) -> Result<Option<String>, AppError> {
+pub async fn page_pdf(
+    app: tauri::AppHandle,
+    input_path: String,
+    page: u32,
+) -> Result<Option<String>, AppError> {
     tauri::async_runtime::spawn_blocking(move || render::page_pdf_b64(&app, &input_path, page))
         .await
         .map_err(|e| AppError::io("Could not read the page.", e))?
+}
+
+/// AcroForm fields on `input_path` (paths in, JSON out). Never PDF bytes.
+#[tauri::command]
+pub async fn list_pdf_form_fields(
+    input_path: String,
+) -> Result<Vec<crate::pdf_engine::edit_forms::FormField>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::pdf_engine::edit_forms::list_form_fields(&input_path)
+    })
+    .await
+    .map_err(|e| AppError::io("Could not read the form fields.", e))?
 }
 
 /// List leftover and session markup annots (paths in, JSON out). Never PDF bytes.
@@ -158,9 +178,11 @@ pub async fn diff_pages(
     b_page: u32,
     size: u32,
 ) -> Result<crate::models::DiffResult, AppError> {
-    tauri::async_runtime::spawn_blocking(move || render::diff_pages(&app, &a_path, a_page, &b_path, b_page, size))
-        .await
-        .map_err(|e| AppError::io("Could not compare the pages.", e))?
+    tauri::async_runtime::spawn_blocking(move || {
+        render::diff_pages(&app, &a_path, a_page, &b_path, b_page, size)
+    })
+    .await
+    .map_err(|e| AppError::io("Could not compare the pages.", e))?
 }
 
 /// Whether Tesseract (OCR) is available.
@@ -192,7 +214,11 @@ pub async fn ocr_pdf(
     registry.remove(&job_id);
     let output_paths = res?;
     let _ = app.emit("job:update", JobUpdate::new(&job_id, "completed", "Done"));
-    Ok(JobResult { job_id, output_paths, status: "completed".to_string() })
+    Ok(JobResult {
+        job_id,
+        output_paths,
+        status: "completed".to_string(),
+    })
 }
 
 /// Whether LibreOffice is available (controls Office conversion features).
@@ -264,8 +290,7 @@ pub async fn office_to_pdf_batch(
                     office::to_pdf(&app2, Some(&handle), inp, &scratch.to_string_lossy())?;
                 let mut k = 2;
                 let target = loop {
-                    let cand =
-                        std::path::Path::new(&output_dir).join(format!("{stem} ({k}).pdf"));
+                    let cand = std::path::Path::new(&output_dir).join(format!("{stem} ({k}).pdf"));
                     let cand_str = cand.to_string_lossy().to_string();
                     if !taken.contains(&cand_str) && !cand.exists() {
                         break cand_str;
@@ -286,7 +311,11 @@ pub async fn office_to_pdf_batch(
     registry.remove(&job_id);
     let output_paths = res?;
     let _ = app.emit("job:update", JobUpdate::new(&job_id, "completed", "Done"));
-    Ok(JobResult { job_id, output_paths, status: "completed".to_string() })
+    Ok(JobResult {
+        job_id,
+        output_paths,
+        status: "completed".to_string(),
+    })
 }
 
 /// Convert the combined document to PDF/A-2b (via LibreOffice).
@@ -312,11 +341,18 @@ pub async fn pdfa_pdf(
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "output".into());
         let work = temp::root(&app2)?.join("work").join(&jid);
-        std::fs::create_dir_all(&work).map_err(|e| AppError::io("Could not create a temp directory.", e))?;
-        let merged = work.join(format!("{stem}.pdf")).to_string_lossy().to_string();
+        std::fs::create_dir_all(&work)
+            .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
+        let merged = work
+            .join(format!("{stem}.pdf"))
+            .to_string_lossy()
+            .to_string();
         let result = (|| -> Result<Vec<String>, AppError> {
             crate::pdf_engine::assemble(&app2, &handle, &jid, &groups, &merged)?;
-            let _ = app2.emit("job:update", JobUpdate::new(&jid, "running", "Converting to PDF/A"));
+            let _ = app2.emit(
+                "job:update",
+                JobUpdate::new(&jid, "running", "Converting to PDF/A"),
+            );
             let produced = office::to_pdfa(&app2, Some(&handle), &merged, &out_dir)?;
             Ok(vec![produced])
         })();
@@ -328,7 +364,11 @@ pub async fn pdfa_pdf(
     registry.remove(&job_id);
     let output_paths = res?;
     let _ = app.emit("job:update", JobUpdate::new(&job_id, "completed", "Done"));
-    Ok(JobResult { job_id, output_paths, status: "completed".to_string() })
+    Ok(JobResult {
+        job_id,
+        output_paths,
+        status: "completed".to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -363,9 +403,11 @@ pub async fn detect_blank_pages(
 pub async fn read_pdf_meta(
     input_path: String,
 ) -> Result<crate::pdf_engine::metadata::PdfMeta, AppError> {
-    tauri::async_runtime::spawn_blocking(move || crate::pdf_engine::metadata::read_meta(&input_path))
-        .await
-        .map_err(|e| AppError::io("Could not read the metadata.", e))?
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::pdf_engine::metadata::read_meta(&input_path)
+    })
+    .await
+    .map_err(|e| AppError::io("Could not read the metadata.", e))?
 }
 
 /// Write /Info metadata to a copy of the PDF. Empty/null fields are removed;
@@ -386,7 +428,13 @@ pub async fn write_pdf_meta(
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
         crate::pdf_engine::metadata::write_meta(
-            &app2, &handle, &jid, &input_path, &output_path, &fields, clear_all,
+            &app2,
+            &handle,
+            &jid,
+            &input_path,
+            &output_path,
+            &fields,
+            clear_all,
         )
     })
     .await
@@ -394,7 +442,11 @@ pub async fn write_pdf_meta(
     registry.remove(&job_id);
     let output_paths = res?;
     let _ = app.emit("job:update", JobUpdate::new(&job_id, "completed", "Done"));
-    Ok(JobResult { job_id, output_paths, status: "completed".to_string() })
+    Ok(JobResult {
+        job_id,
+        output_paths,
+        status: "completed".to_string(),
+    })
 }
 
 /// Export a PDF's text (whole document or a page range) to a UTF-8 .txt file.
@@ -413,7 +465,13 @@ pub async fn export_pdf_text(
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
         crate::pdf_engine::textexport::export_text(
-            &app2, &handle, &jid, &input_path, &output_path, first_page, last_page,
+            &app2,
+            &handle,
+            &jid,
+            &input_path,
+            &output_path,
+            first_page,
+            last_page,
         )
     })
     .await
@@ -421,7 +479,11 @@ pub async fn export_pdf_text(
     registry.remove(&job_id);
     let output_paths = res?;
     let _ = app.emit("job:update", JobUpdate::new(&job_id, "completed", "Done"));
-    Ok(JobResult { job_id, output_paths, status: "completed".to_string() })
+    Ok(JobResult {
+        job_id,
+        output_paths,
+        status: "completed".to_string(),
+    })
 }
 
 /// "PDF → Office": assemble the combined document, then convert to docx/pptx/xlsx.
@@ -444,7 +506,10 @@ pub async fn pdf_to_office(
         // LibreOffice names its output after the input stem, so name the
         // intermediate merged PDF after the user's first source file — the
         // converted document then gets a meaningful name (not "merged.docx").
-        let base_stem = groups.first().map(|g| stem_of(&g.path)).unwrap_or_else(|| "document".into());
+        let base_stem = groups
+            .first()
+            .map(|g| stem_of(&g.path))
+            .unwrap_or_else(|| "document".into());
         // Never silently overwrite an existing file in the output folder.
         let mut stem = base_stem.clone();
         let mut k = 2;
@@ -471,5 +536,9 @@ pub async fn pdf_to_office(
     registry.remove(&job_id);
     let output_paths = res?;
     let _ = app.emit("job:update", JobUpdate::new(&job_id, "completed", "Done"));
-    Ok(JobResult { job_id, output_paths, status: "completed".to_string() })
+    Ok(JobResult {
+        job_id,
+        output_paths,
+        status: "completed".to_string(),
+    })
 }

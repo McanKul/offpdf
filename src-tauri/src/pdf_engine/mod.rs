@@ -8,14 +8,13 @@
 pub mod blank;
 pub mod compress;
 pub mod crop;
+pub mod edit_annots;
+pub mod edit_forms;
 pub mod edit_image;
 pub mod edit_links;
-pub mod edit_annots;
 pub mod edit_overlay;
 #[cfg(test)]
 mod edit_overlay_integ;
-#[cfg(test)]
-mod source_edit_fixtures;
 pub mod metadata;
 pub mod nup;
 pub mod ocr;
@@ -25,6 +24,8 @@ pub mod overlay;
 pub mod poster;
 pub mod qpdf;
 pub mod render;
+#[cfg(test)]
+mod source_edit_fixtures;
 pub mod stamp;
 pub mod textexport;
 pub mod validate_output;
@@ -119,7 +120,11 @@ fn parse_pages(spec: &str) -> Result<Vec<u32>, AppError> {
         if let Some((a, b)) = part.split_once('-') {
             let start: u32 = a.trim().parse().map_err(|_| bad_pages(spec))?;
             let end: u32 = b.trim().parse().map_err(|_| bad_pages(spec))?;
-            let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
+            let (lo, hi) = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
             for n in lo..=hi {
                 out.push(n);
             }
@@ -219,7 +224,15 @@ pub fn assemble(
         require_input(&g.path)?;
     }
     ensure_output_dir(output)?;
-    assemble_groups(app, handle, job_id, groups, output, "Assembling pages", None)?;
+    assemble_groups(
+        app,
+        handle,
+        job_id,
+        groups,
+        output,
+        "Assembling pages",
+        None,
+    )?;
     Ok(vec![output.to_string()])
 }
 
@@ -338,14 +351,19 @@ pub fn protect(
     ensure_output_dir(output)?;
 
     let work = temp::root(app)?.join("work").join(job_id);
-    std::fs::create_dir_all(&work).map_err(|e| AppError::io("Could not create a temp directory.", e))?;
+    std::fs::create_dir_all(&work)
+        .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
     let merged = work.join("merged.pdf");
     let merged_str = merged.to_string_lossy().to_string();
 
     let result = (|| -> Result<Vec<String>, AppError> {
         assemble_groups(app, handle, job_id, groups, &merged_str, "Preparing", None)?;
         // Owner password defaults to the user password when omitted.
-        let owner = if owner_password.is_empty() { user_password } else { owner_password };
+        let owner = if owner_password.is_empty() {
+            user_password
+        } else {
+            owner_password
+        };
         let args: Vec<String> = vec![
             "--encrypt".into(),
             user_password.to_string(),
@@ -383,7 +401,8 @@ pub fn unlock(
     match run_qpdf(app, handle, job_id, &args, "Removing password", None) {
         Ok(()) => Ok(vec![output.to_string()]),
         Err(e) => {
-            let d = format!("{} {}", e.message, e.details.clone().unwrap_or_default()).to_lowercase();
+            let d =
+                format!("{} {}", e.message, e.details.clone().unwrap_or_default()).to_lowercase();
             if d.contains("password") || d.contains("invalid") {
                 Err(AppError::new(
                     "WRONG_PASSWORD",
@@ -458,8 +477,10 @@ pub fn delete(
     ensure_output_dir(output)?;
 
     let n = qpdf::npages(app, input)?;
-    let remove: std::collections::HashSet<u32> =
-        parse_pages(pages)?.into_iter().filter(|p| *p >= 1 && *p <= n).collect();
+    let remove: std::collections::HashSet<u32> = parse_pages(pages)?
+        .into_iter()
+        .filter(|p| *p >= 1 && *p <= n)
+        .collect();
 
     let keep: Vec<u32> = (1..=n).filter(|p| !remove.contains(p)).collect();
     if keep.is_empty() {
@@ -603,14 +624,22 @@ pub fn optimize(
     if groups.len() == 1
         && spec_is_full_range(&groups[0].pages, qpdf::npages(app, &groups[0].path)?)
     {
-        let in_size = std::fs::metadata(&groups[0].path).map(|m| m.len()).unwrap_or(0);
-        let out_size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(u64::MAX);
+        let in_size = std::fs::metadata(&groups[0].path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let out_size = std::fs::metadata(output)
+            .map(|m| m.len())
+            .unwrap_or(u64::MAX);
         if in_size > 0 && out_size >= in_size {
             std::fs::copy(&groups[0].path, output)
                 .map_err(|e| AppError::io("Could not write the output file.", e))?;
             let _ = app.emit(
                 "job:update",
-                JobUpdate::new(job_id, "running", "Already optimal — kept the original file"),
+                JobUpdate::new(
+                    job_id,
+                    "running",
+                    "Already optimal — kept the original file",
+                ),
             );
         }
     }
@@ -656,7 +685,15 @@ pub fn split(
                 let groups = picks_to_groups(slice);
                 let percent = (part as f32 / total_chunks as f32) * 100.0;
                 let step = format!("Writing part {part} of {total_chunks}");
-                assemble_groups(app, handle, job_id, &groups, &outfile_str, &step, Some(percent))?;
+                assemble_groups(
+                    app,
+                    handle,
+                    job_id,
+                    &groups,
+                    &outfile_str,
+                    &step,
+                    Some(percent),
+                )?;
                 outputs.push(outfile_str);
             }
             Ok(outputs)
@@ -682,7 +719,10 @@ pub fn split(
                     return Err(AppError::new(
                         "INVALID_RANGE",
                         "Range out of bounds",
-                        format!("Range {}-{} is outside the {n}-page document.", r.start, r.end),
+                        format!(
+                            "Range {}-{} is outside the {n}-page document.",
+                            r.start, r.end
+                        ),
                     ));
                 }
                 let slice = &picks[(lo as usize - 1)..=(hi as usize - 1)];
@@ -691,7 +731,15 @@ pub fn split(
                 let groups = picks_to_groups(slice);
                 let percent = ((idx + 1) as f32 / total as f32) * 100.0;
                 let step = format!("Writing range {} of {total}", idx + 1);
-                assemble_groups(app, handle, job_id, &groups, &outfile_str, &step, Some(percent))?;
+                assemble_groups(
+                    app,
+                    handle,
+                    job_id,
+                    &groups,
+                    &outfile_str,
+                    &step,
+                    Some(percent),
+                )?;
                 outputs.push(outfile_str);
             }
             Ok(outputs)
