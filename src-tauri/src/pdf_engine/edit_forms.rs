@@ -199,11 +199,7 @@ pub fn list_form_fields(path: &str) -> Result<Vec<FormField>, AppError> {
         .collect())
 }
 
-pub fn apply_form_values(
-    path: &str,
-    values: &[FormValue],
-    flatten: bool,
-) -> Result<(), AppError> {
+pub fn apply_form_values(path: &str, values: &[FormValue], flatten: bool) -> Result<(), AppError> {
     super::require_input(path)?;
     size_gate(path)?;
     let mut doc = load_doc(path)?;
@@ -281,9 +277,7 @@ pub fn extra_files_have_fields(paths: &[&str]) -> Result<(), AppError> {
                 return Err(AppError::new(
                     "EXTRA_FILE_HAS_FORM",
                     "Only the first PDF's form can be filled",
-                    format!(
-                        "\"{path}\" also has form fields. OffPDF fills the primary file only."
-                    ),
+                    format!("\"{path}\" also has form fields. OffPDF fills the primary file only."),
                 )
                 .with_suggestion(
                     "Remove extra files that have forms, or fill each PDF on its own.",
@@ -312,16 +306,14 @@ fn size_gate(input: &str) -> Result<(), AppError> {
 }
 
 fn load_doc(path: &str) -> Result<Document, AppError> {
-    Document::load(path).map_err(|e| AppError::invalid_pdf(path).with_details(format!("lopdf: {e}")))
+    Document::load(path)
+        .map_err(|e| AppError::invalid_pdf(path).with_details(format!("lopdf: {e}")))
 }
 
 fn malformed(message: impl Into<String>) -> AppError {
-    AppError::new(
-        "MALFORMED_FORM",
-        "This PDF form cannot be read",
-        message,
+    AppError::new("MALFORMED_FORM", "This PDF form cannot be read", message).with_suggestion(
+        "Open the file in a PDF editor that can repair forms, or use a different PDF.",
     )
-    .with_suggestion("Open the file in a PDF editor that can repair forms, or use a different PDF.")
 }
 
 fn unsupported_xfa() -> AppError {
@@ -557,7 +549,9 @@ fn resolve_dict<'a>(
         Object::Dictionary(d) => Ok((d, None)),
         Object::Reference(id) => match doc.get_object(*id) {
             Ok(Object::Dictionary(d)) => Ok((d, Some(*id))),
-            Ok(_) => Err(malformed("A form field reference does not point at a dictionary.")),
+            Ok(_) => Err(malformed(
+                "A form field reference does not point at a dictionary.",
+            )),
             Err(_) => Err(malformed("A form field reference is missing.")),
         },
         _ => Err(malformed("A form field entry is not a dictionary.")),
@@ -1096,7 +1090,12 @@ fn set_inline_field_v(doc: &mut Document, index: usize, v: Object) -> Result<(),
 }
 
 fn clear_need_appearances(doc: &mut Document) -> Result<(), AppError> {
-    let root = match doc.trailer.get(b"Root").ok().and_then(|o| o.as_reference().ok()) {
+    let root = match doc
+        .trailer
+        .get(b"Root")
+        .ok()
+        .and_then(|o| o.as_reference().ok())
+    {
         Some(id) => id,
         None => return Ok(()),
     };
@@ -1197,17 +1196,19 @@ fn appearance_stream_id(doc: &Document, dict: &Dictionary) -> Option<ObjectId> {
     }
 }
 
-fn pick_state_stream(_doc: &Document, widget: &Dictionary, states: &Dictionary) -> Option<ObjectId> {
+fn pick_state_stream(
+    _doc: &Document,
+    widget: &Dictionary,
+    states: &Dictionary,
+) -> Option<ObjectId> {
     let as_name = match widget.get(b"AS") {
         Ok(Object::Name(n)) => n.clone(),
         _ => b"Off".to_vec(),
     };
-    let pick = states.get(&as_name).ok().or_else(|| {
-        states
-            .iter()
-            .find(|(k, _)| *k != b"Off")
-            .map(|(_, v)| v)
-    })?;
+    let pick = states
+        .get(&as_name)
+        .ok()
+        .or_else(|| states.iter().find(|(k, _)| *k != b"Off").map(|(_, v)| v))?;
     pick.as_reference().ok()
 }
 
@@ -1216,17 +1217,8 @@ fn attach_xobjects_and_content(
     page_id: ObjectId,
     paints: &[(FormRect, ObjectId)],
 ) -> Result<(), AppError> {
-    let resources_id = {
-        let page = doc
-            .get_dictionary(page_id)
-            .map_err(|e| AppError::engine_failed(format!("page: {e}")))?;
-        match page.get(b"Resources").ok() {
-            Some(Object::Reference(id)) => Some(*id),
-            _ => None,
-        }
-    };
-
-    let existing_entries = collect_xobject_entries(doc, page_id, resources_id);
+    let resources = effective_page_resources(doc, page_id)?;
+    let existing_entries = collect_xobject_entries(doc, &resources);
     let mut used: HashSet<Vec<u8>> = existing_entries.iter().map(|(k, _)| k.clone()).collect();
     let mut ops = String::new();
     let mut added: Vec<(Vec<u8>, ObjectId)> = Vec::new();
@@ -1242,7 +1234,7 @@ fn attach_xobjects_and_content(
         added.push((name, *ap_id));
     }
 
-    merge_xobjects_onto_resources(doc, page_id, resources_id, &existing_entries, &added);
+    merge_xobjects_onto_resources(doc, page_id, resources, &existing_entries, &added);
 
     let mut stream_dict = Dictionary::new();
     stream_dict.set("Length", Object::Integer(ops.len() as i64));
@@ -1267,25 +1259,43 @@ fn attach_xobjects_and_content(
     Ok(())
 }
 
-/// Existing `/XObject` name → object, whether `/Resources` / `/XObject` are
-/// inline dicts or references. Empty when the page has neither.
-fn collect_xobject_entries(
-    doc: &Document,
-    page_id: ObjectId,
-    resources_id: Option<ObjectId>,
-) -> Vec<(Vec<u8>, Object)> {
-    let res = if let Some(rid) = resources_id {
-        match doc.get_dictionary(rid) {
-            Ok(d) => d,
-            Err(_) => return Vec::new(),
+/// Resolve the nearest page-tree `/Resources` dictionary. The returned clone
+/// can safely be installed on one page without mutating resources shared by
+/// sibling pages.
+fn effective_page_resources(doc: &Document, page_id: ObjectId) -> Result<Dictionary, AppError> {
+    let mut current = Some(page_id);
+    for _ in 0..=32 {
+        let Some(id) = current else {
+            return Ok(Dictionary::new());
+        };
+        let dict = doc
+            .get_dictionary(id)
+            .map_err(|e| AppError::engine_failed(format!("page resources: {e}")))?;
+        if let Ok(resources) = dict.get(b"Resources") {
+            return match resources {
+                Object::Dictionary(resources) => Ok(resources.clone()),
+                Object::Reference(resources_id) => doc
+                    .get_dictionary(*resources_id)
+                    .cloned()
+                    .map_err(|e| AppError::engine_failed(format!("page resources: {e}"))),
+                _ => Err(AppError::engine_failed(
+                    "Page /Resources is not a dictionary.",
+                )),
+            };
         }
-    } else {
-        match doc.get_dictionary(page_id).ok().and_then(|p| p.get(b"Resources").ok()) {
-            Some(Object::Dictionary(d)) => d,
-            _ => return Vec::new(),
-        }
-    };
-    match res.get(b"XObject").ok() {
+        current = dict
+            .get(b"Parent")
+            .ok()
+            .and_then(|parent| parent.as_reference().ok());
+    }
+    Err(AppError::engine_failed(
+        "Page resource inheritance is too deep or cyclic.",
+    ))
+}
+
+/// Existing `/XObject` name → object when `/XObject` is inline or referenced.
+fn collect_xobject_entries(doc: &Document, resources: &Dictionary) -> Vec<(Vec<u8>, Object)> {
+    match resources.get(b"XObject").ok() {
         Some(Object::Dictionary(d)) => d.iter().map(|(k, v)| (k.to_vec(), v.clone())).collect(),
         Some(Object::Reference(id)) => match doc.get_dictionary(*id) {
             Ok(d) => d.iter().map(|(k, v)| (k.to_vec(), v.clone())).collect(),
@@ -1306,12 +1316,13 @@ fn unused_flatten_name(used: &mut HashSet<Vec<u8>>) -> Vec<u8> {
     }
 }
 
-/// Merge flatten paints into the existing `/XObject` on the same Resources
-/// object. No-Resources / no-XObject creates a flatten-only dict (F12).
+/// Install a page-local clone of the effective resources and merge flatten
+/// paints into its `/XObject`. This preserves inherited fonts, color spaces and
+/// XObjects without changing resources shared by sibling pages.
 fn merge_xobjects_onto_resources(
     doc: &mut Document,
     page_id: ObjectId,
-    resources_id: Option<ObjectId>,
+    mut resources: Dictionary,
     existing_entries: &[(Vec<u8>, Object)],
     added: &[(Vec<u8>, ObjectId)],
 ) {
@@ -1323,21 +1334,9 @@ fn merge_xobjects_onto_resources(
         merged.set(name.clone(), Object::Reference(*ap_id));
     }
 
-    if let Some(rid) = resources_id {
-        if let Ok(Object::Dictionary(res)) = doc.get_object_mut(rid) {
-            res.set("XObject", Object::Dictionary(merged));
-        }
-        return;
-    }
-
+    resources.set("XObject", Object::Dictionary(merged));
     if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
-        if let Ok(Object::Dictionary(res)) = page.get_mut(b"Resources") {
-            res.set("XObject", Object::Dictionary(merged));
-        } else {
-            let mut res = Dictionary::new();
-            res.set("XObject", Object::Dictionary(merged));
-            page.set("Resources", Object::Dictionary(res));
-        }
+        page.set("Resources", Object::Dictionary(resources));
     }
 }
 
@@ -1384,7 +1383,8 @@ impl NotoFont {
 
 fn load_noto() -> Result<NotoFont, AppError> {
     let path = noto_path()?;
-    let data = std::fs::read(&path).map_err(|e| AppError::io("Could not read the editor font.", e))?;
+    let data =
+        std::fs::read(&path).map_err(|e| AppError::io("Could not read the editor font.", e))?;
     NotoFont::parse(data)
 }
 
@@ -1412,7 +1412,10 @@ fn embed_noto(doc: &mut Document, font: &NotoFont, used: &[char]) -> Result<Obje
     let mut fontfile_dict = Dictionary::new();
     fontfile_dict.set("Length", Object::Integer(font.data.len() as i64));
     fontfile_dict.set("Length1", Object::Integer(font.data.len() as i64));
-    let fontfile = doc.add_object(Object::Stream(Stream::new(fontfile_dict, font.data.clone())));
+    let fontfile = doc.add_object(Object::Stream(Stream::new(
+        fontfile_dict,
+        font.data.clone(),
+    )));
 
     let sc = font.scale();
     let bb: [i32; 4] = font.bbox.map(|v| (v as f64 * sc).round() as i32);
@@ -1438,7 +1441,9 @@ fn embed_noto(doc: &mut Document, font: &NotoFont, used: &[char]) -> Result<Obje
     for (gid, _) in &pairs {
         if *gid != 0 {
             w_arr.push(Object::Integer(*gid as i64));
-            w_arr.push(Object::Array(vec![Object::Integer(font.width(*gid) as i64)]));
+            w_arr.push(Object::Array(vec![
+                Object::Integer(font.width(*gid) as i64),
+            ]));
         }
     }
     let mut cid_sys = Dictionary::new();
@@ -1506,7 +1511,11 @@ fn build_text_ap(
     h: f64,
     multiline: bool,
 ) -> Result<ObjectId, AppError> {
-    let size = if h > 6.0 { (h - 4.0).clamp(8.0, 12.0) } else { 8.0 };
+    let size = if h > 6.0 {
+        (h - 4.0).clamp(8.0, 12.0)
+    } else {
+        8.0
+    };
     let lines = if multiline {
         wrap_ap_text(font, text, size, (w - 4.0).max(8.0))
     } else {
@@ -2215,7 +2224,13 @@ mod tests {
         f.push_merged_text("Name", "OldName", [72, 640, 240, 664], "OLD-NAME");
         f.push_checkbox("Agree", "Yes", false, [72, 600, 90, 618]);
         f.push_radio_group("Color", &["Red", "Blue"], "Red", [72, 560, 90, 578]);
-        f.push_choice("City", "Ankara", &["Ankara", "Izmir", "Bursa"], true, [72, 500, 200, 524]);
+        f.push_choice(
+            "City",
+            "Ankara",
+            &["Ankara", "Izmir", "Bursa"],
+            true,
+            [72, 500, 200, 524],
+        );
         f.push_choice("Pets", "Cat", &["Cat", "Dog"], false, [72, 460, 200, 484]);
         f.push_pushbutton("Go", [72, 420, 120, 444]);
         f.push_sig("Sign", [72, 380, 180, 420]);
@@ -2475,6 +2490,29 @@ mod tests {
         f.push_merged_text("Name", "OldName", [72, 640, 240, 664], "OLD-NAME");
         f.with_page_im0(resources_as_reference);
         f.save(path);
+    }
+
+    /// F20: the page inherits `/Resources` from its parent `/Pages` node.
+    fn write_flatten_inherited_im0_fixture(path: &Path) {
+        write_flatten_im0_fixture(path, false);
+        let mut doc = load(path);
+        let page_id = *doc.get_pages().values().next().expect("F20 page");
+        let (parent_id, resources) = {
+            let page = doc.get_dictionary(page_id).expect("F20 page dictionary");
+            let parent_id = page
+                .get(b"Parent")
+                .and_then(Object::as_reference)
+                .expect("F20 parent");
+            let resources = page.get(b"Resources").expect("F20 resources").clone();
+            (parent_id, resources)
+        };
+        if let Ok(Object::Dictionary(page)) = doc.get_object_mut(page_id) {
+            page.remove(b"Resources");
+        }
+        if let Ok(Object::Dictionary(parent)) = doc.get_object_mut(parent_id) {
+            parent.set("Resources", resources);
+        }
+        doc.save(path).expect("write inherited-resource fixture");
     }
 
     /// F19: flattenable sibling + `/Widget` with `/Rect` and no `/AP` + leftover Text/Link.
@@ -2802,7 +2840,9 @@ mod tests {
     }
 
     fn listed_by_name<'a>(fields: &'a [FormField], name: &str) -> Option<&'a FormField> {
-        fields.iter().find(|f| f.name == name || f.name.ends_with(&format!(".{name}")))
+        fields
+            .iter()
+            .find(|f| f.name == name || f.name.ends_with(&format!(".{name}")))
     }
 
     fn deref_obj<'a>(doc: &'a Document, obj: &'a Object) -> &'a Object {
@@ -2867,7 +2907,9 @@ mod tests {
     }
 
     fn stream_has_path_op(content: &str) -> bool {
-        content.split_whitespace().any(|tok| tok == "re" || tok == "m")
+        content
+            .split_whitespace()
+            .any(|tok| tok == "re" || tok == "m")
     }
 
     fn assert_ap_n_on_is_drawn_stream(doc: &Document, field: &str, export: &str) {
@@ -2995,8 +3037,12 @@ mod tests {
         write_inherit_fixture(&src);
         let fields = list_form_fields(src.to_str().unwrap())
             .expect("F2: inherit fixture must list, not error");
-        let leaf = listed_by_name(&fields, "Leaf")
-            .unwrap_or_else(|| panic!("F2: child missing /FT must still be listed; got {:?}", names_of(&fields)));
+        let leaf = listed_by_name(&fields, "Leaf").unwrap_or_else(|| {
+            panic!(
+                "F2: child missing /FT must still be listed; got {:?}",
+                names_of(&fields)
+            )
+        });
         assert_eq!(
             leaf.kind,
             FormFieldKind::Text,
@@ -3012,7 +3058,9 @@ mod tests {
             "F2: inherited /Ff Multiline must surface on the terminal"
         );
         assert!(
-            fields.iter().all(|f| f.kind != FormFieldKind::Text || f.name.contains("Leaf") || f.name.contains("Group")),
+            fields.iter().all(|f| f.kind != FormFieldKind::Text
+                || f.name.contains("Leaf")
+                || f.name.contains("Group")),
             "F2: non-terminal parent must not be a second fillable text control; got {:?}",
             names_of(&fields)
         );
@@ -3029,11 +3077,15 @@ mod tests {
             .expect("F3: mixed direct/indirect tree must list");
         let names = names_of(&fields);
         assert!(
-            names.iter().any(|n| n == "IndirectTx" || n.ends_with(".IndirectTx")),
+            names
+                .iter()
+                .any(|n| n == "IndirectTx" || n.ends_with(".IndirectTx")),
             "F3: indirect field must appear once; got {names:?}"
         );
         assert!(
-            names.iter().any(|n| n == "DirectTx" || n.ends_with(".DirectTx")),
+            names
+                .iter()
+                .any(|n| n == "DirectTx" || n.ends_with(".DirectTx")),
             "F3: direct (inline dict) field must appear once; got {names:?}"
         );
         assert!(
@@ -3189,10 +3241,7 @@ mod tests {
             "F6: dest text /V must match the session"
         );
         let aps = widget_ap_blobs(&doc, "Name");
-        assert!(
-            !aps.is_empty(),
-            "F6: text widget must have /AP after fill"
-        );
+        assert!(!aps.is_empty(), "F6: text widget must have /AP after fill");
         assert!(
             aps.iter().any(|b| !b.contains("OLD-NAME")),
             "F6: /V-only without appearance update fails this ID; stale AP still {:?}",
@@ -3261,9 +3310,7 @@ mod tests {
             "F7: must not hard-code /Yes; export name is /Agreed"
         );
         assert!(
-            widget_as_names(&doc, "Terms")
-                .iter()
-                .any(|s| s == "Agreed"),
+            widget_as_names(&doc, "Terms").iter().any(|s| s == "Agreed"),
             "F7: /AS must be /Agreed; got {:?}",
             widget_as_names(&doc, "Terms")
         );
@@ -3396,7 +3443,8 @@ mod tests {
             "F10: Noto /AP must be written for Turkish text"
         );
         assert!(
-            aps.iter().all(|b| !b.contains("(?)") && !b.contains("G????")),
+            aps.iter()
+                .all(|b| !b.contains("(?)") && !b.contains("G????")),
             "F10: /AP must not substitute ? for Turkish; got {aps:?}"
         );
         assert!(
@@ -3609,6 +3657,54 @@ mod tests {
         assert_f18_im0_survives_flatten(&dest, "resources-as-direct-dict");
     }
 
+    #[test]
+    fn apply_flatten_keeps_inherited_page_resources() {
+        let scratch = Scratch::new("f20-inherited-resources");
+        let dest = scratch.pdf("dest.pdf");
+        write_flatten_inherited_im0_fixture(&dest);
+        {
+            let src = load(&dest);
+            let page_id = *src.get_pages().values().next().expect("F20 page");
+            let page = src.get_dictionary(page_id).expect("F20 page dictionary");
+            assert!(
+                page.get(b"Resources").is_err(),
+                "F20 fixture: the page must inherit resources"
+            );
+            let parent_id = page
+                .get(b"Parent")
+                .and_then(Object::as_reference)
+                .expect("F20 parent");
+            assert!(
+                src.get_dictionary(parent_id)
+                    .and_then(|parent| parent.get(b"Resources"))
+                    .is_ok(),
+                "F20 fixture: parent /Pages must own resources"
+            );
+        }
+        assert_f18_im0_survives_flatten(&dest, "resources-inherited-from-pages");
+    }
+
+    #[test]
+    fn annotation_flatten_rejects_interactive_form_without_mutating_it() {
+        let scratch = Scratch::new("forms-with-annotation-flatten");
+        let dest = scratch.pdf("dest.pdf");
+        write_flatten_fixture(&dest);
+        let result = crate::pdf_engine::edit_annots::apply_markup_annots(&dest, &[], true);
+        assert_eq!(
+            result.expect_err("interactive form must block annotation-only flatten").code,
+            "FORM_FLATTEN_REQUIRED"
+        );
+        let doc = load(&dest);
+        assert!(
+            catalog_has(&doc, b"AcroForm"),
+            "rejected annotation flatten must keep the AcroForm catalog"
+        );
+        assert!(
+            dest_widget_names(&doc).iter().any(|name| name == "Name"),
+            "rejected annotation flatten must keep form widgets"
+        );
+    }
+
     // --- F19 ----------------------------------------------------------------
 
     #[test]
@@ -3665,8 +3761,8 @@ mod tests {
         let scratch = Scratch::new("f13-rect");
         let src = scratch.pdf("src.pdf");
         write_rotate_crop_fixture(&src);
-        let fields = list_form_fields(src.to_str().unwrap())
-            .expect("F13: rotate+crop widget must list");
+        let fields =
+            list_form_fields(src.to_str().unwrap()).expect("F13: rotate+crop widget must list");
         let field = listed_by_name(&fields, "Name")
             .unwrap_or_else(|| panic!("F13: widget must be listed; got {:?}", names_of(&fields)));
         let rect = field
@@ -3680,11 +3776,7 @@ mod tests {
                 && (rect.h - 40.0).abs() < 0.5,
             "F13: listed rect must be unrotated {{x:100,y:200,w:80,h:40}}, not display-swapped; got {rect:?}"
         );
-        assert_eq!(
-            field.page_index,
-            Some(0),
-            "F13: assembled pageIndex is 0"
-        );
+        assert_eq!(field.page_index, Some(0), "F13: assembled pageIndex is 0");
     }
 
     // --- F14 ----------------------------------------------------------------

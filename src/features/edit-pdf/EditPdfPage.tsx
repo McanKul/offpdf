@@ -52,6 +52,7 @@ export function EditPdfPage() {
   const lastFolder = useSettingsStore((s) => s.lastOutputFolder);
   const [folder, setFolder] = useState<string | null>(lastFolder);
   const [name, setName] = useState("edited.pdf");
+  const [flattenAnnotations, setFlattenAnnotations] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
   const [discardPrompt, setDiscardPrompt] = useState<{ count: number; historyOnly: boolean } | null>(null);
   const discardResolve = useRef<((ok: boolean) => void) | undefined>(undefined);
@@ -285,6 +286,7 @@ export function EditPdfPage() {
           incompletePaths,
           values,
           flattenForm,
+          flattenAnnotations,
         ),
       {
         tool: "editPdf",
@@ -315,11 +317,25 @@ export function EditPdfPage() {
               <input
                 type="checkbox"
                 checked={flattenForm}
-                onChange={(e) => setFlattenForm(e.target.checked)}
+                onChange={(e) => {
+                  setFlattenForm(e.target.checked);
+                  if (!e.target.checked) setFlattenAnnotations(false);
+                }}
               />
               Flatten form fields (widgets become page content)
             </label>
           )}
+          <label className="field__label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={flattenAnnotations}
+              onChange={(e) => {
+                setFlattenAnnotations(e.target.checked);
+                if (e.target.checked && formFields.length > 0) setFlattenForm(true);
+              }}
+            />
+            Flatten annotations{formFields.length > 0 ? " (includes form fields)" : ""}
+          </label>
           <div className="row">
             <Button variant="primary" size="lg" onClick={start} disabled={!canStart} loading={job.isBusy} leftIcon={<Icon name="fileText" size={18} />}>
               Save PDF

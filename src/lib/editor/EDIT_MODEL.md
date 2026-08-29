@@ -99,6 +99,13 @@ name → value), not on the undo stamp stack.
   removing an earlier file cannot unmount and wipe later pages. Do not wipe the
   session with a concatenated `resetKey`.
 
+Markup kinds `note` / `highlight` / `underline` / `strikeout` / `markupInk` are
+session `/Annots` dictionaries (not overlay stamps). They use the same
+unrotated `rect` space as stamps. Overlay paint skips them; Save copies every
+existing annot through and appends or removes only session `/NM` dicts. Draw
+`kind: "ink"` stays a content-stream stroke. Flatten is opt-in
+`qpdf --flatten-annotations=all` (default off).
+
 ## How export consumes this
 
 1. Read `EditDocument.objects` for the chosen pages.

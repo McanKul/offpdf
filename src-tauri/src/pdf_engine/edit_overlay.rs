@@ -4,6 +4,7 @@
 
 use crate::error::AppError;
 use crate::models::{JobHandle, PageGroup};
+use crate::pdf_engine::edit_annots::{self, MarkupKind, SessionMarkup};
 use crate::pdf_engine::edit_forms::{
     apply_form_values, extra_files_have_fields, qpdf_rewrite, FormValue,
 };
@@ -210,6 +211,70 @@ pub enum EditObjectIn {
         rect: PdfRectIn,
         action: LinkActionIn,
     },
+    Note {
+        #[serde(default)]
+        id: String,
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        #[serde(default)]
+        author: String,
+        color: Option<String>,
+        comment: Option<String>,
+    },
+    Highlight {
+        #[serde(default)]
+        id: String,
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        #[serde(default)]
+        author: String,
+        color: Option<String>,
+        comment: Option<String>,
+        #[serde(default)]
+        quads: Vec<f64>,
+    },
+    Underline {
+        #[serde(default)]
+        id: String,
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        #[serde(default)]
+        author: String,
+        color: Option<String>,
+        comment: Option<String>,
+        #[serde(default)]
+        quads: Vec<f64>,
+    },
+    Strikeout {
+        #[serde(default)]
+        id: String,
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        #[serde(default)]
+        author: String,
+        color: Option<String>,
+        comment: Option<String>,
+        #[serde(default)]
+        quads: Vec<f64>,
+    },
+    #[serde(rename = "markupInk")]
+    MarkupInk {
+        #[serde(default)]
+        id: String,
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        #[serde(default)]
+        author: String,
+        color: Option<String>,
+        comment: Option<String>,
+        #[serde(default)]
+        strokes: Vec<Vec<PointIn>>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -225,6 +290,17 @@ pub enum LinkActionIn {
 }
 
 impl EditObjectIn {
+    fn is_markup(&self) -> bool {
+        matches!(
+            self,
+            Self::Note { .. }
+                | Self::Highlight { .. }
+                | Self::Underline { .. }
+                | Self::Strikeout { .. }
+                | Self::MarkupInk { .. }
+        )
+    }
+
     fn page_index(&self) -> u32 {
         match self {
             Self::Rect { page_index, .. }
@@ -239,10 +315,18 @@ impl EditObjectIn {
             | Self::Image { page_index, .. }
             | Self::Line { page_index, .. }
             | Self::Ink { page_index, .. }
-            | Self::Link { page_index, .. } => *page_index,
+            | Self::Link { page_index, .. }
+            | Self::Note { page_index, .. }
+            | Self::Highlight { page_index, .. }
+            | Self::Underline { page_index, .. }
+            | Self::Strikeout { page_index, .. }
+            | Self::MarkupInk { page_index, .. } => *page_index,
         }
     }
     fn opacity(&self) -> f64 {
+        if self.is_markup() {
+            return 1.0;
+        }
         let o = match self {
             Self::Link { .. } => return 1.0,
             Self::Rect { opacity, .. }
@@ -257,6 +341,11 @@ impl EditObjectIn {
             | Self::Image { opacity, .. }
             | Self::Line { opacity, .. }
             | Self::Ink { opacity, .. } => *opacity,
+            Self::Note { .. }
+            | Self::Highlight { .. }
+            | Self::Underline { .. }
+            | Self::Strikeout { .. }
+            | Self::MarkupInk { .. } => None,
         };
         o.unwrap_or(1.0).clamp(0.05, 1.0)
     }
@@ -276,6 +365,11 @@ impl EditObjectIn {
             | Self::Image { object_rotate, .. }
             | Self::Line { object_rotate, .. }
             | Self::Ink { object_rotate, .. } => *object_rotate,
+            Self::Note { .. }
+            | Self::Highlight { .. }
+            | Self::Underline { .. }
+            | Self::Strikeout { .. }
+            | Self::MarkupInk { .. } => 0.0,
         }
     }
 
@@ -317,7 +411,12 @@ impl EditObjectIn {
             | Self::Arrow { rect, .. }
             | Self::Text { rect, .. }
             | Self::Image { rect, .. }
-            | Self::Link { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
+            | Self::Link { rect, .. }
+            | Self::Note { rect, .. }
+            | Self::Highlight { rect, .. }
+            | Self::Underline { rect, .. }
+            | Self::Strikeout { rect, .. }
+            | Self::MarkupInk { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
         }
     }
 }
@@ -413,6 +512,145 @@ pub fn pdf_point_to_overlay(x: f64, y: f64, vis: [f64; 4], rotate: i64) -> (f64,
     let bw = vis[2] - vis[0];
     let bh = vis[3] - vis[1];
     unrotated_to_display(x - vis[0], y - vis[1], bw, bh, rotate)
+}
+
+fn hex_rgb(color: Option<&str>, fallback: [f64; 3]) -> [f64; 3] {
+    let (r, g, b) = parse_hex(color, (fallback[0], fallback[1], fallback[2]));
+    [r, g, b]
+}
+
+fn session_id_or(id: &str, idx: usize) -> String {
+    if id.is_empty() {
+        format!("sess-auto-{idx}")
+    } else {
+        id.to_string()
+    }
+}
+
+fn quads_or_rect(quads: &[f64], rect: &PdfRectIn) -> Option<Vec<f64>> {
+    if quads.len() >= 8 && quads.len() % 8 == 0 {
+        Some(quads.to_vec())
+    } else {
+        Some(vec![
+            rect.x,
+            rect.y,
+            rect.x + rect.w,
+            rect.y,
+            rect.x + rect.w,
+            rect.y + rect.h,
+            rect.x,
+            rect.y + rect.h,
+        ])
+    }
+}
+
+fn session_markup_from_doc(document: &EditDocumentIn) -> Vec<SessionMarkup> {
+    let mut out = Vec::new();
+    for (i, o) in document.objects.iter().enumerate() {
+        match o {
+            EditObjectIn::Note {
+                id,
+                page_index,
+                rect,
+                author,
+                color,
+                comment,
+            } => out.push(SessionMarkup {
+                id: session_id_or(id, i),
+                page_index: *page_index,
+                kind: MarkupKind::Note,
+                rect: [rect.x, rect.y, rect.w, rect.h],
+                color: hex_rgb(color.as_deref(), [1.0, 0.65, 0.0]),
+                author: author.clone(),
+                contents: comment.clone(),
+                quad_points: None,
+                ink_list: None,
+            }),
+            EditObjectIn::Highlight {
+                id,
+                page_index,
+                rect,
+                author,
+                color,
+                comment,
+                quads,
+            } => out.push(SessionMarkup {
+                id: session_id_or(id, i),
+                page_index: *page_index,
+                kind: MarkupKind::Highlight,
+                rect: [rect.x, rect.y, rect.w, rect.h],
+                color: hex_rgb(color.as_deref(), [1.0, 1.0, 0.0]),
+                author: author.clone(),
+                contents: comment.clone(),
+                quad_points: quads_or_rect(quads, rect),
+                ink_list: None,
+            }),
+            EditObjectIn::Underline {
+                id,
+                page_index,
+                rect,
+                author,
+                color,
+                comment,
+                quads,
+            } => out.push(SessionMarkup {
+                id: session_id_or(id, i),
+                page_index: *page_index,
+                kind: MarkupKind::Underline,
+                rect: [rect.x, rect.y, rect.w, rect.h],
+                color: hex_rgb(color.as_deref(), [0.0, 0.0, 1.0]),
+                author: author.clone(),
+                contents: comment.clone(),
+                quad_points: quads_or_rect(quads, rect),
+                ink_list: None,
+            }),
+            EditObjectIn::Strikeout {
+                id,
+                page_index,
+                rect,
+                author,
+                color,
+                comment,
+                quads,
+            } => out.push(SessionMarkup {
+                id: session_id_or(id, i),
+                page_index: *page_index,
+                kind: MarkupKind::StrikeOut,
+                rect: [rect.x, rect.y, rect.w, rect.h],
+                color: hex_rgb(color.as_deref(), [0.0, 0.0, 0.0]),
+                author: author.clone(),
+                contents: comment.clone(),
+                quad_points: quads_or_rect(quads, rect),
+                ink_list: None,
+            }),
+            EditObjectIn::MarkupInk {
+                id,
+                page_index,
+                rect,
+                author,
+                color,
+                comment,
+                strokes,
+            } => out.push(SessionMarkup {
+                id: session_id_or(id, i),
+                page_index: *page_index,
+                kind: MarkupKind::Ink,
+                rect: [rect.x, rect.y, rect.w, rect.h],
+                color: hex_rgb(color.as_deref(), [0.067, 0.094, 0.153]),
+                author: author.clone(),
+                contents: comment.clone(),
+                quad_points: None,
+                ink_list: Some(
+                    strokes
+                        .iter()
+                        .map(|s| s.iter().map(|p| [p.x, p.y]).collect())
+                        .collect(),
+                ),
+            }),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn parse_hex(color: Option<&str>, fallback: (f64, f64, f64)) -> (f64, f64, f64) {
@@ -1133,7 +1371,12 @@ where
             .map_err(|e| AppError::io("Could not stage the PDF.", e))?;
         return Ok(());
     }
-    let mut args = vec![groups[0].path.clone(), "--pages".into(), ".".into(), groups[0].pages.clone()];
+    let mut args = vec![
+        groups[0].path.clone(),
+        "--pages".into(),
+        ".".into(),
+        groups[0].pages.clone(),
+    ];
     for g in &groups[1..] {
         args.push(g.path.clone());
         args.push(g.pages.clone());
@@ -1291,6 +1534,7 @@ where
         &[],
         &[],
         false,
+        false,
         run,
     )
     .map(|(paths, _warnings)| paths)
@@ -1310,6 +1554,7 @@ fn export_edit_pdf_with_check_exe<F>(
     incomplete_source_paths: &[String],
     form_values: &[FormValue],
     flatten_form: bool,
+    flatten_annotations: bool,
     mut run: F,
 ) -> Result<(Vec<String>, Vec<String>), AppError>
 where
@@ -1381,11 +1626,13 @@ where
             .flatten()
             .collect();
         // Skip dest_has load when no complete source remains (e.g. 400 MiB
-        // unlistable file). Complete empty still deletes when dest has links (L7).
-        // Form-only / flatten-form is not remove-all — leftover links stay.
+        // unlistable file). L7: a complete empty edit still deletes supported
+        // links. Stamp/markup/form-only saves preserve leftover links, while an
+        // annotation-flatten-only save leaves them for qpdf to copy through.
         let rewrite_links = !dest_pages.is_empty()
             && (!links.is_empty()
-                || (document.objects.is_empty()
+                || (!flatten_annotations
+                    && document.objects.is_empty()
                     && form_values.is_empty()
                     && !flatten_form
                     && dest_has_supported_links(&tmp)?));
@@ -1402,8 +1649,15 @@ where
             qpdf_rewrite(&tmp, &cleaned)?;
             safe_output::replace_file(&cleaned, &tmp)?;
         }
+        let session = session_markup_from_doc(document);
+        if !session.is_empty() || flatten_annotations {
+            edit_annots::apply_markup_annots(&tmp, &session, flatten_annotations)?;
+        }
         let mut snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
         snapshot.catalog.annots = expected_annots;
+        if flatten_annotations {
+            snapshot.catalog.annots = false;
+        }
         if flatten_form {
             let dest_doc = Document::load(&tmp).map_err(|e| {
                 AppError::engine_failed(format!("Could not reopen the filled PDF: {e}"))
@@ -1484,6 +1738,7 @@ pub fn edit_pdf_overlays(
     incomplete_source_paths: &[String],
     form_values: &[FormValue],
     flatten_form: bool,
+    flatten_annotations: bool,
 ) -> Result<(Vec<String>, Vec<String>), AppError> {
     if groups.is_empty() {
         return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
@@ -1533,6 +1788,7 @@ pub fn edit_pdf_overlays(
             incomplete_source_paths,
             form_values,
             flatten_form,
+            flatten_annotations,
             |args| run_qpdf(app, handle, job_id, args, "Saving", None),
         )
     })();
@@ -1745,7 +2001,7 @@ fn write_overlay_pdf(
             if obj.page_index() as usize != pi {
                 continue;
             }
-            if matches!(obj, EditObjectIn::Link { .. }) {
+            if matches!(obj, EditObjectIn::Link { .. }) || obj.is_markup() {
                 continue;
             }
             let op100 = (obj.opacity() * 100.0).round() as i32;
@@ -1977,7 +2233,12 @@ fn write_overlay_pdf(
                         content.push_str("S\n");
                     }
                 }
-                EditObjectIn::Link { .. } => {}
+                EditObjectIn::Link { .. }
+                | EditObjectIn::Note { .. }
+                | EditObjectIn::Highlight { .. }
+                | EditObjectIn::Underline { .. }
+                | EditObjectIn::Strikeout { .. }
+                | EditObjectIn::MarkupInk { .. } => {}
             }
             if rotated {
                 content.push_str("Q\n");
@@ -2165,7 +2426,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn validate_allows_empty() {
         let d = EditDocumentIn {
@@ -2260,6 +2520,17 @@ mod tests {
             EditObjectIn::Text { content, .. } => assert_eq!(content, "GİZLİ"),
             _ => panic!("expected text"),
         }
+    }
+
+    #[test]
+    fn serde_roundtrip_highlight_kind() {
+        let json = r##"{"version":1,"objects":[{"kind":"highlight","pageIndex":0,"rect":{"x":100,"y":200,"w":80,"h":40},"author":"Ada","color":"#facc15","comment":"review this","quads":[100,200,180,200,180,240,100,240]}]}"##;
+        let d: Result<EditDocumentIn, _> = serde_json::from_str(json);
+        assert!(
+            d.is_ok(),
+            "highlight kind must serde on EditDocumentIn; got {d:?}"
+        );
+        assert_eq!(d.unwrap().objects.len(), 1);
     }
 
     fn g(path: &str, pages: &str) -> PageGroup {
@@ -2426,6 +2697,50 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn overlay_ink_kind_still_emits_content_stroke() {
+        // Draw `kind: "ink"` stays a content stamp (not /Subtype /Ink).
+        let root = tmp_root("offpdf-edit-ink-stamp");
+        let overlay = root.join("overlay.pdf");
+        let doc = EditDocumentIn {
+            version: 1,
+            objects: vec![EditObjectIn::Ink {
+                page_index: 0,
+                points: vec![
+                    PointIn { x: 72.0, y: 100.0 },
+                    PointIn { x: 120.0, y: 140.0 },
+                    PointIn { x: 160.0, y: 110.0 },
+                ],
+                stroke: Some("#111827".into()),
+                stroke_width: Some(2.5),
+                opacity: None,
+                object_rotate: 0.0,
+            }],
+        };
+        write_overlay_pdf(
+            overlay.to_str().unwrap(),
+            &[letter_geom()],
+            &doc,
+            &test_font(),
+            None,
+        )
+        .unwrap();
+        let mut overlay_doc = Document::load(&overlay).expect("load overlay");
+        let _ = overlay_doc.decompress();
+        let mut blob = String::new();
+        for obj in overlay_doc.objects.values() {
+            if let Object::Stream(s) = obj {
+                let bytes = s.get_plain_content().unwrap_or_else(|_| s.content.clone());
+                blob.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        }
+        assert!(
+            blob.contains(" m\n") && blob.contains(" l\n") && blob.contains("S\n"),
+            "Draw ink must still paint content-stream stroke; blob={blob}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2732,7 +3047,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    // L5 keepGreen: hard-linked dest stays OVERWRITE.
+    // L5 / C keepGreen: hard-linked dest stays OVERWRITE; apply / flatten stay
+    // on sibling tmp + same_file_identity.
     #[test]
     // F16 keepGreen: apply / flatten stay on sibling tmp + same_file_identity.
     fn export_rejects_hard_linked_destination() {

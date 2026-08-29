@@ -52,7 +52,12 @@ export type EditorTool =
   | "line"
   | "ink"
   | "image"
-  | "link";
+  | "link"
+  | "note"
+  | "highlight"
+  | "underline"
+  | "strikeout"
+  | "markupInk";
 
 type Handle = ResizeHandle;
 
@@ -84,7 +89,9 @@ type DragMode =
   | { kind: "create-text"; startCss: { x: number; y: number } }
   | { kind: "create-link"; startCss: { x: number; y: number } }
   | { kind: "create-line"; startCss: { x: number; y: number } }
-  | { kind: "create-ink"; points: { x: number; y: number }[] };
+  | { kind: "create-ink"; points: { x: number; y: number }[] }
+  | { kind: "create-markup"; markup: "note" | "highlight" | "underline" | "strikeout"; startCss: { x: number; y: number } }
+  | { kind: "create-markup-ink"; points: { x: number; y: number }[] };
 
 function additiveSelect(e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) {
   return e.shiftKey || e.metaKey || e.ctrlKey;
@@ -122,6 +129,11 @@ export function EditorOverlay({
   onCreateLink,
   onCreateLine,
   onCreateInk,
+  onCreateNote,
+  onCreateHighlight,
+  onCreateUnderline,
+  onCreateStrikeout,
+  onCreateMarkupInk,
   onRequestImage,
   onActivateText,
   pickColor,
@@ -145,6 +157,11 @@ export function EditorOverlay({
   onCreateLink: (rect: PdfRect) => void;
   onCreateLine: (a: Point, b: Point) => void;
   onCreateInk: (points: Point[]) => void;
+  onCreateNote: (rect: PdfRect) => void;
+  onCreateHighlight: (rect: PdfRect) => void;
+  onCreateUnderline: (rect: PdfRect) => void;
+  onCreateStrikeout: (rect: PdfRect) => void;
+  onCreateMarkupInk: (strokes: Point[][]) => void;
   onRequestImage: (atCss: { x: number; y: number }) => void;
   onActivateText: (id: string) => void;
   /** When set, the next click samples a page color instead of editing. */
@@ -212,6 +229,12 @@ export function EditorOverlay({
       setDraft({ kind: "line", start: local, cur: local });
     } else if (tool === "ink") {
       dragRef.current = { kind: "create-ink", points: [local] };
+      setDraft({ kind: "ink", start: local, cur: local, points: [local] });
+    } else if (tool === "note" || tool === "highlight" || tool === "underline" || tool === "strikeout") {
+      dragRef.current = { kind: "create-markup", markup: tool, startCss: local };
+      setDraft({ kind: "box", start: local, cur: local });
+    } else if (tool === "markupInk") {
+      dragRef.current = { kind: "create-markup-ink", points: [local] };
       setDraft({ kind: "ink", start: local, cur: local, points: [local] });
     }
     svg.setPointerCapture(e.pointerId);
@@ -323,7 +346,12 @@ export function EditorOverlay({
       }
       return;
     }
-    if (drag.kind === "create-text" || drag.kind === "create-link" || drag.kind === "marquee") {
+    if (
+      drag.kind === "create-text" ||
+      drag.kind === "create-link" ||
+      drag.kind === "create-markup" ||
+      drag.kind === "marquee"
+    ) {
       setDraft({ kind: "box", start: drag.startCss, cur: local });
       return;
     }
@@ -331,7 +359,7 @@ export function EditorOverlay({
       setDraft({ kind: "line", start: drag.startCss, cur: local });
       return;
     }
-    if (drag.kind === "create-ink") {
+    if (drag.kind === "create-ink" || drag.kind === "create-markup-ink") {
       const pts = [...drag.points, local];
       drag.points = pts;
       setDraft({ kind: "ink", start: pts[0], cur: local, points: pts });
@@ -406,6 +434,26 @@ export function EditorOverlay({
       }
       return;
     }
+    if (drag.kind === "create-markup") {
+      const box = cssBoxFromPoints(drag.startCss, local);
+      setDraft(null);
+      dragRef.current = null;
+      const click = box.w < 4 || box.h < 4;
+      const fallback = click
+        ? {
+            x: drag.startCss.x,
+            y: drag.startCss.y,
+            w: drag.markup === "note" ? 28 : 160,
+            h: drag.markup === "note" ? 28 : drag.markup === "highlight" ? 18 : 12,
+          }
+        : box;
+      const pdf = viewportRectFromCss(fallback, mapping);
+      if (drag.markup === "note") onCreateNote(pdf);
+      else if (drag.markup === "highlight") onCreateHighlight(pdf);
+      else if (drag.markup === "underline") onCreateUnderline(pdf);
+      else onCreateStrikeout(pdf);
+      return;
+    }
     if (drag.kind === "create-shape" || drag.kind === "create-text" || drag.kind === "create-link") {
       const lock1to1 = drag.kind === "create-shape" && (drag.lock1to1 || e.shiftKey);
       const box = lock1to1 ? constrainCssBox1to1(drag.startCss, local) : cssBoxFromPoints(drag.startCss, local);
@@ -437,6 +485,13 @@ export function EditorOverlay({
       dragRef.current = null;
       const pts = drag.points.map((p) => viewportToPdf(p, mapping));
       onCreateInk(pts);
+      return;
+    }
+    if (drag.kind === "create-markup-ink") {
+      setDraft(null);
+      dragRef.current = null;
+      const pts = drag.points.map((p) => viewportToPdf(p, mapping));
+      onCreateMarkupInk([pts]);
       return;
     }
 
@@ -734,6 +789,60 @@ function ObjectShape({
             strokeWidth={1.5}
             strokeDasharray="5 4"
           />
+        </g>
+      )}
+      {obj.kind === "note" && (
+        <g style={{ cursor: moveCursor }} onPointerDown={interactive ? (e) => onPointerDownObject(e, obj) : undefined}>
+          <rect
+            x={css.x}
+            y={css.y}
+            width={Math.max(css.w, 12)}
+            height={Math.max(css.h, 12)}
+            fill={obj.color ?? "#f59e0b"}
+            stroke="#b45309"
+            strokeWidth={1}
+          />
+        </g>
+      )}
+      {(obj.kind === "highlight" || obj.kind === "underline" || obj.kind === "strikeout") && (
+        <g style={{ cursor: moveCursor }} onPointerDown={interactive ? (e) => onPointerDownObject(e, obj) : undefined}>
+          {obj.kind === "highlight" ? (
+            <rect
+              x={css.x}
+              y={css.y}
+              width={Math.max(css.w, 1)}
+              height={Math.max(css.h, 1)}
+              fill={obj.color ?? "#facc15"}
+              opacity={0.45}
+            />
+          ) : (
+            <line
+              x1={css.x}
+              y1={obj.kind === "underline" ? css.y + Math.max(css.h, 1) - 2 : css.y + Math.max(css.h, 1) / 2}
+              x2={css.x + Math.max(css.w, 1)}
+              y2={obj.kind === "underline" ? css.y + Math.max(css.h, 1) - 2 : css.y + Math.max(css.h, 1) / 2}
+              stroke={obj.color ?? (obj.kind === "underline" ? "#2563eb" : "#dc2626")}
+              strokeWidth={2}
+            />
+          )}
+        </g>
+      )}
+      {obj.kind === "markupInk" && (
+        <g style={{ cursor: moveCursor }} onPointerDown={interactive ? (e) => onPointerDownObject(e, obj) : undefined}>
+          {obj.strokes.map((stroke, i) => (
+            <polyline
+              key={i}
+              points={stroke.map((p) => {
+                const c = pdfToViewport(p, mapping);
+                return `${c.x},${c.y}`;
+              }).join(" ")}
+              fill="none"
+              stroke={obj.color ?? "#111827"}
+              strokeWidth={2.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          ))}
         </g>
       )}
       </g>

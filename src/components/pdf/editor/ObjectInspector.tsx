@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { EditObject, LayerDir } from "@/lib/editor";
-import { isClosedShapeObject, isNoneFill, sizeWithAspect, toCssHex } from "@/lib/editor";
+import { isClosedShapeObject, isMarkupObject, isNoneFill, sizeWithAspect, toCssHex } from "@/lib/editor";
 import { Icon } from "@/components/ui/Icon";
 
 const PRESETS = [
@@ -38,7 +38,8 @@ export function ObjectInspector({
   const opacity = "opacity" in obj && typeof obj.opacity === "number" ? obj.opacity : 1;
   const shape = isClosedShapeObject(obj) ? obj : null;
   const filled = !!shape && !isNoneFill(shape.fill);
-  const hasBox = obj.kind !== "line" && obj.kind !== "ink";
+  const markup = isMarkupObject(obj);
+  const hasBox = obj.kind !== "line" && obj.kind !== "ink" && obj.kind !== "markupInk";
   const canLockAspect = !!shape || obj.kind === "image";
   const aspectOn = obj.kind === "image" ? obj.keepAspect !== false : !!obj.keepAspect;
 
@@ -103,6 +104,33 @@ export function ObjectInspector({
               }
             />
           )}
+        </>
+      )}
+      {markup && (
+        <>
+          <label className="field__label">Author</label>
+          <input
+            className="input"
+            type="text"
+            value={obj.author}
+            placeholder="Author"
+            onChange={(e) => onChange({ author: e.target.value } as Partial<EditObject>)}
+          />
+          <label className="field__label">Comment</label>
+          <textarea
+            className="pdf-editor__inspector-text"
+            rows={2}
+            value={obj.comment ?? ""}
+            onChange={(e) => onChange({ comment: e.target.value || undefined } as Partial<EditObject>)}
+          />
+          <ColorField
+            label="Color"
+            icon="droplet"
+            value={toCssHex(obj.color, "#facc15")}
+            active={picking === "color"}
+            onChange={(hex) => onChange({ color: hex } as Partial<EditObject>)}
+            onPickFromPage={onPickFromPage ? () => onPickFromPage("color") : undefined}
+          />
         </>
       )}
 
@@ -250,7 +278,7 @@ export function ObjectInspector({
         </div>
       )}
 
-      {obj.kind !== "link" && (
+      {obj.kind !== "link" && !markup && (
         <DraftNumber
           label="Rotation"
           value={obj.objectRotate ?? 0}
@@ -261,8 +289,8 @@ export function ObjectInspector({
         />
       )}
 
-      {obj.kind !== "link" && <label className="field__label">Opacity</label>}
-      {obj.kind !== "link" && (
+      {obj.kind !== "link" && !markup && <label className="field__label">Opacity</label>}
+      {obj.kind !== "link" && !markup && (
         <div className="pdf-editor__opacity">
           <input
             type="range"
@@ -285,7 +313,7 @@ export function ObjectInspector({
         </div>
       )}
 
-      {onReorder && layerCount > 0 && obj.kind !== "link" && (
+      {onReorder && layerCount > 0 && obj.kind !== "link" && !markup && (
         <div className="pdf-editor__layer">
           <label className="field__label">Layer</label>
           <div className="muted" style={{ fontSize: 12 }}>

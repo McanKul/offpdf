@@ -22,6 +22,12 @@ export type {
   InkObject,
   LinkAction,
   LinkObject,
+  MarkupAnnotFields,
+  NoteObject,
+  HighlightObject,
+  UnderlineObject,
+  StrikeoutObject,
+  MarkupInkObject,
   TextAlign,
   EditObject,
   EditDocument,
@@ -39,6 +45,7 @@ export {
   mapPointsToRect,
   isClosedShape,
   isClosedShapeObject,
+  isMarkupObject,
 } from "./types";
 
 export type { CssRect, ViewportMapping } from "./coords";
@@ -72,6 +79,11 @@ export {
   makeLineObject,
   makeInkObject,
   makeLinkObject,
+  makeNoteObject,
+  makeHighlightObject,
+  makeUnderlineObject,
+  makeStrikeoutObject,
+  makeMarkupInkObject,
 } from "./editReducer";
 
 export type { ResizeHandle } from "./resizeRect";

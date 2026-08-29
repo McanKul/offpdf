@@ -6,11 +6,16 @@ import {
   editReducer,
   makeClosedShape,
   makeImageObject,
+  makeHighlightObject,
   makeInkObject,
   makeLineObject,
   makeLinkObject,
+  makeMarkupInkObject,
+  makeNoteObject,
   makeRectObject,
+  makeStrikeoutObject,
   makeTextObject,
+  makeUnderlineObject,
   mapPointsToRect,
   planKeyRebind,
   type ClosedShapeKind,
@@ -107,6 +112,27 @@ export function useEditSession(
     dispatch({ type: "HYDRATE", objects });
   }, []);
 
+  const addNote = useCallback((pageIndex: number, rect: PdfRect, author: string) => {
+    dispatch({ type: "ADD", object: makeNoteObject(newId(), pageIndex, rect, author) });
+  }, []);
+
+  const addHighlight = useCallback((pageIndex: number, rect: PdfRect, author: string) => {
+    dispatch({ type: "ADD", object: makeHighlightObject(newId(), pageIndex, rect, author) });
+  }, []);
+
+  const addUnderline = useCallback((pageIndex: number, rect: PdfRect, author: string) => {
+    dispatch({ type: "ADD", object: makeUnderlineObject(newId(), pageIndex, rect, author) });
+  }, []);
+
+  const addStrikeout = useCallback((pageIndex: number, rect: PdfRect, author: string) => {
+    dispatch({ type: "ADD", object: makeStrikeoutObject(newId(), pageIndex, rect, author) });
+  }, []);
+
+  const addMarkupInk = useCallback((pageIndex: number, strokes: Point[][], author: string) => {
+    if (strokes.every((s) => s.length < 2)) return;
+    dispatch({ type: "ADD", object: makeMarkupInkObject(newId(), pageIndex, strokes, author) });
+  }, []);
+
   const addMany = useCallback((objects: EditObject[]) => {
     if (objects.length === 0) return;
     dispatch({ type: "ADD_MANY", objects });
@@ -144,6 +170,17 @@ export function useEditSession(
           type: "UPDATE",
           id,
           patch: { rect, points: mapPointsToRect(obj.points, obj.rect, rect) } as Partial<EditObject>,
+        });
+        return;
+      }
+      if (obj.kind === "markupInk") {
+        dispatch({
+          type: "UPDATE",
+          id,
+          patch: {
+            rect,
+            strokes: obj.strokes.map((s) => mapPointsToRect(s, obj.rect, rect)),
+          } as Partial<EditObject>,
         });
         return;
       }
@@ -218,6 +255,24 @@ export function useEditSession(
               points: obj.points.map((p) => ({ x: p.x + dx, y: p.y + dy })),
             } as Partial<EditObject>,
           });
+        } else if (obj.kind === "markupInk") {
+          dispatch({
+            type: "UPDATE",
+            id,
+            patch: {
+              rect,
+              strokes: obj.strokes.map((s) => s.map((p) => ({ x: p.x + dx, y: p.y + dy }))),
+            } as Partial<EditObject>,
+          });
+        } else if (obj.kind === "highlight" || obj.kind === "underline" || obj.kind === "strikeout") {
+          dispatch({
+            type: "UPDATE",
+            id,
+            patch: {
+              rect,
+              quads: obj.quads.map((n, i) => n + (i % 2 === 0 ? dx : dy)),
+            } as Partial<EditObject>,
+          });
         } else {
           dispatch({ type: "UPDATE", id, patch: { rect } });
         }
@@ -243,6 +298,11 @@ export function useEditSession(
     addInk,
     addLink,
     hydrateObjects,
+    addNote,
+    addHighlight,
+    addUnderline,
+    addStrikeout,
+    addMarkupInk,
     addMany,
     updateRect,
     updateObject,

@@ -11,14 +11,15 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Button } from "@/components/ui/Button";
-import { Icon } from "@/components/ui/Icon";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import { Spinner } from "@/components/ui/Spinner";
 import { Alert } from "@/components/ui/Alert";
 import { useToast } from "@/components/ui/Toast";
-import { pagePdf, pickImageFile, previewImage } from "@/lib/tauriCommands";
+import { listPdfAnnots, pagePdf, pickImageFile, previewImage } from "@/lib/tauriCommands";
 import { toAppError } from "@/lib/types";
 import { base64ToBytes } from "@/lib/pdfjs";
 import type { EditObject, FormField, ShapeStyle } from "@/lib/editor";
+import type { ListedMarkup } from "@/lib/types";
 import {
   cloneObject,
   isClosedShapeObject,
@@ -59,6 +60,14 @@ const MAIN_TOOLS: {
   { id: "image", label: "Image", icon: "image" },
   { id: "ink", label: "Draw", icon: "pencil" },
   { id: "link", label: "Link", icon: "external" },
+];
+
+const MARKUP_TOOLS: { id: EditorTool; label: string; icon: IconName }[] = [
+  { id: "note", label: "Note", icon: "badge" },
+  { id: "highlight", label: "Highlight", icon: "sparkles" },
+  { id: "underline", label: "Underline", icon: "type" },
+  { id: "strikeout", label: "Strikeout", icon: "slash" },
+  { id: "markupInk", label: "Ink annot", icon: "stamp" },
 ];
 
 function isTextEntryTarget(t: EventTarget | null): boolean {
@@ -106,6 +115,8 @@ export function PdfEditorCanvas({
   const [fitWidth, setFitWidth] = useState(640);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [colorPick, setColorPick] = useState<ColorPickTarget | null>(null);
+  const [markupAuthor, setMarkupAuthor] = useState("");
+  const [leftovers, setLeftovers] = useState<ListedMarkup[]>([]);
   const [pickCursor, setPickCursor] = useState<{ x: number; y: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -179,6 +190,20 @@ export function PdfEditorCanvas({
       active = false;
     };
   }, [sourcePath, sourcePage]);
+
+  useEffect(() => {
+    let active = true;
+    listPdfAnnots(sourcePath)
+      .then((items) => {
+        if (active) setLeftovers(items);
+      })
+      .catch(() => {
+        if (active) setLeftovers([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [sourcePath]);
 
   const clampZoom = (z: number) =>
     Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 100) / 100));
@@ -500,6 +525,19 @@ export function PdfEditorCanvas({
         >
           <Icon name="external" size={16} />
         </Button>
+        {MARKUP_TOOLS.map((t) => (
+          <Button
+            key={t.id}
+            size="sm"
+            variant={tool === t.id ? "primary" : "ghost"}
+            title={t.label}
+            aria-label={t.label}
+            aria-pressed={tool === t.id}
+            onClick={() => setTool(t.id)}
+          >
+            <Icon name={t.icon} size={16} />
+          </Button>
+        ))}
         <span className="pdf-editor__sep" />
         <Button size="sm" variant="ghost" onClick={() => setZoomSafe((z) => z - STEP)} title="Zoom out" aria-label="Zoom out">
           <Icon name="minus" size={15} />
@@ -530,6 +568,32 @@ export function PdfEditorCanvas({
             selectedIds={pageSelectedIds}
             onSelect={session.select}
             onDelete={session.remove}
+          />
+          {leftovers.filter((a) => a.pageIndex === sourcePage - 1).length > 0 && (
+            <div className="pdf-editor__leftovers" style={{ marginTop: 12 }}>
+              <div className="pdf-editor__sidebar-title">Existing annotations</div>
+              <ul className="pdf-editor__object-list" aria-label="Existing annotations">
+                {leftovers
+                  .filter((a) => a.pageIndex === sourcePage - 1)
+                  .map((a, i) => (
+                    <li key={`${a.subtype}-${i}`} className="muted" style={{ fontSize: 12.5 }}>
+                      {a.subtype}
+                      {a.contents ? `: ${a.contents.slice(0, 24)}` : ""}
+                      {a.author ? ` · ${a.author}` : ""}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+          <label className="field__label" style={{ marginTop: 10 }}>
+            Annot author
+          </label>
+          <input
+            className="input"
+            type="text"
+            value={markupAuthor}
+            placeholder="Author"
+            onChange={(e) => setMarkupAuthor(e.target.value)}
           />
           {selected && pageSelectedIds.length > 1 && (
             <div className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>
@@ -641,6 +705,26 @@ export function PdfEditorCanvas({
                   }}
                   onCreateInk={(pts) => {
                     session.addInk(pageIndex, pts);
+                    setTool("select");
+                  }}
+                  onCreateNote={(rect) => {
+                    session.addNote(pageIndex, rect, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateHighlight={(rect) => {
+                    session.addHighlight(pageIndex, rect, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateUnderline={(rect) => {
+                    session.addUnderline(pageIndex, rect, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateStrikeout={(rect) => {
+                    session.addStrikeout(pageIndex, rect, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateMarkupInk={(strokes) => {
+                    session.addMarkupInk(pageIndex, strokes, markupAuthor);
                     setTool("select");
                   }}
                   onRequestImage={(at) => void placeImage(at)}
