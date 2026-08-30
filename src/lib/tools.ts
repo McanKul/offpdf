@@ -14,6 +14,7 @@ export interface ToolMeta {
   icon: IconName;
   path: string;
   category: ToolCategory;
+  aliases?: readonly string[];
 }
 
 export const TOOLS: ToolMeta[] = [
@@ -96,6 +97,7 @@ export const TOOLS: ToolMeta[] = [
     icon: "fileText",
     path: "/tools/edit-pdf",
     category: "Organize",
+    aliases: ["annotations"],
   },
   {
     id: "poster",
@@ -136,6 +138,7 @@ export const TOOLS: ToolMeta[] = [
     icon: "fileText",
     path: "/tools/office-to-pdf",
     category: "Convert",
+    aliases: ["docx", "xlsx", "pptx"],
   },
   {
     id: "pdfToOffice",
@@ -146,6 +149,7 @@ export const TOOLS: ToolMeta[] = [
     icon: "fileText",
     path: "/tools/pdf-to-office",
     category: "Convert",
+    aliases: ["docx", "pptx"],
   },
   {
     id: "images",
@@ -176,6 +180,7 @@ export const TOOLS: ToolMeta[] = [
     icon: "badge",
     path: "/tools/pdfa",
     category: "Convert",
+    aliases: ["archival"],
   },
   {
     id: "compress",
