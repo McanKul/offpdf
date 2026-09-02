@@ -1506,3 +1506,126 @@ fn classify_scaled_tm_second_show_x() {
         second.rect.x
     );
 }
+
+// --- PR 97 review fold r5 (R14) --------------------------------------------
+// Extra PDFs are generated in temp with lopdf. Do not grow fixtures/source-edit/.
+// Page /Contents is an array of two streams; stream 1 has no trailing whitespace
+// so a join without a separator fuses `Tj`+`ET` into `TjET`.
+
+const R14_STREAM_1: &[u8] = b"BT /F1 12 Tf 72 720 Td (Hi) Tj";
+const R14_STREAM_2: &[u8] = b"ET\nBT /F1 12 Tf 72 680 Td (Lo) Tj ET";
+
+fn stream_content_bytes(doc: &Document, obj: &Object) -> Vec<u8> {
+    let id = obj
+        .as_reference()
+        .expect("Contents array entry must be a stream ref");
+    doc.get_object(id)
+        .expect("content stream object")
+        .as_stream()
+        .expect("content must be a stream")
+        .content
+        .clone()
+}
+
+fn write_helvetica_two_content_streams(path: &Path, stream1: &[u8], stream2: &[u8]) {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let content1_id = doc.add_object(Object::Stream(
+        Stream::new(Dictionary::new(), stream1.to_vec()).with_compression(false),
+    ));
+    let content2_id = doc.add_object(Object::Stream(
+        Stream::new(Dictionary::new(), stream2.to_vec()).with_compression(false),
+    ));
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set(
+        "Contents",
+        vec![
+            Object::Reference(content1_id),
+            Object::Reference(content2_id),
+        ],
+    );
+    page.set("Resources", Object::Dictionary(helvetica_resources()));
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path)
+        .expect("write two-stream Contents classifier fixture");
+
+    // Lock the on-disk page /Contents shape: array of two streams, exact bytes.
+    let reloaded =
+        Document::load(path).unwrap_or_else(|e| panic!("reload two-stream Contents fixture: {e}"));
+    let page_id = *reloaded
+        .get_pages()
+        .get(&1)
+        .expect("two-stream fixture must have page 1");
+    let page = reloaded
+        .get_object(page_id)
+        .expect("page 1 object")
+        .as_dict()
+        .expect("page 1 dict");
+    let contents = page.get(b"Contents").expect("page /Contents");
+    let refs = match contents {
+        Object::Array(arr) => arr,
+        other => panic!(
+            "two-stream fixture page /Contents must be an array of two stream refs, got {other:?}"
+        ),
+    };
+    assert_eq!(
+        refs.len(),
+        2,
+        "two-stream fixture page /Contents must have two stream refs; got {}",
+        refs.len()
+    );
+    assert_eq!(
+        stream_content_bytes(&reloaded, &refs[0]).as_slice(),
+        stream1,
+        "two-stream fixture stream 1 bytes must be exact (no trailing newline)"
+    );
+    assert_eq!(
+        stream_content_bytes(&reloaded, &refs[1]).as_slice(),
+        stream2,
+        "two-stream fixture stream 2 bytes must match"
+    );
+}
+
+// --- R14 -------------------------------------------------------------------
+
+#[test]
+fn classify_contents_array_two_streams_do_not_fuse() {
+    let scratch = Scratch::new("r14-two-streams");
+    let path = scratch.file("two-contents-streams.pdf");
+    write_helvetica_two_content_streams(&path, R14_STREAM_1, R14_STREAM_2);
+    let hits = classify(&path, "R14");
+    let texts: Vec<&SourceOccurrence> = hits.iter().filter(|o| kind_token(o) == "text").collect();
+    assert_eq!(
+        texts.len(),
+        2,
+        "R14: two Contents streams (Hi@720 then Lo@680) must emit two text occurrences; got {:?}",
+        hits.iter()
+            .map(|o| (kind_token(o), o.rect.x, o.rect.y))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        texts.iter().any(|o| (o.rect.y - 720.0).abs() <= 1.0),
+        "R14: expected a text occurrence at y≈720 (Hi); got {:?}",
+        texts.iter().map(|o| (o.rect.x, o.rect.y)).collect::<Vec<_>>()
+    );
+    assert!(
+        texts.iter().any(|o| (o.rect.y - 680.0).abs() <= 1.0),
+        "R14: expected a text occurrence at y≈680 (Lo); got {:?}",
+        texts.iter().map(|o| (o.rect.x, o.rect.y)).collect::<Vec<_>>()
+    );
+}

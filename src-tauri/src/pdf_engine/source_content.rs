@@ -253,6 +253,9 @@ impl Walker<'_> {
                 .ok_or_else(|| malformed_content("A page content stream is unreadable."))?;
             let chunk = decompress_stream(stream)?;
             self.add_decoded(chunk.len())?;
+            if !bytes.is_empty() {
+                bytes.push(b'\n');
+            }
             bytes.extend_from_slice(&chunk);
         }
         let mut visiting = Vec::new();
