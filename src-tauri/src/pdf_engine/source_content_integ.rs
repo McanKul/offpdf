@@ -24,6 +24,7 @@ use crate::error::AppError;
 use crate::pdf_engine::source_content::{
     classify_source_content, resolve_source_locator, SourceOccurrence,
 };
+use lopdf::{Dictionary, Document, Object, Stream};
 use serde::Deserialize;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -688,5 +689,261 @@ fn classify_oversize_sparse_file_is_file_too_large() {
         classify_source_content(&path),
         "FILE_TOO_LARGE",
         "CLASSIFY-BOUNDS: set_len(400MiB+1)",
+    );
+}
+
+// --- PR 97 review fold (R1–R5) ---------------------------------------------
+
+fn box_obj(b: [i64; 4]) -> Object {
+    Object::Array(b.into_iter().map(Object::Integer).collect())
+}
+
+fn helvetica_resources() -> Dictionary {
+    let mut font = Dictionary::new();
+    font.set("Type", "Font");
+    font.set("Subtype", "Type1");
+    font.set("BaseFont", "Helvetica");
+    let mut fonts = Dictionary::new();
+    fonts.set("F1", Object::Dictionary(font));
+    let mut res = Dictionary::new();
+    res.set("Font", Object::Dictionary(fonts));
+    res
+}
+
+fn write_helvetica_page(path: &Path, content: &[u8]) {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        content.to_vec(),
+    )));
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set("Contents", content_id);
+    page.set("Resources", Object::Dictionary(helvetica_resources()));
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path).expect("write generated classifier fixture");
+}
+
+fn write_text_with_empty_sig_widget(path: &Path) {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        b"BT /F1 12 Tf 72 720 Td (Hi) Tj ET\n".to_vec(),
+    )));
+    let widget_id = doc.new_object_id();
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set("Contents", content_id);
+    page.set("Resources", Object::Dictionary(helvetica_resources()));
+    page.set("Annots", vec![Object::Reference(widget_id)]);
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut widget = Dictionary::new();
+    widget.set("Type", "Annot");
+    widget.set("Subtype", "Widget");
+    widget.set("FT", "Sig");
+    widget.set("T", Object::string_literal("Sig1"));
+    widget.set("Rect", box_obj([72, 72, 172, 92]));
+    widget.set("P", page_id);
+    doc.objects
+        .insert(widget_id, Object::Dictionary(widget));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut acro = Dictionary::new();
+    acro.set("Fields", vec![Object::Reference(widget_id)]);
+    let acro_id = doc.add_object(Object::Dictionary(acro));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    catalog.set("AcroForm", acro_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path)
+        .expect("write empty-sig-widget classifier fixture");
+}
+
+fn write_applied_signature(path: &Path) {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        b"BT /F1 12 Tf 72 720 Td (Hi) Tj ET\n".to_vec(),
+    )));
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set("Contents", content_id);
+    page.set("Resources", Object::Dictionary(helvetica_resources()));
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut sig = Dictionary::new();
+    sig.set("Type", "Sig");
+    sig.set(
+        "ByteRange",
+        vec![
+            Object::Integer(0),
+            Object::Integer(10),
+            Object::Integer(20),
+            Object::Integer(30),
+        ],
+    );
+    let _sig_id = doc.add_object(Object::Dictionary(sig));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path)
+        .expect("write applied-signature classifier fixture");
+}
+
+#[test]
+fn classify_180_degree_text_is_rotated() {
+    let scratch = Scratch::new("r1-180");
+    let path = scratch.file("text-180.pdf");
+    write_helvetica_page(&path, b"BT /F1 12 Tf -1 0 0 -1 200 400 Tm (Hi) Tj ET\n");
+    let hits = classify(&path, "R1");
+    let occ = first_of_kind(&hits, "text", "R1");
+    assert_unsupported(occ, "text", "ROTATED_TEXT", "R1: 180-degree Tm");
+}
+
+#[test]
+fn classify_second_tj_advances_tm() {
+    let scratch = Scratch::new("r2-advance");
+    let path = scratch.file("two-tj.pdf");
+    write_helvetica_page(&path, b"BT /F1 12 Tf 72 720 Td (Hel) Tj (lo) Tj ET\n");
+    let hits = classify(&path, "R2");
+    let texts: Vec<&SourceOccurrence> = hits.iter().filter(|o| kind_token(o) == "text").collect();
+    assert_eq!(
+        texts.len(),
+        2,
+        "R2: (Hel) Tj (lo) Tj must emit two text occurrences; got {:?}",
+        hits.iter()
+            .map(|o| (kind_token(o), o.rect.x, o.rect.y))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        texts[1].rect.x > texts[0].rect.x + 10.0,
+        "R2: second show must advance Tm; first x={} second x={}",
+        texts[0].rect.x,
+        texts[1].rect.x
+    );
+    assert!(
+        (texts[0].rect.x - 72.0).abs() <= 1.0,
+        "R2: first origin x must be ~72; got {}",
+        texts[0].rect.x
+    );
+}
+
+#[test]
+fn classify_empty_sig_widget_does_not_refuse_file() {
+    let scratch = Scratch::new("r3-empty-sig");
+    let path = scratch.file("empty-sig.pdf");
+    write_text_with_empty_sig_widget(&path);
+    let hits = classify(&path, "R3");
+    let occ = first_of_kind(&hits, "text", "R3");
+    assert_supported_text_or_image(occ, "text", "R3: empty /FT /Sig widget must not SIGNED the file");
+}
+
+#[test]
+fn classify_applied_signature_is_signed() {
+    let scratch = Scratch::new("r3-applied-sig");
+    let path = scratch.file("applied-sig.pdf");
+    write_applied_signature(&path);
+    expect_err_code(
+        classify_source_content(&path),
+        "SIGNED",
+        "R3: /Type /Sig + ByteRange still refuses",
+    );
+}
+
+#[test]
+fn classify_text_after_inline_image_is_kept() {
+    let scratch = Scratch::new("r4-inline-rest");
+    let path = scratch.file("inline-then-text.pdf");
+    write_helvetica_page(
+        &path,
+        b"q 24 0 0 12 72 400 cm\n\
+BI\n\
+/W 2 /H 1 /CS /DeviceRGB /BPC 8 /F /AHx\n\
+ID\n\
+C8101010C810>\n\
+EI\n\
+Q\n\
+BT /F1 12 Tf 72 720 Td (Hi) Tj ET\n",
+    );
+    let hits = classify(&path, "R4");
+    let text = first_of_kind(&hits, "text", "R4");
+    assert_eq!(
+        kind_token(text),
+        "text",
+        "R4: operators after EI must not be dropped"
+    );
+    assert!(
+        (text.rect.x - 72.0).abs() <= 1.0 && (text.rect.y - 720.0).abs() <= 1.0,
+        "R4: leftover text origin must be ~72,720 after restoring CTM; got {},{}",
+        text.rect.x,
+        text.rect.y
+    );
+    assert!(
+        hits.iter().any(|o| kind_token(o) == "image"),
+        "R4: the inline image must still be listed"
+    );
+}
+
+#[test]
+fn classify_text_bounds_use_tm_scale() {
+    let scratch = Scratch::new("r5-tm-scale");
+    let path = scratch.file("tf1-tm12.pdf");
+    write_helvetica_page(&path, b"BT /F1 1 Tf 12 0 0 12 72 720 Tm (Hi) Tj ET\n");
+    let hits = classify(&path, "R5");
+    let occ = first_of_kind(&hits, "text", "R5");
+    assert!(
+        (occ.rect.h - 12.0).abs() <= 1.0,
+        "R5: /F1 1 Tf + 12 0 0 12 Tm must report height ~12, not Tf=1; got h={}",
+        occ.rect.h
+    );
+    assert!(
+        occ.rect.w > 8.0,
+        "R5: width must include Tm scale (~11.34 for Hi); got w={}",
+        occ.rect.w
+    );
+    assert!(
+        (occ.rect.x - 72.0).abs() <= 1.0 && (occ.rect.y - 720.0).abs() <= 1.0,
+        "R5: origin must stay ~72,720; got {},{}",
+        occ.rect.x,
+        occ.rect.y
     );
 }
