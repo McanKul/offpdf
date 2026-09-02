@@ -316,7 +316,7 @@ impl Walker<'_> {
                 }
                 "cm" => {
                     if let Some(m) = six_nums(&op.operands) {
-                        gs.ctm = mul(m, gs.ctm);
+                        gs.ctm = mul(gs.ctm, m);
                     }
                 }
                 "W" | "W*" => {
@@ -531,7 +531,7 @@ impl Walker<'_> {
         let info = load_form(self.doc, form_id)?;
         self.add_decoded(info.bytes.len())?;
         let mut child_gs = gs.clone();
-        child_gs.ctm = mul(info.matrix, gs.ctm);
+        child_gs.ctm = mul(gs.ctm, info.matrix);
         visiting.push(form_id);
         let mut child_owners = Vec::new();
         if info.has_resources {
@@ -616,7 +616,7 @@ impl Walker<'_> {
             paint_id: None,
         })?;
         // Shown-width advance is Tm only; Tlm stays at the line origin.
-        ts.tm = mul([1.0, 0.0, 0.0, 1.0, tx, 0.0], ts.tm);
+        ts.tm = mul(ts.tm, [1.0, 0.0, 0.0, 1.0, tx, 0.0]);
         Ok(())
     }
 
@@ -1305,7 +1305,7 @@ fn unit_square_bbox(ctm: [f64; 6]) -> SourceRect {
 }
 
 fn apply_td(ts: &mut TextState, tx: f64, ty: f64) {
-    let m = mul([1.0, 0.0, 0.0, 1.0, tx, ty], ts.tlm);
+    let m = mul(ts.tlm, [1.0, 0.0, 0.0, 1.0, tx, ty]);
     ts.tm = m;
     ts.tlm = m;
 }

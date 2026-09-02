@@ -1385,3 +1385,124 @@ fn classify_extgstate_smask_image_is_masked() {
     );
     assert_unsupported(occ, "image", "MASKED_IMAGE", "R12");
 }
+
+// --- PR 97 review fold r4 (R13) --------------------------------------------
+// Extra PDFs are generated in temp with lopdf. Do not grow fixtures/source-edit/.
+
+fn write_unique_rgb_image(path: &Path, content: &[u8]) {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        content.to_vec(),
+    )));
+
+    let mut img = Dictionary::new();
+    img.set("Type", "XObject");
+    img.set("Subtype", "Image");
+    img.set("Width", 2);
+    img.set("Height", 2);
+    img.set("ColorSpace", "DeviceRGB");
+    img.set("BitsPerComponent", 8);
+    let img_id = doc.add_object(Object::Stream(Stream::new(img, R3_TINY_RGB.to_vec())));
+
+    let mut xobjects = Dictionary::new();
+    xobjects.set("Im0", Object::Reference(img_id));
+    let mut res = Dictionary::new();
+    res.set("XObject", Object::Dictionary(xobjects));
+
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set("Contents", content_id);
+    page.set("Resources", Object::Dictionary(res));
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path)
+        .expect("write unique 2×2 DeviceRGB Image classifier fixture");
+}
+
+// --- R13a ------------------------------------------------------------------
+
+#[test]
+fn classify_stacked_cm_image_origin() {
+    let scratch = Scratch::new("r13a-stacked-cm");
+    let path = scratch.file("stacked-cm.pdf");
+    write_unique_rgb_image(
+        &path,
+        b"q 2 0 0 2 0 0 cm 20 0 0 20 36 200 cm /Im0 Do Q\n",
+    );
+    let hits = classify(&path, "R13a");
+    let occ = first_of_kind(&hits, "image", "R13a");
+    assert_supported_text_or_image(occ, "image", "R13a");
+    assert!(
+        (occ.rect.x - 72.0).abs() <= 1.0
+            && (occ.rect.y - 400.0).abs() <= 1.0
+            && (occ.rect.w - 40.0).abs() <= 1.0
+            && (occ.rect.h - 40.0).abs() <= 1.0,
+        "R13a: stacked cm image rect must be ~{{x:72, y:400, w:40, h:40}}, not origin ~(36, 200); got {{x:{}, y:{}, w:{}, h:{}}}",
+        occ.rect.x,
+        occ.rect.y,
+        occ.rect.w,
+        occ.rect.h
+    );
+    assert!(
+        (occ.rect.x - 36.0).abs() > 1.0 || (occ.rect.y - 200.0).abs() > 1.0,
+        "R13a: stacked cm must not leave the image at the second-cm translation (36, 200); got {{x:{}, y:{}, w:{}, h:{}}}",
+        occ.rect.x,
+        occ.rect.y,
+        occ.rect.w,
+        occ.rect.h
+    );
+}
+
+// --- R13b ------------------------------------------------------------------
+
+#[test]
+fn classify_scaled_tm_second_show_x() {
+    let scratch = Scratch::new("r13b-scaled-tm");
+    let path = scratch.file("scaled-tm-two-tj.pdf");
+    write_helvetica_page(
+        &path,
+        b"BT /F1 1 Tf 12 0 0 12 72 720 Tm (Hel) Tj (lo) Tj ET\n",
+    );
+    let hits = classify(&path, "R13b");
+    let texts: Vec<&SourceOccurrence> = hits.iter().filter(|o| kind_token(o) == "text").collect();
+    assert_eq!(
+        texts.len(),
+        2,
+        "R13b: (Hel) Tj (lo) Tj must emit two text occurrences; got {:?}",
+        hits.iter()
+            .map(|o| (kind_token(o), o.rect.x, o.rect.y))
+            .collect::<Vec<_>>()
+    );
+    let first = texts[0];
+    let second = texts[1];
+    // Helvetica H=667 e=556 l=278 → 1.501 at Tf=1. Scaled Tm 12× must
+    // advance ~18.012 user units → second.x ≈ 90, not text-space 1.501
+    // added in user space (≈73.5).
+    assert!(
+        second.rect.x > first.rect.x + 15.0 || (second.rect.x - 90.0).abs() <= 2.0,
+        "R13b: second rect.x after 12 0 0 12 72 720 Tm (Hel) Tj must be ≈90 (±2), not ≈73.5; first.x={} second.x={}",
+        first.rect.x,
+        second.rect.x
+    );
+    assert!(
+        (second.rect.x - 73.5).abs() > 1.0,
+        "R13b: second rect.x must not stay at origin+text-space width ≈73.5; first.x={} second.x={}",
+        first.rect.x,
+        second.rect.x
+    );
+}
