@@ -1141,3 +1141,247 @@ fn classify_source_drops_rotated_fixture_parenthetical() {
         "R9: source_content.rs must not contain the exact substring `keeps text-rotated.pdf green`"
     );
 }
+
+// --- PR 97 review fold r3 (R10–R12) ----------------------------------------
+// Extra PDFs are generated in temp with lopdf. Do not grow fixtures/source-edit/.
+
+/// 2×2 DeviceRGB, same bytes as the #32 unique/mask fixtures.
+const R3_TINY_RGB: &[u8] = &[200, 16, 16, 16, 200, 16, 16, 16, 200, 200, 200, 16];
+
+fn write_type1_indirect_widths(path: &Path, content: &[u8]) {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        content.to_vec(),
+    )));
+
+    // FirstChar 'H' (72) … LastChar 'i' (105): 34 glyph slots, all 1000.
+    const FIRST_CHAR: i64 = 72;
+    const LAST_CHAR: i64 = 105;
+    let widths: Vec<Object> = (FIRST_CHAR..=LAST_CHAR)
+        .map(|_| Object::Integer(1000))
+        .collect();
+    let widths_id = doc.add_object(Object::Array(widths));
+
+    let mut font = Dictionary::new();
+    font.set("Type", "Font");
+    font.set("Subtype", "Type1");
+    font.set("BaseFont", "Helvetica");
+    font.set("FirstChar", FIRST_CHAR);
+    font.set("LastChar", LAST_CHAR);
+    font.set("Widths", Object::Reference(widths_id));
+
+    let mut fonts = Dictionary::new();
+    fonts.set("F1", Object::Dictionary(font));
+    let mut res = Dictionary::new();
+    res.set("Font", Object::Dictionary(fonts));
+
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set("Contents", content_id);
+    page.set("Resources", Object::Dictionary(res));
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path)
+        .expect("write Type1 indirect-Widths classifier fixture");
+}
+
+fn write_pattern_cs_page(path: &Path, content: &[u8]) {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        content.to_vec(),
+    )));
+
+    let mut font = Dictionary::new();
+    font.set("Type", "Font");
+    font.set("Subtype", "Type1");
+    font.set("BaseFont", "Helvetica");
+    let mut fonts = Dictionary::new();
+    fonts.set("F1", Object::Dictionary(font));
+
+    let mut cs = Dictionary::new();
+    cs.set("Cs1", Object::Name(b"Pattern".to_vec()));
+
+    let mut pat = Dictionary::new();
+    pat.set("Type", "Pattern");
+    pat.set("PatternType", 1);
+    pat.set("PaintType", 1);
+    pat.set("TilingType", 1);
+    pat.set("BBox", box_obj([0, 0, 10, 10]));
+    pat.set("XStep", 10);
+    pat.set("YStep", 10);
+    pat.set("Resources", Object::Dictionary(Dictionary::new()));
+    let pat_id = doc.add_object(Object::Stream(Stream::new(
+        pat,
+        b"0 0 10 10 re f\n".to_vec(),
+    )));
+    let mut patterns = Dictionary::new();
+    patterns.set("P1", Object::Reference(pat_id));
+
+    let mut res = Dictionary::new();
+    res.set("Font", Object::Dictionary(fonts));
+    res.set("ColorSpace", Object::Dictionary(cs));
+    res.set("Pattern", Object::Dictionary(patterns));
+
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set("Contents", content_id);
+    page.set("Resources", Object::Dictionary(res));
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path)
+        .expect("write Pattern ColorSpace classifier fixture");
+}
+
+fn write_extgstate_smask_image(path: &Path, content: &[u8]) {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        content.to_vec(),
+    )));
+
+    let mut img = Dictionary::new();
+    img.set("Type", "XObject");
+    img.set("Subtype", "Image");
+    img.set("Width", 2);
+    img.set("Height", 2);
+    img.set("ColorSpace", "DeviceRGB");
+    img.set("BitsPerComponent", 8);
+    let img_id = doc.add_object(Object::Stream(Stream::new(img, R3_TINY_RGB.to_vec())));
+
+    let mut sm = Dictionary::new();
+    sm.set("Type", "XObject");
+    sm.set("Subtype", "Image");
+    sm.set("Width", 2);
+    sm.set("Height", 2);
+    sm.set("ColorSpace", "DeviceGray");
+    sm.set("BitsPerComponent", 8);
+    let smask_id = doc.add_object(Object::Stream(Stream::new(sm, vec![255, 200, 180, 255])));
+
+    let mut gs = Dictionary::new();
+    gs.set("Type", "ExtGState");
+    gs.set("SMask", Object::Reference(smask_id));
+    let gs_id = doc.add_object(Object::Dictionary(gs));
+
+    let mut xobjects = Dictionary::new();
+    xobjects.set("Im0", Object::Reference(img_id));
+    let mut extg = Dictionary::new();
+    extg.set("Gs1", Object::Reference(gs_id));
+    let mut res = Dictionary::new();
+    res.set("XObject", Object::Dictionary(xobjects));
+    res.set("ExtGState", Object::Dictionary(extg));
+
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set("Contents", content_id);
+    page.set("Resources", Object::Dictionary(res));
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path)
+        .expect("write ExtGState SMask + unique Image classifier fixture");
+}
+
+// --- R10 -------------------------------------------------------------------
+
+#[test]
+fn classify_indirect_widths_not_helvetica_fallback() {
+    let scratch = Scratch::new("r10-widths");
+    let path = scratch.file("indirect-widths.pdf");
+    write_type1_indirect_widths(&path, b"BT /F1 12 Tf 72 720 Td (Hi) Tj ET\n");
+    let hits = classify(&path, "R10");
+    let occ = first_of_kind(&hits, "text", "R10");
+    assert!(
+        (occ.rect.w - 24.0).abs() <= 1.0,
+        "R10: Type1 indirect /Widths 1000,1000 at Tf=12 must report w≈24, not Helvetica fallback ≈11.34; got w={}",
+        occ.rect.w
+    );
+    assert!(
+        (occ.rect.w - 11.34).abs() > 1.0,
+        "R10: rect.w must not stay on the Helvetica table ≈11.34; got w={}",
+        occ.rect.w
+    );
+}
+
+// --- R11 -------------------------------------------------------------------
+
+#[test]
+fn classify_named_pattern_cs_is_unsupported() {
+    let scratch = Scratch::new("r11-pattern");
+    let path = scratch.file("pattern-cs.pdf");
+    write_pattern_cs_page(
+        &path,
+        b"BT /F1 12 Tf /Cs1 cs /P1 scn 72 720 Td (Hi) Tj ET\n",
+    );
+    let hits = classify(&path, "R11");
+    let occ = first_of_kind(&hits, "text", "R11");
+    assert_ne!(
+        capability_token(occ),
+        "supported",
+        "R11: /Cs1 cs Pattern resource + (Hi) Tj must not be supported; got {} reason={:?}",
+        capability_token(occ),
+        reason_code(occ)
+    );
+    assert_unsupported(occ, "text", "PATTERN", "R11");
+}
+
+// --- R12 -------------------------------------------------------------------
+
+#[test]
+fn classify_extgstate_smask_image_is_masked() {
+    let scratch = Scratch::new("r12-gs-smask");
+    let path = scratch.file("gs-smask.pdf");
+    write_extgstate_smask_image(&path, b"q 40 0 0 40 72 400 cm /Gs1 gs /Im0 Do Q\n");
+    let hits = classify(&path, "R12");
+    let occ = first_of_kind(&hits, "image", "R12");
+    assert_ne!(
+        capability_token(occ),
+        "supported",
+        "R12: unique Image after ExtGState /Gs1 /SMask must not be supported; got {} reason={:?}",
+        capability_token(occ),
+        reason_code(occ)
+    );
+    assert_unsupported(occ, "image", "MASKED_IMAGE", "R12");
+}

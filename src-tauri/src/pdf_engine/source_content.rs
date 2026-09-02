@@ -167,6 +167,7 @@ struct GState {
     clip_pending: bool,
     fill_pattern: bool,
     stroke_pattern: bool,
+    masked: bool,
     font_name: Option<Vec<u8>>,
     font_size: f64,
     leading: f64,
@@ -183,6 +184,7 @@ impl Default for GState {
             clip_pending: false,
             fill_pattern: false,
             stroke_pattern: false,
+            masked: false,
             font_name: None,
             font_size: 0.0,
             leading: 0.0,
@@ -333,10 +335,12 @@ impl Walker<'_> {
                     }
                 }
                 "cs" => {
-                    gs.fill_pattern = is_pattern_name(&op.operands);
+                    gs.fill_pattern =
+                        operand_selects_pattern_space(self.doc, resource_owners, &op.operands);
                 }
                 "CS" => {
-                    gs.stroke_pattern = is_pattern_name(&op.operands);
+                    gs.stroke_pattern =
+                        operand_selects_pattern_space(self.doc, resource_owners, &op.operands);
                 }
                 "scn" | "sc" => {
                     if gs.fill_pattern || is_pattern_name(&op.operands) {
@@ -346,6 +350,11 @@ impl Walker<'_> {
                 "SCN" | "SC" => {
                     if gs.stroke_pattern || is_pattern_name(&op.operands) {
                         gs.stroke_pattern = true;
+                    }
+                }
+                "gs" => {
+                    if let Some(name) = op.operands.first().and_then(|o| o.as_name().ok()) {
+                        apply_extgstate_smask(self.doc, resource_owners, name, &mut gs);
                     }
                 }
                 "rg" | "g" | "k" => {
@@ -582,6 +591,7 @@ impl Walker<'_> {
             skewed: is_skewed_tm(effective),
             no_tounicode: inspect.no_tounicode,
             ambiguous: inspect.ambiguous,
+            masked: gs.masked,
             geometry: geom_unsafe,
             ..Flags::default()
         };
@@ -624,7 +634,7 @@ impl Walker<'_> {
             nested_form: nested,
             clipped: gs.clipped(),
             pattern: gs.pattern(),
-            masked: image_is_masked(self.doc, image_id),
+            masked: gs.masked || image_is_masked(self.doc, image_id),
             geometry: geom_unsafe,
             ..Flags::default()
         };
@@ -659,6 +669,7 @@ impl Walker<'_> {
             nested_form: nested,
             clipped: gs.clipped(),
             pattern: gs.pattern(),
+            masked: gs.masked,
             geometry: geom_unsafe,
             ..Flags::default()
         };
@@ -1084,7 +1095,7 @@ fn glyph_width_sum(doc: &Document, font: &Dictionary, bytes: &[u8]) -> f64 {
     if is_cid_or_type0(font) {
         return (bytes.len() / 2) as f64 * descendant_dw(doc, font);
     }
-    if let Some(widths) = explicit_widths(font) {
+    if let Some(widths) = explicit_widths(doc, font) {
         return bytes.iter().map(|&b| widths[b as usize]).sum();
     }
     bytes.iter().map(|&b| helvetica_width(b)).sum()
@@ -1110,10 +1121,21 @@ fn descendant_dw(doc: &Document, font: &Dictionary) -> f64 {
     500.0
 }
 
-fn explicit_widths(font: &Dictionary) -> Option<[f64; 256]> {
-    let first = font.get(b"FirstChar").ok()?.as_i64().ok()? as usize;
-    let last = font.get(b"LastChar").ok()?.as_i64().ok()? as usize;
-    let arr = font.get(b"Widths").ok()?.as_array().ok()?;
+fn explicit_widths(doc: &Document, font: &Dictionary) -> Option<[f64; 256]> {
+    // Helvetica table only when /Widths is truly absent (Standard-14).
+    let arr = font.get_deref(b"Widths", doc).ok()?.as_array().ok()?;
+    let first = font
+        .get_deref(b"FirstChar", doc)
+        .ok()
+        .and_then(|o| o.as_i64().ok())
+        .unwrap_or(0)
+        .max(0) as usize;
+    let last = font
+        .get_deref(b"LastChar", doc)
+        .ok()
+        .and_then(|o| o.as_i64().ok())
+        .map(|n| n.max(0) as usize)
+        .unwrap_or_else(|| first.saturating_add(arr.len().saturating_sub(1)).min(255));
     let mut widths = [500.0; 256];
     for (i, obj) in arr.iter().enumerate() {
         let code = first + i;
@@ -1320,6 +1342,71 @@ fn is_pattern_name(operands: &[Object]) -> bool {
     operands
         .iter()
         .any(|o| o.as_name().ok() == Some(b"Pattern"))
+}
+
+fn operand_selects_pattern_space(
+    doc: &Document,
+    owners: &[ObjectId],
+    operands: &[Object],
+) -> bool {
+    let Some(obj) = operands.first() else {
+        return false;
+    };
+    if color_space_object_is_pattern(doc, obj) {
+        return true;
+    }
+    let Ok(name) = obj.as_name() else {
+        return false;
+    };
+    if name == b"Pattern" {
+        return true;
+    }
+    for &owner in owners {
+        if let Some(entry) = named_resource_entry(doc, owner, b"ColorSpace", name) {
+            return color_space_object_is_pattern(doc, entry);
+        }
+    }
+    false
+}
+
+fn color_space_object_is_pattern(doc: &Document, obj: &Object) -> bool {
+    let resolved = match doc.dereference(obj) {
+        Ok((_, o)) => o,
+        Err(_) => return false,
+    };
+    match resolved {
+        Object::Name(n) => n.as_slice() == b"Pattern",
+        Object::Array(arr) => arr.first().is_some_and(|first| {
+            let first = doc.dereference(first).map(|(_, o)| o).unwrap_or(first);
+            first.as_name().ok() == Some(b"Pattern")
+        }),
+        _ => false,
+    }
+}
+
+fn apply_extgstate_smask(doc: &Document, owners: &[ObjectId], name: &[u8], gs: &mut GState) {
+    for &owner in owners {
+        let Some(entry) = named_resource_entry(doc, owner, b"ExtGState", name) else {
+            continue;
+        };
+        let Some(dict) = deref_dict(doc, entry) else {
+            continue;
+        };
+        let Ok(smask) = dict.get(b"SMask") else {
+            return;
+        };
+        let resolved = doc.dereference(smask).map(|(_, o)| o).unwrap_or(smask);
+        gs.masked = resolved.as_name().ok() != Some(b"None");
+        return;
+    }
+}
+
+fn deref_dict<'a>(doc: &'a Document, obj: &'a Object) -> Option<&'a Dictionary> {
+    match doc.dereference(obj) {
+        Ok((_, Object::Dictionary(d))) => Some(d),
+        Ok((_, Object::Stream(s))) => Some(&s.dict),
+        _ => None,
+    }
 }
 
 fn text_pieces(operands: &[Object]) -> (Vec<Vec<u8>>, f64) {
