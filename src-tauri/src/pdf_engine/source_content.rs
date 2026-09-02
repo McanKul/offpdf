@@ -274,16 +274,15 @@ impl Walker<'_> {
         geom_unsafe: bool,
     ) -> Result<(), AppError> {
         let inline_total = count_inline_images(bytes);
-        let decode_bytes = if inline_total > 0 {
-            strip_inline_images(bytes)
+        // BI…EI: do not trust a prefix Content::decode Ok; strip payloads first.
+        let stripped = if inline_total > 0 {
+            Some(strip_inline_image_payloads(bytes))
         } else {
-            bytes.to_vec()
+            None
         };
-        let ops = match Content::decode(&decode_bytes) {
+        let decode_src = stripped.as_deref().unwrap_or(bytes);
+        let ops = match Content::decode(decode_src) {
             Ok(c) => c.operations,
-            Err(_) if inline_total > 0 && decode_bytes.iter().all(|b| b.is_ascii_whitespace()) => {
-                Vec::new()
-            }
             Err(_) => {
                 return Err(malformed_content(
                     "A page content stream could not be decoded.",
@@ -541,7 +540,8 @@ impl Walker<'_> {
         let sx = (effective[0] * effective[0] + effective[1] * effective[1]).sqrt();
         let sy = (effective[2] * effective[2] + effective[3] * effective[3]).sqrt();
         let height = (ts.font_size.abs() * sy).max(0.01);
-        let width = (inspect.width * (ts.hscale / 100.0) * sx).abs().max(0.01);
+        let tx = inspect.width * (ts.hscale / 100.0);
+        let width = (tx * sx).abs().max(0.01);
         let flags = Flags {
             nested_form: nested,
             type3: inspect.type3,
@@ -575,8 +575,7 @@ impl Walker<'_> {
             flags,
             paint_id: None,
         })?;
-        // PDF updates Tm (not Tlm) to the end of the shown string.
-        let tx = inspect.width * (ts.hscale / 100.0);
+        // Shown-width advance is Tm only; Tlm stays at the line origin.
         ts.tm = mul([1.0, 0.0, 0.0, 1.0, tx, 0.0], ts.tm);
         Ok(())
     }
@@ -1197,11 +1196,12 @@ fn is_rotated_tm(m: [f64; 6]) -> bool {
     if det.abs() < 1e-6 {
         return false;
     }
-    let quarter = (b.abs() > 0.1 || c.abs() > 0.1)
-        && (a - d).abs() < 0.25
-        && (b + c).abs() < 0.25;
-    let half = b.abs() < 0.1 && c.abs() < 0.1 && a < -0.1 && d < -0.1 && (a - d).abs() < 0.25;
-    quarter || half
+    // 90° / 270°: off-axis, a≈d, b≈-c (keeps text-rotated.pdf green).
+    if (b.abs() > 0.1 || c.abs() > 0.1) && (a - d).abs() < 0.25 && (b + c).abs() < 0.25 {
+        return true;
+    }
+    // 180°: axis-aligned invert.
+    a < 0.0 && d < 0.0 && b.abs() <= 0.05 && c.abs() <= 0.05
 }
 
 fn is_skewed_tm(m: [f64; 6]) -> bool {
@@ -1315,32 +1315,36 @@ fn collect_text_obj(obj: &Object, pieces: &mut Vec<Vec<u8>>, adj: &mut f64) {
     }
 }
 
-fn strip_inline_images(data: &[u8]) -> Vec<u8> {
+fn strip_inline_image_payloads(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut i = 0;
     let mut in_inline = false;
     while i < data.len() {
+        if data[i].is_ascii_whitespace() {
+            if !in_inline {
+                out.push(data[i]);
+            }
+            i += 1;
+            continue;
+        }
         if !in_inline && data[i] == b'%' {
             let start = i;
-            while i < data.len() && data[i] != b'\n' {
-                i += 1;
-            }
-            if i < data.len() {
+            while i < data.len() && data[i] != b'\n' && data[i] != b'\r' {
                 i += 1;
             }
             out.extend_from_slice(&data[start..i]);
             continue;
         }
         if !in_inline && data[i] == b'(' {
-            let end = skip_literal(data, i);
-            out.extend_from_slice(&data[i..end]);
-            i = end;
+            let start = i;
+            i = skip_literal(data, i);
+            out.extend_from_slice(&data[start..i]);
             continue;
         }
         if !in_inline && data[i] == b'<' && data.get(i + 1) != Some(&b'<') {
-            let end = skip_hex(data, i);
-            out.extend_from_slice(&data[i..end]);
-            i = end;
+            let start = i;
+            i = skip_hex(data, i);
+            out.extend_from_slice(&data[start..i]);
             continue;
         }
         if !in_inline && is_op_token(data, i, b"BI") {
@@ -1467,7 +1471,7 @@ fn object_is_signature(obj: &Object) -> bool {
         Object::Stream(s) => &s.dict,
         _ => return false,
     };
-    let is_sig = name_is(dict, b"FT", b"Sig") || name_is(dict, b"Type", b"Sig");
+    let is_sig = name_is(dict, b"Type", b"Sig") || name_is(dict, b"FT", b"Sig");
     is_sig && dict.get(b"ByteRange").is_ok()
 }
 
