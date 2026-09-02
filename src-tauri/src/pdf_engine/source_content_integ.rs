@@ -957,3 +957,187 @@ fn classify_text_bounds_use_tm_scale() {
         occ.rect.h
     );
 }
+
+// --- PR 97 review fold r2 (R6–R9) ------------------------------------------
+// Extra PDFs are generated in temp with lopdf. Do not grow fixtures/source-edit/.
+
+fn write_type3_and_helvetica_page(path: &Path, content: &[u8]) {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        content.to_vec(),
+    )));
+
+    let proc_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        b"10 0 0 0 10 10 d1\n0 0 10 10 re f\n".to_vec(),
+    )));
+    let mut char_procs = Dictionary::new();
+    char_procs.set("x", proc_id);
+
+    let mut enc = Dictionary::new();
+    enc.set("Type", "Encoding");
+    enc.set(
+        "Differences",
+        vec![Object::Integer(120), Object::Name(b"x".to_vec())],
+    );
+
+    let mut t3 = Dictionary::new();
+    t3.set("Type", "Font");
+    t3.set("Subtype", "Type3");
+    t3.set("FontBBox", box_obj([0, 0, 10, 10]));
+    t3.set(
+        "FontMatrix",
+        Object::Array(vec![
+            Object::Real(1.0),
+            Object::Real(0.0),
+            Object::Real(0.0),
+            Object::Real(1.0),
+            Object::Real(0.0),
+            Object::Real(0.0),
+        ]),
+    );
+    t3.set("CharProcs", Object::Dictionary(char_procs));
+    t3.set("Encoding", Object::Dictionary(enc));
+    t3.set("FirstChar", 120);
+    t3.set("LastChar", 120);
+    t3.set("Widths", vec![Object::Integer(10)]);
+
+    let mut f1 = Dictionary::new();
+    f1.set("Type", "Font");
+    f1.set("Subtype", "Type1");
+    f1.set("BaseFont", "Helvetica");
+
+    let mut fonts = Dictionary::new();
+    fonts.set("T3", Object::Dictionary(t3));
+    fonts.set("F1", Object::Dictionary(f1));
+    let mut res = Dictionary::new();
+    res.set("Font", Object::Dictionary(fonts));
+
+    let mut page = Dictionary::new();
+    page.set("Type", "Page");
+    page.set("Parent", pages_id);
+    page.set("MediaBox", box_obj([0, 0, 612, 792]));
+    page.set("Contents", content_id);
+    page.set("Resources", Object::Dictionary(res));
+    let page_id = doc.add_object(Object::Dictionary(page));
+
+    let mut pages = Dictionary::new();
+    pages.set("Type", "Pages");
+    pages.set("Kids", vec![page_id.into()]);
+    pages.set("Count", 1);
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let mut catalog = Dictionary::new();
+    catalog.set("Type", "Catalog");
+    catalog.set("Pages", pages_id);
+    let catalog_id = doc.add_object(Object::Dictionary(catalog));
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path)
+        .expect("write Type3+Helvetica classifier fixture");
+}
+
+// --- R6 --------------------------------------------------------------------
+
+#[test]
+fn classify_inline_image_uses_ctm_at_bi() {
+    let path = fixture("image-inline.pdf");
+    let hits = classify(&path, "R6");
+    let occ = first_of_kind(&hits, "image", "R6");
+    assert!(
+        (occ.rect.x - 72.0).abs() <= 1.0,
+        "R6: image-inline.pdf image rect.x must be ~72 (CTM at BI), not the unit square at origin; got x={}",
+        occ.rect.x
+    );
+    assert!(
+        (occ.rect.y - 400.0).abs() <= 1.0,
+        "R6: image-inline.pdf image rect.y must be ~400 (CTM at BI), not the unit square at origin; got y={}",
+        occ.rect.y
+    );
+    assert!(
+        (occ.rect.w - 24.0).abs() <= 1.0,
+        "R6: image-inline.pdf image rect.w must be ~24 (CTM at BI), not the unit square; got w={}",
+        occ.rect.w
+    );
+    assert!(
+        (occ.rect.h - 12.0).abs() <= 1.0,
+        "R6: image-inline.pdf image rect.h must be ~12 (CTM at BI), not the unit square; got h={}",
+        occ.rect.h
+    );
+}
+
+// --- R7 --------------------------------------------------------------------
+
+#[test]
+fn classify_q_restores_type3_after_helvetica() {
+    let scratch = Scratch::new("r7-q-type3");
+    let path = scratch.file("q-type3.pdf");
+    write_type3_and_helvetica_page(
+        &path,
+        b"BT /T3 12 Tf (x) Tj q /F1 12 Tf (y) Tj Q (z) Tj ET\n",
+    );
+    let hits = classify(&path, "R7");
+    let texts: Vec<&SourceOccurrence> = hits.iter().filter(|o| kind_token(o) == "text").collect();
+    assert_eq!(
+        texts.len(),
+        3,
+        "R7: (x) Tj q /F1 (y) Tj Q (z) Tj must emit three text occurrences; got {:?}",
+        hits.iter()
+            .map(|o| (kind_token(o), capability_token(o), reason_code(o)))
+            .collect::<Vec<_>>()
+    );
+    let last = texts[2];
+    assert_ne!(
+        capability_token(last),
+        "supported",
+        "R7: last show (z) after Q must not be Helvetica supported; got {} reason={:?}",
+        capability_token(last),
+        reason_code(last)
+    );
+    assert_unsupported(last, "text", "TYPE3", "R7");
+}
+
+// --- R8 --------------------------------------------------------------------
+
+#[test]
+fn classify_tc_advances_second_tj() {
+    let scratch = Scratch::new("r8-tc");
+    let path = scratch.file("tc-two-tj.pdf");
+    write_helvetica_page(&path, b"BT /F1 12 Tf 2 Tc 72 720 Td (Hi) Tj (there) Tj ET\n");
+    let hits = classify(&path, "R8");
+    let texts: Vec<&SourceOccurrence> = hits.iter().filter(|o| kind_token(o) == "text").collect();
+    assert_eq!(
+        texts.len(),
+        2,
+        "R8: (Hi) Tj (there) Tj must emit two text occurrences; got {:?}",
+        hits.iter()
+            .map(|o| (kind_token(o), o.rect.x, o.rect.y))
+            .collect::<Vec<_>>()
+    );
+    // Helvetica H=667 i=278 → 11.34 at Tf=12. 2 Tc on two glyphs adds 4
+    // user units, so second.x ≈ first.x + 15.34, not first.x + 11.34.
+    assert!(
+        texts[1].rect.x > texts[0].rect.x + 13.0,
+        "R8: 2 Tc must push second.x past first.x + no-Tc Hi width 11.34; first.x={} second.x={} (need second.x > first.x + 13)",
+        texts[0].rect.x,
+        texts[1].rect.x
+    );
+}
+
+// --- R9 --------------------------------------------------------------------
+
+#[test]
+fn classify_source_drops_rotated_fixture_parenthetical() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pdf_engine/source_content.rs");
+    let src = fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "R9: must read source_content.rs via CARGO_MANIFEST_DIR ({}): {e}",
+            path.display()
+        )
+    });
+    assert!(
+        !src.contains("keeps text-rotated.pdf green"),
+        "R9: source_content.rs must not contain the exact substring `keeps text-rotated.pdf green`"
+    );
+}

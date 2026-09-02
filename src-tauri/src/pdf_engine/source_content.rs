@@ -167,6 +167,12 @@ struct GState {
     clip_pending: bool,
     fill_pattern: bool,
     stroke_pattern: bool,
+    font_name: Option<Vec<u8>>,
+    font_size: f64,
+    leading: f64,
+    hscale: f64,
+    tc: f64,
+    tw: f64,
 }
 
 impl Default for GState {
@@ -177,6 +183,12 @@ impl Default for GState {
             clip_pending: false,
             fill_pattern: false,
             stroke_pattern: false,
+            font_name: None,
+            font_size: 0.0,
+            leading: 0.0,
+            hscale: 100.0,
+            tc: 0.0,
+            tw: 0.0,
         }
     }
 }
@@ -194,10 +206,6 @@ impl GState {
 struct TextState {
     tm: [f64; 6],
     tlm: [f64; 6],
-    font_name: Option<Vec<u8>>,
-    font_size: f64,
-    leading: f64,
-    hscale: f64,
 }
 
 impl Default for TextState {
@@ -205,10 +213,6 @@ impl Default for TextState {
         Self {
             tm: IDENTITY,
             tlm: IDENTITY,
-            font_name: None,
-            font_size: 0.0,
-            leading: 0.0,
-            hscale: 100.0,
         }
     }
 }
@@ -357,21 +361,30 @@ impl Walker<'_> {
                 "ET" => {}
                 "Tf" => {
                     if let Some(name) = op.operands.first().and_then(|o| o.as_name().ok()) {
-                        ts.font_name = Some(name.to_vec());
+                        gs.font_name = Some(name.to_vec());
                     }
                     if let Some(size) = op.operands.get(1).and_then(obj_f64) {
-                        ts.font_size = size;
+                        gs.font_size = size;
                     }
                 }
-                "Tc" | "Tw" => {}
+                "Tc" => {
+                    if let Some(c) = op.operands.first().and_then(obj_f64) {
+                        gs.tc = c;
+                    }
+                }
+                "Tw" => {
+                    if let Some(w) = op.operands.first().and_then(obj_f64) {
+                        gs.tw = w;
+                    }
+                }
                 "Tz" => {
                     if let Some(z) = op.operands.first().and_then(obj_f64) {
-                        ts.hscale = z;
+                        gs.hscale = z;
                     }
                 }
                 "TL" => {
                     if let Some(l) = op.operands.first().and_then(obj_f64) {
-                        ts.leading = l;
+                        gs.leading = l;
                     }
                 }
                 "Td" => {
@@ -381,7 +394,7 @@ impl Walker<'_> {
                 }
                 "TD" => {
                     if let Some((tx, ty)) = two_nums(&op.operands) {
-                        ts.leading = -ty;
+                        gs.leading = -ty;
                         apply_td(&mut ts, tx, ty);
                     }
                 }
@@ -392,15 +405,30 @@ impl Walker<'_> {
                     }
                 }
                 "T*" => {
-                    let ty = -ts.leading;
+                    let ty = -gs.leading;
                     apply_td(&mut ts, 0.0, ty);
                 }
                 "Tj" | "'" | "\"" | "TJ" => {
+                    let mut show_ops = op.operands.as_slice();
+                    if op.operator == "\"" {
+                        if let Some(aw) = op.operands.first().and_then(obj_f64) {
+                            gs.tw = aw;
+                        }
+                        if let Some(ac) = op.operands.get(1).and_then(obj_f64) {
+                            gs.tc = ac;
+                        }
+                        if op.operands.len() >= 2
+                            && obj_f64(&op.operands[0]).is_some()
+                            && obj_f64(&op.operands[1]).is_some()
+                        {
+                            show_ops = &op.operands[2..];
+                        }
+                    }
                     if op.operator == "'" || op.operator == "\"" {
-                        let ty = -ts.leading;
+                        let ty = -gs.leading;
                         apply_td(&mut ts, 0.0, ty);
                     }
-                    let (pieces, adj) = text_pieces(&op.operands);
+                    let (pieces, adj) = text_pieces(show_ops);
                     self.emit_text(
                         page_index,
                         contents_id,
@@ -531,17 +559,19 @@ impl Walker<'_> {
         let inspect = inspect_text(
             self.doc,
             resource_owners,
-            ts.font_name.as_deref(),
+            gs.font_name.as_deref(),
             pieces,
             tj_adj,
-            ts.font_size,
+            gs.font_size,
         );
         let effective = mul(gs.ctm, ts.tm);
         let sx = (effective[0] * effective[0] + effective[1] * effective[1]).sqrt();
         let sy = (effective[2] * effective[2] + effective[3] * effective[3]).sqrt();
-        let height = (ts.font_size.abs() * sy).max(0.01);
-        let tx = inspect.width * (ts.hscale / 100.0);
-        let width = (tx * sx).abs().max(0.01);
+        let height = (gs.font_size.abs() * sy).max(0.01);
+        let th = gs.hscale / 100.0;
+        let shown = inspect.width * th;
+        let width = (shown * sx).abs().max(0.01);
+        let tx = (inspect.width + spacing_advance(pieces, gs.tc, gs.tw)) * th;
         let flags = Flags {
             nested_form: nested,
             type3: inspect.type3,
@@ -1196,7 +1226,7 @@ fn is_rotated_tm(m: [f64; 6]) -> bool {
     if det.abs() < 1e-6 {
         return false;
     }
-    // 90° / 270°: off-axis, a≈d, b≈-c (keeps text-rotated.pdf green).
+    // 90° / 270°: off-axis, a≈d, b≈-c.
     if (b.abs() > 0.1 || c.abs() > 0.1) && (a - d).abs() < 0.25 && (b + c).abs() < 0.25 {
         return true;
     }
@@ -1315,19 +1345,41 @@ fn collect_text_obj(obj: &Object, pieces: &mut Vec<Vec<u8>>, adj: &mut f64) {
     }
 }
 
+fn spacing_advance(pieces: &[Vec<u8>], tc: f64, tw: f64) -> f64 {
+    let mut extra = 0.0;
+    for piece in pieces {
+        extra += piece.len() as f64 * tc;
+        extra += piece.iter().filter(|&&b| b == b' ').count() as f64 * tw;
+    }
+    extra
+}
+
 fn strip_inline_image_payloads(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut i = 0;
-    let mut in_inline = false;
+    // Normal → Keys (after BI) → Payload (after ID). Copy BI/keys/ID/EI;
+    // drop only the raw bytes between ID and EI so Content::decode still
+    // yields BI at the CTM in force there.
+    let mut after_bi = false;
+    let mut after_id = false;
     while i < data.len() {
-        if data[i].is_ascii_whitespace() {
-            if !in_inline {
-                out.push(data[i]);
+        if after_id {
+            if is_op_token(data, i, b"EI") {
+                out.extend_from_slice(b"EI");
+                i += 2;
+                after_id = false;
+                after_bi = false;
+            } else {
+                i += 1;
             }
+            continue;
+        }
+        if data[i].is_ascii_whitespace() {
+            out.push(data[i]);
             i += 1;
             continue;
         }
-        if !in_inline && data[i] == b'%' {
+        if data[i] == b'%' {
             let start = i;
             while i < data.len() && data[i] != b'\n' && data[i] != b'\r' {
                 i += 1;
@@ -1335,31 +1387,38 @@ fn strip_inline_image_payloads(data: &[u8]) -> Vec<u8> {
             out.extend_from_slice(&data[start..i]);
             continue;
         }
-        if !in_inline && data[i] == b'(' {
+        if data[i] == b'(' {
             let start = i;
             i = skip_literal(data, i);
             out.extend_from_slice(&data[start..i]);
             continue;
         }
-        if !in_inline && data[i] == b'<' && data.get(i + 1) != Some(&b'<') {
+        if data[i] == b'<' && data.get(i + 1) != Some(&b'<') {
             let start = i;
             i = skip_hex(data, i);
             out.extend_from_slice(&data[start..i]);
             continue;
         }
-        if !in_inline && is_op_token(data, i, b"BI") {
-            in_inline = true;
+        if !after_bi && is_op_token(data, i, b"BI") {
+            out.extend_from_slice(b"BI");
             i += 2;
+            after_bi = true;
             continue;
         }
-        if in_inline && is_op_token(data, i, b"EI") {
-            in_inline = false;
+        if after_bi && is_op_token(data, i, b"ID") {
+            out.extend_from_slice(b"ID");
             i += 2;
+            out.push(b' ');
+            after_id = true;
             continue;
         }
-        if !in_inline {
-            out.push(data[i]);
+        if after_bi && is_op_token(data, i, b"EI") {
+            out.extend_from_slice(b"EI");
+            i += 2;
+            after_bi = false;
+            continue;
         }
+        out.push(data[i]);
         i += 1;
     }
     out
