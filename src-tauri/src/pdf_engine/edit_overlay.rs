@@ -14,7 +14,8 @@ use crate::pdf_engine::edit_links::{
     SessionLink, MAX_LINKS,
 };
 use crate::pdf_engine::edit_redact::{
-    apply_redactions, apply_redactions_with_app, verify_redaction, RedactRegion,
+    apply_redactions, apply_redactions_with_app, collect_redact_probes_for_pages,
+    verify_redaction, RedactRegion,
 };
 use crate::pdf_engine::validate_output::{
     catalog_flags_from_doc, content_digest, validate_staged_pdf, ContentDigest, OutputSnapshot,
@@ -1514,26 +1515,7 @@ fn collect_redact_probes(
 ) -> Result<Vec<Vec<u8>>, AppError> {
     let doc = Document::load(path)
         .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
-    let pages = doc.get_pages();
-    let mut seen = HashSet::new();
-    let mut probes = Vec::new();
-    for region in regions {
-        if !seen.insert(region.page_index) {
-            continue;
-        }
-        let Some(&id) = pages.get(&(region.page_index + 1)) else {
-            continue;
-        };
-        let Ok(bytes) = doc.get_page_content(id) else {
-            continue;
-        };
-        // Whole original stream of the redacted page is unique enough. Short
-        // `(...)` literals over-match unredacted pages that share a header.
-        if !bytes.is_empty() {
-            probes.push(bytes);
-        }
-    }
-    Ok(probes)
+    collect_redact_probes_for_pages(&doc, regions)
 }
 
 fn overlay_onto_assembled<F>(

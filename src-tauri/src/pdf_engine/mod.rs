@@ -20,6 +20,8 @@ pub mod edit_redact;
 mod edit_redact_integ;
 #[cfg(test)]
 mod edit_redact_r2_integ;
+#[cfg(test)]
+mod edit_redact_r3_integ;
 pub mod metadata;
 pub mod nup;
 pub mod ocr;

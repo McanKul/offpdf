@@ -81,10 +81,15 @@ fn apply_redactions_inner(
                 AppError::engine_failed(format!("Could not read the PDF: {e}"))
             })?;
             let pages = probe.get_pages();
+            for &page_index in by_page.keys() {
+                if pages.get(&(page_index + 1)).is_none() {
+                    return Err(redaction_page_missing(page_index));
+                }
+            }
             let mut needs_unrotated = false;
             for &page_index in by_page.keys() {
                 let Some(&page_id) = pages.get(&(page_index + 1)) else {
-                    continue;
+                    return Err(redaction_page_missing(page_index));
                 };
                 if crop::page_rotation(&probe, page_id) != 0 {
                     needs_unrotated = true;
@@ -101,7 +106,7 @@ fn apply_redactions_inner(
             for (&page_index, page_regions) in &by_page {
                 let page_no = page_index + 1;
                 let Some(&page_id) = pages.get(&page_no) else {
-                    continue;
+                    return Err(redaction_page_missing(page_index));
                 };
                 let media = crop::media_box(&probe, page_id);
                 let user_unit = crop::page_user_unit(&probe, page_id);
@@ -120,18 +125,30 @@ fn apply_redactions_inner(
             }
         }
 
+        if rasters.len() != by_page.len() || by_page.keys().any(|p| !rasters.contains_key(p)) {
+            let missing = by_page
+                .keys()
+                .copied()
+                .find(|p| !rasters.contains_key(p))
+                .unwrap_or(0);
+            return Err(redaction_page_missing(missing));
+        }
+
         let mut doc = Document::load(path).map_err(|e| {
             AppError::engine_failed(format!("Could not read the PDF: {e}"))
         })?;
         let pages = doc.get_pages();
+        let mut redacted_ids = HashSet::new();
         for (page_index, (w, h, rgb)) in rasters {
             let page_no = page_index + 1;
             let Some(&page_id) = pages.get(&page_no) else {
-                continue;
+                return Err(redaction_page_missing(page_index));
             };
             let media = crop::media_box(&doc, page_id);
             install_page_image(&mut doc, page_id, w, h, &rgb, media)?;
+            redacted_ids.insert(page_id);
         }
+        detach_inherited_resources(&mut doc, &redacted_ids);
         sweep_unreferenced(&mut doc);
         save_in_place(&mut doc, path)
     })();
@@ -155,6 +172,13 @@ pub fn verify_redaction(
         AppError::engine_failed(format!("Could not read the PDF: {e}"))
     })?;
     let _ = doc.decompress();
+
+    let pages = doc.get_pages();
+    for region in regions {
+        if pages.get(&(region.page_index + 1)).is_none() {
+            return Err(redaction_page_missing(region.page_index));
+        }
+    }
 
     if !page_content_probes.is_empty() {
         if probe_remains_on_redacted_pages(&doc, page_content_probes, regions) {
@@ -199,6 +223,105 @@ fn save_in_place(doc: &mut Document, path: &Path) -> Result<(), AppError> {
         return Err(e);
     }
     Ok(())
+}
+
+fn redaction_page_missing(page_index: u32) -> AppError {
+    AppError::new(
+        "REDACTION_INCOMPLETE",
+        "Redaction could not be verified",
+        format!(
+            "A redaction region targets page {} which is not in the PDF. The file was not saved.",
+            page_index + 1
+        ),
+    )
+}
+
+/// Copy inherited `/Resources` onto unredacted siblings, then drop Pages-level
+/// `/Resources` so Form/Image XObjects used only by redacted pages become
+/// unreachable and can be swept.
+fn detach_inherited_resources(doc: &mut Document, redacted: &HashSet<ObjectId>) {
+    let page_ids: Vec<ObjectId> = doc.get_pages().values().copied().collect();
+    let mut copies: Vec<(ObjectId, Object)> = Vec::new();
+    for page_id in &page_ids {
+        if redacted.contains(page_id) {
+            continue;
+        }
+        let has_own = doc
+            .get_dictionary(*page_id)
+            .ok()
+            .is_some_and(|p| p.get(b"Resources").is_ok());
+        if has_own {
+            continue;
+        }
+        if let Some(res) = inherited_resources_clone(doc, *page_id) {
+            copies.push((*page_id, res));
+        }
+    }
+    for (page_id, res) in copies {
+        if let Ok(page) = doc.get_object_mut(page_id).and_then(|o| o.as_dict_mut()) {
+            if page.get(b"Resources").is_err() {
+                page.set("Resources", res);
+            }
+        }
+    }
+    for id in collect_pages_tree_nodes(doc) {
+        if let Ok(dict) = doc.get_object_mut(id).and_then(|o| o.as_dict_mut()) {
+            dict.remove(b"Resources");
+        }
+    }
+}
+
+fn inherited_resources_clone(doc: &Document, page_id: ObjectId) -> Option<Object> {
+    let mut seen = HashSet::new();
+    let mut current = page_id;
+    loop {
+        let dict = doc.get_dictionary(current).ok()?;
+        let parent = dict.get(b"Parent").ok()?.as_reference().ok()?;
+        if !seen.insert(parent) {
+            return None;
+        }
+        let parent_dict = doc.get_dictionary(parent).ok()?;
+        if let Ok(res) = parent_dict.get(b"Resources") {
+            return Some(res.clone());
+        }
+        current = parent;
+    }
+}
+
+fn collect_pages_tree_nodes(doc: &Document) -> Vec<ObjectId> {
+    let mut out = Vec::new();
+    let Ok(root) = doc.trailer.get(b"Root").and_then(Object::as_reference) else {
+        return out;
+    };
+    let Ok(catalog) = doc.get_dictionary(root) else {
+        return out;
+    };
+    let Ok(pages_id) = catalog.get(b"Pages").and_then(Object::as_reference) else {
+        return out;
+    };
+    let mut stack = vec![pages_id];
+    let mut seen = HashSet::new();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Ok(dict) = doc.get_dictionary(id) else {
+            continue;
+        };
+        let typ = dict.get(b"Type").ok().and_then(|o| o.as_name().ok());
+        if typ == Some(b"Page") {
+            continue;
+        }
+        out.push(id);
+        if let Ok(Object::Array(kids)) = dict.get(b"Kids") {
+            for kid in kids {
+                if let Ok(kid_id) = kid.as_reference() {
+                    stack.push(kid_id);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn renderer_missing() -> AppError {
@@ -550,34 +673,139 @@ fn append_page_streams(doc: &Document, page_id: ObjectId, out: &mut Vec<u8>) {
 }
 
 fn append_page_xobjects(doc: &Document, page_id: ObjectId, out: &mut Vec<u8>) {
-    let Ok((inline, inherited)) = doc.get_page_resources(page_id) else {
+    let mut seen = HashSet::new();
+    for resources in ancestor_resource_dicts(doc, page_id) {
+        append_xobject_streams(doc, resources, out, &mut seen);
+    }
+}
+
+fn ancestor_resource_dicts<'a>(doc: &'a Document, start: ObjectId) -> Vec<&'a Dictionary> {
+    let mut dicts = Vec::new();
+    let mut current = Some(start);
+    let mut seen = HashSet::new();
+    while let Some(id) = current {
+        if !seen.insert(id) {
+            break;
+        }
+        let Ok(node) = doc.get_dictionary(id) else {
+            break;
+        };
+        if let Ok(res) = node.get(b"Resources") {
+            if let Some(d) = dict_from(doc, res) {
+                dicts.push(d);
+            }
+        }
+        current = node.get(b"Parent").ok().and_then(|o| o.as_reference().ok());
+    }
+    dicts
+}
+
+fn append_xobject_streams(
+    doc: &Document,
+    resources: &Dictionary,
+    out: &mut Vec<u8>,
+    seen: &mut HashSet<ObjectId>,
+) {
+    let Ok(xo) = resources.get(b"XObject") else {
         return;
     };
-    let mut dicts: Vec<&Dictionary> = Vec::new();
-    if let Some(d) = inline {
-        dicts.push(d);
-    }
-    for id in inherited {
-        if let Ok(d) = doc.get_dictionary(id) {
-            dicts.push(d);
+    let Some(xobjects) = dict_from(doc, xo) else {
+        return;
+    };
+    for (_, obj) in xobjects.iter() {
+        let Ok(id) = obj.as_reference() else {
+            continue;
+        };
+        if !seen.insert(id) {
+            continue;
+        }
+        let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) else {
+            continue;
+        };
+        out.extend_from_slice(&plain_stream(stream));
+        out.push(b'\n');
+        if stream
+            .dict
+            .get(b"Subtype")
+            .ok()
+            .and_then(|o| o.as_name().ok())
+            == Some(b"Form")
+        {
+            if let Ok(res) = stream.dict.get(b"Resources") {
+                if let Some(d) = dict_from(doc, res) {
+                    append_xobject_streams(doc, d, out, seen);
+                }
+            }
         }
     }
-    for resources in dicts {
-        let Ok(xo) = resources.get(b"XObject") else {
+}
+
+/// Page Contents plus decoded Form XObject streams (page-local and inherited).
+pub(crate) fn collect_redact_probes_for_pages(
+    doc: &Document,
+    regions: &[RedactRegion],
+) -> Result<Vec<Vec<u8>>, AppError> {
+    let pages = doc.get_pages();
+    let mut seen = HashSet::new();
+    let mut probes = Vec::new();
+    for region in regions {
+        if !seen.insert(region.page_index) {
+            continue;
+        }
+        let Some(&id) = pages.get(&(region.page_index + 1)) else {
+            return Err(redaction_page_missing(region.page_index));
+        };
+        if let Ok(bytes) = doc.get_page_content(id) {
+            if !bytes.is_empty() {
+                probes.push(bytes);
+            }
+        }
+        collect_form_xobject_probes(doc, id, &mut probes);
+    }
+    Ok(probes)
+}
+
+fn collect_form_xobject_probes(doc: &Document, page_id: ObjectId, probes: &mut Vec<Vec<u8>>) {
+    let mut seen = HashSet::new();
+    for resources in ancestor_resource_dicts(doc, page_id) {
+        collect_form_xobjects_from_dict(doc, resources, probes, &mut seen);
+    }
+}
+
+fn collect_form_xobjects_from_dict(
+    doc: &Document,
+    resources: &Dictionary,
+    probes: &mut Vec<Vec<u8>>,
+    seen: &mut HashSet<ObjectId>,
+) {
+    let Ok(xo) = resources.get(b"XObject") else {
+        return;
+    };
+    let Some(xobjects) = dict_from(doc, xo) else {
+        return;
+    };
+    for (_, obj) in xobjects.iter() {
+        let Ok(id) = obj.as_reference() else {
             continue;
         };
-        let Some(xobjects) = dict_from(doc, xo) else {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) else {
             continue;
         };
-        for (_, obj) in xobjects.iter() {
-            let Ok(id) = obj.as_reference() else {
-                continue;
-            };
-            let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) else {
-                continue;
-            };
-            out.extend_from_slice(&plain_stream(stream));
-            out.push(b'\n');
+        let subtype = stream.dict.get(b"Subtype").ok().and_then(|o| o.as_name().ok());
+        if subtype != Some(b"Form") {
+            continue;
+        }
+        let bytes = plain_stream(stream);
+        if !bytes.is_empty() {
+            probes.push(bytes);
+        }
+        if let Ok(res) = stream.dict.get(b"Resources") {
+            if let Some(d) = dict_from(doc, res) {
+                collect_form_xobjects_from_dict(doc, d, probes, seen);
+            }
         }
     }
 }
@@ -630,6 +858,7 @@ fn warn_intersecting_annots(doc: &Document, regions: &[RedactRegion], warnings: 
 }
 
 fn warn_intersecting_fields(doc: &Document, regions: &[RedactRegion], warnings: &mut Vec<String>) {
+    let mut warned: HashSet<ObjectId> = HashSet::new();
     for (page_no, page_id) in doc.get_pages() {
         let page_index = page_no.saturating_sub(1);
         let page_regions: Vec<&RedactRegion> = regions
@@ -656,12 +885,136 @@ fn warn_intersecting_fields(doc: &Document, regions: &[RedactRegion], warnings: 
                 continue;
             };
             if page_regions.iter().any(|r| rects_intersect(rect, &r.rect)) {
+                warned.insert(annot_id);
                 warnings.push(format!(
                     "A form field on page {page_no} still holds a value that intersects a redaction region."
                 ));
             }
         }
     }
+    // After flatten-before-burn the widget is gone from /Annots; leftover /V
+    // still lives on catalog /AcroForm /Fields (and parents).
+    for field_id in acroform_field_ids(doc) {
+        if !warned.insert(field_id) {
+            continue;
+        }
+        let Some(value) = field_value(doc, field_id) else {
+            continue;
+        };
+        if value.trim().is_empty() {
+            continue;
+        }
+        if let Some(page_no) = field_intersects_regions(doc, field_id, regions) {
+            warnings.push(format!(
+                "A form field on page {page_no} still holds a value that intersects a redaction region."
+            ));
+        }
+    }
+}
+
+fn acroform_field_ids(doc: &Document) -> Vec<ObjectId> {
+    let mut out = Vec::new();
+    let Ok(root) = doc.trailer.get(b"Root").and_then(Object::as_reference) else {
+        return out;
+    };
+    let Ok(catalog) = doc.get_dictionary(root) else {
+        return out;
+    };
+    let Ok(acro_obj) = catalog.get(b"AcroForm") else {
+        return out;
+    };
+    let Some(acro) = dict_from(doc, acro_obj) else {
+        return out;
+    };
+    let Ok(fields) = acro.get(b"Fields") else {
+        return out;
+    };
+    let resolved = match fields {
+        Object::Reference(id) => doc.get_object(*id).ok(),
+        other => Some(other),
+    };
+    let Some(Object::Array(items)) = resolved else {
+        return out;
+    };
+    let mut stack: Vec<ObjectId> = items.iter().filter_map(|o| o.as_reference().ok()).collect();
+    let mut seen = HashSet::new();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        out.push(id);
+        if let Ok(dict) = doc.get_dictionary(id) {
+            if let Ok(Object::Array(kids)) = dict.get(b"Kids") {
+                for kid in kids {
+                    if let Ok(kid_id) = kid.as_reference() {
+                        stack.push(kid_id);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn field_intersects_regions(
+    doc: &Document,
+    field_id: ObjectId,
+    regions: &[RedactRegion],
+) -> Option<u32> {
+    let mut rects = Vec::new();
+    collect_field_widget_rects(doc, field_id, &mut rects, &mut HashSet::new());
+    for (page_index, rect) in rects {
+        for region in regions {
+            if page_index != u32::MAX && region.page_index != page_index {
+                continue;
+            }
+            if rects_intersect(rect, &region.rect) {
+                return Some(if page_index == u32::MAX {
+                    region.page_index + 1
+                } else {
+                    page_index + 1
+                });
+            }
+        }
+    }
+    None
+}
+
+fn collect_field_widget_rects(
+    doc: &Document,
+    id: ObjectId,
+    out: &mut Vec<(u32, [f64; 4])>,
+    seen: &mut HashSet<ObjectId>,
+) {
+    if !seen.insert(id) {
+        return;
+    }
+    let Ok(dict) = doc.get_dictionary(id) else {
+        return;
+    };
+    if let Some(rect) = dict_rect(doc, dict, b"Rect") {
+        let page_index = dict
+            .get(b"P")
+            .ok()
+            .and_then(|o| o.as_reference().ok())
+            .and_then(|pid| page_index_of(doc, pid))
+            .unwrap_or(u32::MAX);
+        out.push((page_index, rect));
+    }
+    if let Ok(Object::Array(kids)) = dict.get(b"Kids") {
+        for kid in kids {
+            if let Ok(kid_id) = kid.as_reference() {
+                collect_field_widget_rects(doc, kid_id, out, seen);
+            }
+        }
+    }
+}
+
+fn page_index_of(doc: &Document, page_id: ObjectId) -> Option<u32> {
+    doc.get_pages()
+        .iter()
+        .find(|(_, &id)| id == page_id)
+        .map(|(&page_no, _)| page_no.saturating_sub(1))
 }
 
 fn is_widget(annot: &Dictionary) -> bool {
@@ -753,6 +1106,23 @@ fn has_struct_tree_root(doc: &Document) -> bool {
 }
 
 fn has_attachments(doc: &Document) -> bool {
+    if catalog_has_attachments(doc) {
+        return true;
+    }
+    for (_, page_id) in doc.get_pages() {
+        for annot_id in page_annot_ids(doc, page_id) {
+            let Ok(annot) = doc.get_dictionary(annot_id) else {
+                continue;
+            };
+            if is_file_attachment(doc, annot) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn catalog_has_attachments(doc: &Document) -> bool {
     let Ok(root) = doc.trailer.get(b"Root").and_then(Object::as_reference) else {
         return false;
     };
@@ -769,6 +1139,24 @@ fn has_attachments(doc: &Document) -> bool {
         return false;
     };
     names.get(b"EmbeddedFiles").is_ok()
+}
+
+fn is_file_attachment(doc: &Document, annot: &Dictionary) -> bool {
+    if annot
+        .get(b"Subtype")
+        .ok()
+        .and_then(|o| o.as_name().ok())
+        .is_some_and(|n| n == b"FileAttachment")
+    {
+        return true;
+    }
+    let Ok(fs_obj) = annot.get(b"FS") else {
+        return false;
+    };
+    let Some(fs) = dict_from(doc, fs_obj) else {
+        return false;
+    };
+    fs.get(b"EF").is_ok()
 }
 
 fn dict_string(doc: &Document, dict: &Dictionary, key: &[u8]) -> Option<String> {
