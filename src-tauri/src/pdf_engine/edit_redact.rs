@@ -9,6 +9,7 @@ use crate::pdf_engine::crop;
 use crate::pdf_engine::edit_overlay::PdfRectIn;
 use crate::pdf_engine::render;
 use crate::utils::safe_output;
+use lopdf::content::Content;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -139,17 +140,25 @@ fn apply_redactions_inner(
         })?;
         let pages = doc.get_pages();
         let mut redacted_ids = HashSet::new();
+        let mut pending: Vec<(ObjectId, u32, u32, Vec<u8>, [f64; 4])> = Vec::new();
         for (page_index, (w, h, rgb)) in rasters {
             let page_no = page_index + 1;
             let Some(&page_id) = pages.get(&page_no) else {
                 return Err(redaction_page_missing(page_index));
             };
             let media = crop::media_box(&doc, page_id);
-            install_page_image(&mut doc, page_id, w, h, &rgb, media)?;
             redacted_ids.insert(page_id);
+            pending.push((page_id, w, h, rgb, media));
+        }
+        let redacted_only = redacted_only_form_images(&doc, &redacted_ids);
+        for (page_id, w, h, rgb, media) in pending {
+            install_page_image(&mut doc, page_id, w, h, &rgb, media)?;
         }
         detach_inherited_resources(&mut doc, &redacted_ids);
         sweep_unreferenced(&mut doc);
+        if redacted_xobject_still_page_content(&doc, &redacted_only) {
+            return Err(redaction_incomplete());
+        }
         save_in_place(&mut doc, path)
     })();
 
@@ -182,11 +191,7 @@ pub fn verify_redaction(
 
     if !page_content_probes.is_empty() {
         if probe_remains_on_redacted_pages(&doc, page_content_probes, regions) {
-            return Err(AppError::new(
-                "REDACTION_INCOMPLETE",
-                "Redaction could not be verified",
-                "Page content that should have been removed is still in the PDF. The file was not saved.",
-            ));
+            return Err(redaction_incomplete());
         }
     }
 
@@ -236,32 +241,38 @@ fn redaction_page_missing(page_index: u32) -> AppError {
     )
 }
 
-/// Copy inherited `/Resources` onto unredacted siblings, then drop Pages-level
-/// `/Resources` so Form/Image XObjects used only by redacted pages become
-/// unreachable and can be swept.
+fn redaction_incomplete() -> AppError {
+    AppError::new(
+        "REDACTION_INCOMPLETE",
+        "Redaction could not be verified",
+        "Page content that should have been removed is still in the PDF. The file was not saved.",
+    )
+}
+
+/// Deep-copy each unredacted page's own or inherited `/Resources`, keep only
+/// Form/Image names that page actually `Do`s (including `Do` inside invoked
+/// Forms), then drop Pages-tree `/Resources` so redacted-only XObjects can be
+/// swept.
 fn detach_inherited_resources(doc: &mut Document, redacted: &HashSet<ObjectId>) {
     let page_ids: Vec<ObjectId> = doc.get_pages().values().copied().collect();
-    let mut copies: Vec<(ObjectId, Object)> = Vec::new();
+    let mut copies: Vec<(ObjectId, Dictionary)> = Vec::new();
     for page_id in &page_ids {
         if redacted.contains(page_id) {
             continue;
         }
-        let has_own = doc
-            .get_dictionary(*page_id)
-            .ok()
-            .is_some_and(|p| p.get(b"Resources").is_ok());
-        if has_own {
+        let Some(res_obj) = effective_resources_object(doc, *page_id) else {
             continue;
-        }
-        if let Some(res) = inherited_resources_clone(doc, *page_id) {
-            copies.push((*page_id, res));
-        }
+        };
+        let Some(mut res) = resources_dict_deep_copy(doc, res_obj) else {
+            continue;
+        };
+        let keep = collect_invoked_xobject_ids(doc, *page_id);
+        filter_form_image_xobjects(doc, &mut res, &keep);
+        copies.push((*page_id, res));
     }
     for (page_id, res) in copies {
         if let Ok(page) = doc.get_object_mut(page_id).and_then(|o| o.as_dict_mut()) {
-            if page.get(b"Resources").is_err() {
-                page.set("Resources", res);
-            }
+            page.set("Resources", Object::Dictionary(res));
         }
     }
     for id in collect_pages_tree_nodes(doc) {
@@ -271,7 +282,15 @@ fn detach_inherited_resources(doc: &mut Document, redacted: &HashSet<ObjectId>) 
     }
 }
 
-fn inherited_resources_clone(doc: &Document, page_id: ObjectId) -> Option<Object> {
+fn effective_resources_object<'a>(doc: &'a Document, page_id: ObjectId) -> Option<&'a Object> {
+    let page = doc.get_dictionary(page_id).ok()?;
+    if let Ok(res) = page.get(b"Resources") {
+        return Some(res);
+    }
+    inherited_resources_object(doc, page_id)
+}
+
+fn inherited_resources_object<'a>(doc: &'a Document, page_id: ObjectId) -> Option<&'a Object> {
     let mut seen = HashSet::new();
     let mut current = page_id;
     loop {
@@ -282,9 +301,290 @@ fn inherited_resources_clone(doc: &Document, page_id: ObjectId) -> Option<Object
         }
         let parent_dict = doc.get_dictionary(parent).ok()?;
         if let Ok(res) = parent_dict.get(b"Resources") {
-            return Some(res.clone());
+            return Some(res);
         }
         current = parent;
+    }
+}
+
+/// Clone `/Resources` (and a referenced `/XObject` dict) so per-page Form/Image
+/// filtering cannot mutate a dict still shared with another page.
+fn resources_dict_deep_copy(doc: &Document, res: &Object) -> Option<Dictionary> {
+    let dict = dict_from(doc, res)?;
+    let mut copy = dict.clone();
+    if let Ok(xo) = copy.get(b"XObject").cloned() {
+        if let Some(xo_dict) = dict_from(doc, &xo) {
+            copy.set("XObject", Object::Dictionary(xo_dict.clone()));
+        }
+    }
+    Some(copy)
+}
+
+fn filter_form_image_xobjects(
+    doc: &Document,
+    resources: &mut Dictionary,
+    keep_ids: &HashSet<ObjectId>,
+) {
+    let Ok(xo_obj) = resources.get(b"XObject").cloned() else {
+        return;
+    };
+    let Some(xobjects) = dict_from(doc, &xo_obj) else {
+        return;
+    };
+    let mut filtered = Dictionary::new();
+    for (name, obj) in xobjects.iter() {
+        if let Ok(id) = obj.as_reference() {
+            if xobject_is_form_or_image(doc, id) && !keep_ids.contains(&id) {
+                continue;
+            }
+        }
+        filtered.set(name.to_vec(), obj.clone());
+    }
+    resources.set("XObject", Object::Dictionary(filtered));
+}
+
+const MAX_DO_FORM_DEPTH: usize = 8;
+
+fn collect_invoked_xobject_ids(doc: &Document, page_id: ObjectId) -> HashSet<ObjectId> {
+    let mut ids = HashSet::new();
+    let mut visiting = HashSet::new();
+    let content = doc.get_page_content(page_id).unwrap_or_default();
+    walk_invoked_dos(doc, page_id, None, &content, 0, &mut ids, &mut visiting);
+    ids
+}
+
+fn walk_invoked_dos(
+    doc: &Document,
+    page_id: ObjectId,
+    form_id: Option<ObjectId>,
+    content: &[u8],
+    depth: usize,
+    ids: &mut HashSet<ObjectId>,
+    visiting: &mut HashSet<ObjectId>,
+) {
+    if depth > MAX_DO_FORM_DEPTH {
+        return;
+    }
+    for name in do_names_in_content(content) {
+        let Some(id) = lookup_xobject(doc, page_id, form_id, &name) else {
+            continue;
+        };
+        if !ids.insert(id) {
+            continue;
+        }
+        if !xobject_is_form(doc, id) || !visiting.insert(id) {
+            continue;
+        }
+        if let Some(body) = form_stream_bytes(doc, id) {
+            walk_invoked_dos(doc, page_id, Some(id), &body, depth + 1, ids, visiting);
+        }
+    }
+}
+
+fn lookup_xobject(
+    doc: &Document,
+    page_id: ObjectId,
+    form_id: Option<ObjectId>,
+    name: &[u8],
+) -> Option<ObjectId> {
+    if let Some(fid) = form_id {
+        if let Some(id) = xobject_id_in_form_resources(doc, fid, name) {
+            return Some(id);
+        }
+    }
+    for resources in ancestor_resource_dicts(doc, page_id) {
+        if let Some(id) = xobject_id_in_dict(doc, resources, name) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn xobject_id_in_form_resources(doc: &Document, form_id: ObjectId, name: &[u8]) -> Option<ObjectId> {
+    let stream = doc.get_object(form_id).ok()?.as_stream().ok()?;
+    let res = stream.dict.get(b"Resources").ok()?;
+    let dict = dict_from(doc, res)?;
+    xobject_id_in_dict(doc, dict, name)
+}
+
+fn xobject_id_in_dict(doc: &Document, resources: &Dictionary, name: &[u8]) -> Option<ObjectId> {
+    let xo = resources.get(b"XObject").ok()?;
+    let xobjects = dict_from(doc, xo)?;
+    xobjects.get(name).ok()?.as_reference().ok()
+}
+
+fn do_names_in_content(bytes: &[u8]) -> Vec<Vec<u8>> {
+    if let Ok(content) = Content::decode(bytes) {
+        return content
+            .operations
+            .into_iter()
+            .filter(|op| op.operator == "Do")
+            .filter_map(|op| {
+                op.operands
+                    .first()
+                    .and_then(|o| o.as_name().ok())
+                    .map(|n| n.to_vec())
+            })
+            .collect();
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut names = Vec::new();
+    for w in tokens.windows(2) {
+        if w[1] == "Do" && w[0].starts_with('/') && w[0].len() > 1 {
+            names.push(w[0][1..].as_bytes().to_vec());
+        }
+    }
+    names
+}
+
+fn form_stream_bytes(doc: &Document, id: ObjectId) -> Option<Vec<u8>> {
+    let stream = doc.get_object(id).ok()?.as_stream().ok()?;
+    Some(plain_stream(stream))
+}
+
+fn xobject_is_form(doc: &Document, id: ObjectId) -> bool {
+    xobject_subtype_eq(doc, id, b"Form")
+}
+
+fn xobject_is_form_or_image(doc: &Document, id: ObjectId) -> bool {
+    xobject_subtype_eq(doc, id, b"Form") || xobject_subtype_eq(doc, id, b"Image")
+}
+
+fn xobject_subtype_eq(doc: &Document, id: ObjectId, want: &[u8]) -> bool {
+    doc.get_object(id)
+        .ok()
+        .and_then(|o| o.as_stream().ok())
+        .and_then(|s| s.dict.get(b"Subtype").ok())
+        .and_then(|o| o.as_name().ok())
+        == Some(want)
+}
+
+/// Form/Image XObjects named on redacted pages (page-local + inherited) that no
+/// unredacted sibling `Do`s. Still reachable after sweep → fail closed.
+fn redacted_only_form_images(doc: &Document, redacted: &HashSet<ObjectId>) -> HashSet<ObjectId> {
+    let mut named_on_redacted = HashSet::new();
+    let mut used_by_siblings = HashSet::new();
+    for &page_id in doc.get_pages().values() {
+        if redacted.contains(&page_id) {
+            collect_named_form_images(doc, page_id, &mut named_on_redacted);
+        } else {
+            used_by_siblings.extend(collect_invoked_xobject_ids(doc, page_id));
+        }
+    }
+    named_on_redacted
+        .into_iter()
+        .filter(|id| !used_by_siblings.contains(id))
+        .collect()
+}
+
+fn collect_named_form_images(doc: &Document, page_id: ObjectId, out: &mut HashSet<ObjectId>) {
+    let mut seen = HashSet::new();
+    for resources in ancestor_resource_dicts(doc, page_id) {
+        collect_named_form_images_from_dict(doc, resources, out, &mut seen);
+    }
+}
+
+/// True when a redacted-only Form/Image is still named on a page / Pages-tree
+/// `/Resources`, or reachable from catalog `/Names` / `/OCProperties`. Leftover
+/// annot `/AP`, field `/V`, `/Thumb`, and structure-tree refs are warn-only.
+fn redacted_xobject_still_page_content(doc: &Document, ids: &HashSet<ObjectId>) -> bool {
+    if ids.is_empty() || ids.iter().all(|id| !doc.objects.contains_key(id)) {
+        return false;
+    }
+    for &page_id in doc.get_pages().values() {
+        for resources in ancestor_resource_dicts(doc, page_id) {
+            if resources_name_any(doc, resources, ids) {
+                return true;
+            }
+        }
+    }
+    for node_id in collect_pages_tree_nodes(doc) {
+        let Ok(dict) = doc.get_dictionary(node_id) else {
+            continue;
+        };
+        let Ok(res) = dict.get(b"Resources") else {
+            continue;
+        };
+        if let Some(d) = dict_from(doc, res) {
+            if resources_name_any(doc, d, ids) {
+                return true;
+            }
+        }
+    }
+    catalog_names_or_oc_refs(doc, ids)
+}
+
+fn resources_name_any(doc: &Document, resources: &Dictionary, ids: &HashSet<ObjectId>) -> bool {
+    let Ok(xo) = resources.get(b"XObject") else {
+        return false;
+    };
+    let Some(xobjects) = dict_from(doc, xo) else {
+        return false;
+    };
+    xobjects.iter().any(|(_, obj)| {
+        obj.as_reference()
+            .ok()
+            .is_some_and(|id| ids.contains(&id))
+    })
+}
+
+fn catalog_names_or_oc_refs(doc: &Document, ids: &HashSet<ObjectId>) -> bool {
+    let Ok(root) = doc.trailer.get(b"Root").and_then(Object::as_reference) else {
+        return false;
+    };
+    let Ok(catalog) = doc.get_dictionary(root) else {
+        return false;
+    };
+    let mut reachable: HashSet<ObjectId> = HashSet::new();
+    let mut stack: Vec<ObjectId> = Vec::new();
+    push_refs(catalog.get(b"Names").ok(), &mut reachable, &mut stack);
+    push_refs(catalog.get(b"OCProperties").ok(), &mut reachable, &mut stack);
+    if ids.iter().any(|id| reachable.contains(id)) {
+        return true;
+    }
+    while let Some(id) = stack.pop() {
+        if ids.contains(&id) {
+            return true;
+        }
+        if let Ok(obj) = doc.get_object(id) {
+            collect_refs(obj, &mut reachable, &mut stack);
+        }
+    }
+    false
+}
+
+fn collect_named_form_images_from_dict(
+    doc: &Document,
+    resources: &Dictionary,
+    out: &mut HashSet<ObjectId>,
+    seen: &mut HashSet<ObjectId>,
+) {
+    let Ok(xo) = resources.get(b"XObject") else {
+        return;
+    };
+    let Some(xobjects) = dict_from(doc, xo) else {
+        return;
+    };
+    for (_, obj) in xobjects.iter() {
+        let Ok(id) = obj.as_reference() else {
+            continue;
+        };
+        if !seen.insert(id) {
+            continue;
+        }
+        if xobject_is_form(doc, id) {
+            out.insert(id);
+            if let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) {
+                if let Ok(res) = stream.dict.get(b"Resources") {
+                    if let Some(d) = dict_from(doc, res) {
+                        collect_named_form_images_from_dict(doc, d, out, seen);
+                    }
+                }
+            }
+        } else if xobject_subtype_eq(doc, id, b"Image") {
+            out.insert(id);
+        }
     }
 }
 
@@ -615,7 +915,7 @@ fn haystack_contains(haystack: &[u8], probe: &[u8]) -> bool {
     !probe.is_empty() && haystack.windows(probe.len()).any(|w| w == probe)
 }
 
-/// Search each probe only in dest streams of the redacted page it belongs to.
+/// Search each probe in every redacted-page dest haystack.
 /// Unredacted siblings are not scanned (identical leftover text must not fail-close).
 fn probe_remains_on_redacted_pages(
     doc: &Document,
@@ -626,11 +926,6 @@ fn probe_remains_on_redacted_pages(
     if pages.is_empty() {
         let haystack = page_content_haystack(doc);
         return probes.iter().any(|p| haystack_contains(&haystack, p));
-    }
-    if probes.len() == pages.len() {
-        return probes.iter().zip(pages.iter()).any(|(probe, &page_index)| {
-            haystack_contains(&page_content_haystack_for(doc, page_index), probe)
-        });
     }
     let haystacks: Vec<Vec<u8>> = pages
         .iter()
@@ -740,7 +1035,7 @@ fn append_xobject_streams(
     }
 }
 
-/// Page Contents plus decoded Form XObject streams (page-local and inherited).
+/// Page Contents plus decoded Form/Image XObject streams (page-local and inherited).
 pub(crate) fn collect_redact_probes_for_pages(
     doc: &Document,
     regions: &[RedactRegion],
@@ -760,19 +1055,19 @@ pub(crate) fn collect_redact_probes_for_pages(
                 probes.push(bytes);
             }
         }
-        collect_form_xobject_probes(doc, id, &mut probes);
+        collect_xobject_probes(doc, id, &mut probes);
     }
     Ok(probes)
 }
 
-fn collect_form_xobject_probes(doc: &Document, page_id: ObjectId, probes: &mut Vec<Vec<u8>>) {
+fn collect_xobject_probes(doc: &Document, page_id: ObjectId, probes: &mut Vec<Vec<u8>>) {
     let mut seen = HashSet::new();
     for resources in ancestor_resource_dicts(doc, page_id) {
-        collect_form_xobjects_from_dict(doc, resources, probes, &mut seen);
+        collect_xobject_probes_from_dict(doc, resources, probes, &mut seen);
     }
 }
 
-fn collect_form_xobjects_from_dict(
+fn collect_xobject_probes_from_dict(
     doc: &Document,
     resources: &Dictionary,
     probes: &mut Vec<Vec<u8>>,
@@ -795,16 +1090,18 @@ fn collect_form_xobjects_from_dict(
             continue;
         };
         let subtype = stream.dict.get(b"Subtype").ok().and_then(|o| o.as_name().ok());
-        if subtype != Some(b"Form") {
+        if subtype != Some(b"Form") && subtype != Some(b"Image") {
             continue;
         }
         let bytes = plain_stream(stream);
         if !bytes.is_empty() {
             probes.push(bytes);
         }
-        if let Ok(res) = stream.dict.get(b"Resources") {
-            if let Some(d) = dict_from(doc, res) {
-                collect_form_xobjects_from_dict(doc, d, probes, seen);
+        if subtype == Some(b"Form") {
+            if let Ok(res) = stream.dict.get(b"Resources") {
+                if let Some(d) = dict_from(doc, res) {
+                    collect_xobject_probes_from_dict(doc, d, probes, seen);
+                }
             }
         }
     }
@@ -1397,9 +1694,7 @@ mod r2_user_unit_gate {
     use super::*;
 
     /// R-UU: the pdftoppm size gate must use page `/UserUnit`.
-    /// Letter MediaBox × UserUnit 2 at 72 DPI is 1224×1584. Today
-    /// `expected_raster_px` sees only MediaBox, so a UU-aware pdftoppm
-    /// 2× PNG fails the gate (`raster_failed`).
+    /// Letter MediaBox × UserUnit 2 at 72 DPI is 1224×1584.
     #[test]
     fn expected_raster_px_includes_user_unit_2() {
         let media = [0.0, 0.0, 612.0, 792.0];

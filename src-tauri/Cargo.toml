@@ -44,6 +44,9 @@ image = { version = "0.25", default-features = false, features = [
 # app so users do not need to install a system codec or upload their photos.
 heif-rs = { path = "vendor/heif-rs" }
 
+[dev-dependencies]
+flate2 = "1"
+
 [features]
 # By default Tauri uses custom protocols. Keep network features off.
 default = ["custom-protocol"]
