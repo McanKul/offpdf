@@ -749,6 +749,7 @@ fn write_tiny_png(path: &Path, w: u32, h: u32) {
 #[test]
 // F11 keepGreen: overlay stamp save still leaves catalog /AcroForm + Outlines + Info
 // and the source content stream. Form-apply leftover lock lives in edit_forms.rs.
+// keepGreen (#10): non-redacted overlay still keeps source streams (`Hello`).
 fn integ_catalog_survives_and_original_stream_stays() {
     let Some(fx) = Harness::new("catalog") else {
         eprintln!("skip: qpdf not available");
@@ -1434,6 +1435,8 @@ fn integ_user_unit_10000_copied_not_clamped() {
 }
 
 #[test]
+// keepGreen (#10): unredacted pages on a mixed overlay job keep source streams.
+// Mixed *redact* job keep-green lives in edit_redact_integ.rs (page 2 without redact).
 fn integ_two_page_overlay_keeps_source_streams_by_presence() {
     let Some(fx) = Harness::new("r1b-twopage") else {
         eprintln!("skip: qpdf not available");

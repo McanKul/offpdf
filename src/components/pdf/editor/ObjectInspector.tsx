@@ -180,6 +180,29 @@ export function ObjectInspector({
         </>
       )}
 
+      {obj.kind === "redact" && (
+        <>
+          <ColorField
+            label="Fill"
+            icon="squareFill"
+            value={toCssHex(obj.fill, "#000000")}
+            active={picking === "fill"}
+            onChange={(hex) => onChange({ fill: hex } as Partial<EditObject>)}
+            onPickFromPage={onPickFromPage ? () => onPickFromPage("fill") : undefined}
+          />
+          <label className="field__label">Label</label>
+          <input
+            className="pdf-editor__inspector-text"
+            type="text"
+            value={obj.label ?? ""}
+            placeholder="Optional (e.g. REDACTED)"
+            onChange={(e) =>
+              onChange({ label: e.target.value.trim() ? e.target.value : undefined } as Partial<EditObject>)
+            }
+          />
+        </>
+      )}
+
       {shape && (
         <>
           <button

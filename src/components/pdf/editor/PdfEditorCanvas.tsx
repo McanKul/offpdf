@@ -525,6 +525,16 @@ export function PdfEditorCanvas({
         >
           <Icon name="external" size={16} />
         </Button>
+        <Button
+          size="sm"
+          variant={tool === "redact" ? "primary" : "ghost"}
+          title="Redaction — permanently remove content in this region on Save"
+          aria-label="Redaction"
+          aria-pressed={tool === "redact"}
+          onClick={() => setTool("redact")}
+        >
+          <Icon name="squareFill" size={16} />
+        </Button>
         {MARKUP_TOOLS.map((t) => (
           <Button
             key={t.id}
@@ -725,6 +735,10 @@ export function PdfEditorCanvas({
                   }}
                   onCreateMarkupInk={(strokes) => {
                     session.addMarkupInk(pageIndex, strokes, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateRedact={(rect) => {
+                    session.addRedact(pageIndex, rect);
                     setTool("select");
                   }}
                   onRequestImage={(at) => void placeImage(at)}

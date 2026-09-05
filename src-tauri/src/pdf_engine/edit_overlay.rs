@@ -13,6 +13,7 @@ use crate::pdf_engine::edit_links::{
     expected_dest_has_annots, list_link_annots, unsafe_uri_error, uri_is_allowed, LinkAction,
     SessionLink, MAX_LINKS,
 };
+use crate::pdf_engine::edit_redact::{apply_redactions, verify_redaction, RedactRegion};
 use crate::pdf_engine::validate_output::{
     catalog_flags_from_doc, content_digest, validate_staged_pdf, ContentDigest, OutputSnapshot,
     PageSnapshot,
@@ -23,7 +24,7 @@ use crate::utils::safe_output;
 use crate::utils::temp;
 use lopdf::{Document, Object};
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -275,6 +276,13 @@ pub enum EditObjectIn {
         #[serde(default)]
         strokes: Vec<Vec<PointIn>>,
     },
+    Redact {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        fill: Option<String>,
+        label: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -320,7 +328,8 @@ impl EditObjectIn {
             | Self::Highlight { page_index, .. }
             | Self::Underline { page_index, .. }
             | Self::Strikeout { page_index, .. }
-            | Self::MarkupInk { page_index, .. } => *page_index,
+            | Self::MarkupInk { page_index, .. }
+            | Self::Redact { page_index, .. } => *page_index,
         }
     }
     fn opacity(&self) -> f64 {
@@ -328,7 +337,7 @@ impl EditObjectIn {
             return 1.0;
         }
         let o = match self {
-            Self::Link { .. } => return 1.0,
+            Self::Link { .. } | Self::Redact { .. } => return 1.0,
             Self::Rect { opacity, .. }
             | Self::Ellipse { opacity, .. }
             | Self::Triangle { opacity, .. }
@@ -352,7 +361,7 @@ impl EditObjectIn {
 
     fn object_rotate(&self) -> f64 {
         match self {
-            Self::Link { .. } => 0.0,
+            Self::Link { .. } | Self::Redact { .. } => 0.0,
             Self::Rect { object_rotate, .. }
             | Self::Ellipse { object_rotate, .. }
             | Self::Triangle { object_rotate, .. }
@@ -371,6 +380,10 @@ impl EditObjectIn {
             | Self::Strikeout { .. }
             | Self::MarkupInk { .. } => 0.0,
         }
+    }
+
+    fn triggers_overlay(&self) -> bool {
+        !matches!(self, Self::Link { .. } | Self::Redact { .. })
     }
 
     fn overlay_aabb(&self, vis: [f64; 4], page_rot: i64) -> (f64, f64, f64, f64) {
@@ -416,7 +429,8 @@ impl EditObjectIn {
             | Self::Highlight { rect, .. }
             | Self::Underline { rect, .. }
             | Self::Strikeout { rect, .. }
-            | Self::MarkupInk { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
+            | Self::MarkupInk { rect, .. }
+            | Self::Redact { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
         }
     }
 }
@@ -1471,6 +1485,147 @@ fn session_links_from_doc(doc: &EditDocumentIn) -> Vec<SessionLink> {
         .collect()
 }
 
+fn redact_regions_from_doc(document: &EditDocumentIn) -> Vec<RedactRegion> {
+    document
+        .objects
+        .iter()
+        .filter_map(|o| match o {
+            EditObjectIn::Redact {
+                page_index,
+                rect,
+                fill,
+                label,
+            } => Some(RedactRegion {
+                page_index: *page_index,
+                rect: rect.clone(),
+                fill: fill.clone(),
+                label: label.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn collect_redact_probes(
+    path: &Path,
+    regions: &[RedactRegion],
+) -> Result<Vec<Vec<u8>>, AppError> {
+    let doc = Document::load(path)
+        .map_err(|e| AppError::engine_failed(format!("Could not read the PDF: {e}")))?;
+    let pages = doc.get_pages();
+    let mut seen = HashSet::new();
+    let mut probes = Vec::new();
+    for region in regions {
+        if !seen.insert(region.page_index) {
+            continue;
+        }
+        let Some(&id) = pages.get(&(region.page_index + 1)) else {
+            continue;
+        };
+        let Ok(bytes) = doc.get_page_content(id) else {
+            continue;
+        };
+        for lit in extract_pdf_literals(&bytes) {
+            if lit.len() >= 2 {
+                probes.push(lit);
+            }
+        }
+        if bytes.len() >= 16 {
+            probes.push(bytes);
+        }
+    }
+    Ok(probes)
+}
+
+fn extract_pdf_literals(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'(' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let mut cur = Vec::new();
+        while i < bytes.len() {
+            match bytes[i] {
+                b')' => {
+                    out.push(cur);
+                    i += 1;
+                    break;
+                }
+                b'\\' if i + 1 < bytes.len() => {
+                    cur.push(bytes[i + 1]);
+                    i += 2;
+                }
+                b => {
+                    cur.push(b);
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn overlay_onto_assembled<F>(
+    tmp: &Path,
+    tmp_str: &str,
+    overlay_str: &str,
+    geoms: &[OverlayPageGeom],
+    work: &Path,
+    run: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(&[String]) -> Result<(), AppError>,
+{
+    let tmp_group = [PageGroup {
+        path: tmp_str.to_string(),
+        pages: "1-z".into(),
+    }];
+    let tmp_counts = [geoms.len() as u32];
+    let (mapped, restore_boxes) = remap_groups_to_visible_box(&tmp_group, work)?;
+    let overlaid = work.join("dest-redact-overlay.pdf");
+    let overlaid_str = overlaid.to_string_lossy().to_string();
+    let args = build_edit_overlay_args(&mapped, &tmp_counts, overlay_str, &overlaid_str)?;
+    run(&args)?;
+    if restore_boxes {
+        restore_dest_page_boxes(&overlaid, geoms)?;
+        let cleaned = work.join("dest-redact-boxes.pdf");
+        let cleaned_str = cleaned.to_string_lossy().to_string();
+        run(&[overlaid_str.clone(), cleaned_str.clone()])?;
+        safe_output::replace_file(&cleaned, &overlaid)?;
+    }
+    safe_output::replace_file(&overlaid, tmp)
+}
+
+fn update_redacted_digests(
+    dest: &Path,
+    snapshot: &mut OutputSnapshot,
+    regions: &[RedactRegion],
+) -> Result<(), AppError> {
+    let doc = Document::load(dest)
+        .map_err(|e| AppError::engine_failed(format!("Could not reopen the redacted PDF: {e}")))?;
+    let pages = doc.get_pages();
+    let mut seen = HashSet::new();
+    for region in regions {
+        if !seen.insert(region.page_index) {
+            continue;
+        }
+        let idx = region.page_index as usize;
+        if idx >= snapshot.pages.len() {
+            continue;
+        }
+        let Some(&id) = pages.get(&(region.page_index + 1)) else {
+            continue;
+        };
+        if let Ok(bytes) = doc.get_page_content(id) {
+            snapshot.pages[idx].content_digest = content_digest(&bytes);
+        }
+    }
+    Ok(())
+}
+
 /// Link-only save: assemble to dest without `--empty` and without overlay paint.
 fn assemble_to_tmp<F>(
     groups: &[PageGroup],
@@ -1587,11 +1742,29 @@ where
             return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
         }
         let links = session_links_from_doc(document);
-        let has_paint = document
-            .objects
-            .iter()
-            .any(|o| !matches!(o, EditObjectIn::Link { .. }));
-        if has_paint {
+        let redacts = redact_regions_from_doc(document);
+        let has_redact = !redacts.is_empty();
+        let has_paint = document.objects.iter().any(|o| o.triggers_overlay());
+        let mut redact_probes: Vec<Vec<u8>> = Vec::new();
+        if has_redact {
+            assemble_to_tmp(groups, &counts, &tmp, &tmp_str, &mut run)?;
+            redact_probes = collect_redact_probes(&tmp, &redacts)?;
+            apply_redactions(&tmp, &redacts)?;
+            if has_paint {
+                let font_bytes = std::fs::read(font_path)
+                    .map_err(|e| AppError::io("Could not read the editor font.", e))?;
+                let font = FontInfo::parse(font_bytes)?;
+                write_overlay_pdf(&overlay_str, &geoms, document, &font, cancel)?;
+                overlay_onto_assembled(
+                    &tmp,
+                    &tmp_str,
+                    &overlay_str,
+                    &geoms,
+                    work,
+                    &mut run,
+                )?;
+            }
+        } else if has_paint {
             let font_bytes = std::fs::read(font_path)
                 .map_err(|e| AppError::io("Could not read the editor font.", e))?;
             let font = FontInfo::parse(font_bytes)?;
@@ -1664,12 +1837,19 @@ where
             })?;
             snapshot.catalog.acro_form = catalog_flags_from_doc(&dest_doc).acro_form;
         }
+        let mut warnings = Vec::new();
+        if has_redact {
+            let probe_refs: Vec<&[u8]> = redact_probes.iter().map(Vec::as_slice).collect();
+            warnings.extend(verify_redaction(&tmp, &probe_refs, &redacts)?);
+            update_redacted_digests(&tmp, &mut snapshot, &redacts)?;
+        }
         let vr = validate_staged_pdf(&tmp, &snapshot, cancel, |args| {
             run_qpdf_check_argv(qpdf_check, args, handle)
         })?;
+        warnings.extend(vr.warnings);
         gate_passed = true;
         safe_output::replace_file(&tmp, dest)?;
-        Ok((vec![output.to_string()], vr.warnings))
+        Ok((vec![output.to_string()], warnings))
     })();
     // Keep tmp only if replace_file failed after a passed gate (Windows recover).
     // Spawn/validate errors (and leftover success tmp) delete the sibling.
@@ -1760,10 +1940,7 @@ pub fn edit_pdf_overlays(
     let work = temp::root(app)?.join("work").join(job_id);
     std::fs::create_dir_all(&work)
         .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
-    let has_paint = document
-        .objects
-        .iter()
-        .any(|o| !matches!(o, EditObjectIn::Link { .. }));
+    let has_paint = document.objects.iter().any(|o| o.triggers_overlay());
     let font_path = if has_paint {
         find_font_path(app)?
     } else {
@@ -2001,7 +2178,9 @@ fn write_overlay_pdf(
             if obj.page_index() as usize != pi {
                 continue;
             }
-            if matches!(obj, EditObjectIn::Link { .. }) || obj.is_markup() {
+            if matches!(obj, EditObjectIn::Link { .. } | EditObjectIn::Redact { .. })
+                || obj.is_markup()
+            {
                 continue;
             }
             let op100 = (obj.opacity() * 100.0).round() as i32;
@@ -2238,7 +2417,8 @@ fn write_overlay_pdf(
                 | EditObjectIn::Highlight { .. }
                 | EditObjectIn::Underline { .. }
                 | EditObjectIn::Strikeout { .. }
-                | EditObjectIn::MarkupInk { .. } => {}
+                | EditObjectIn::MarkupInk { .. }
+                | EditObjectIn::Redact { .. } => {}
             }
             if rotated {
                 content.push_str("Q\n");
@@ -2531,6 +2711,19 @@ mod tests {
             "highlight kind must serde on EditDocumentIn; got {d:?}"
         );
         assert_eq!(d.unwrap().objects.len(), 1);
+    }
+
+    #[test]
+    fn serde_roundtrip_redact_kind() {
+        let json = r##"{"version":1,"objects":[{"kind":"redact","pageIndex":0,"rect":{"x":72,"y":700,"w":120,"h":40},"fill":"#000000"}]}"##;
+        let d: Result<EditDocumentIn, _> = serde_json::from_str(json);
+        let d = d.expect("R-UI: redact kind must serde on EditDocumentIn (distinct from rect)");
+        assert_eq!(d.objects.len(), 1);
+        let dbg = format!("{:?}", d.objects[0]);
+        assert!(
+            !dbg.starts_with("Rect"),
+            "R-UI: redact must not deserialize as Rect; got {dbg}"
+        );
     }
 
     fn g(path: &str, pages: &str) -> PageGroup {
@@ -3051,6 +3244,7 @@ mod tests {
     // on sibling tmp + same_file_identity.
     #[test]
     // F16 keepGreen: apply / flatten stay on sibling tmp + same_file_identity.
+    // keepGreen (#10 OVERWRITE): redaction save still uses same_file_identity.
     fn export_rejects_hard_linked_destination() {
         let Some(qpdf) = test_qpdf() else {
             eprintln!("skip: qpdf not available");

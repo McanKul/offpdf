@@ -57,7 +57,8 @@ export type EditorTool =
   | "highlight"
   | "underline"
   | "strikeout"
-  | "markupInk";
+  | "markupInk"
+  | "redact";
 
 type Handle = ResizeHandle;
 
@@ -91,7 +92,8 @@ type DragMode =
   | { kind: "create-line"; startCss: { x: number; y: number } }
   | { kind: "create-ink"; points: { x: number; y: number }[] }
   | { kind: "create-markup"; markup: "note" | "highlight" | "underline" | "strikeout"; startCss: { x: number; y: number } }
-  | { kind: "create-markup-ink"; points: { x: number; y: number }[] };
+  | { kind: "create-markup-ink"; points: { x: number; y: number }[] }
+  | { kind: "create-redact"; startCss: { x: number; y: number } };
 
 function additiveSelect(e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) {
   return e.shiftKey || e.metaKey || e.ctrlKey;
@@ -134,6 +136,7 @@ export function EditorOverlay({
   onCreateUnderline,
   onCreateStrikeout,
   onCreateMarkupInk,
+  onCreateRedact,
   onRequestImage,
   onActivateText,
   pickColor,
@@ -162,6 +165,7 @@ export function EditorOverlay({
   onCreateUnderline: (rect: PdfRect) => void;
   onCreateStrikeout: (rect: PdfRect) => void;
   onCreateMarkupInk: (strokes: Point[][]) => void;
+  onCreateRedact: (rect: PdfRect) => void;
   onRequestImage: (atCss: { x: number; y: number }) => void;
   onActivateText: (id: string) => void;
   /** When set, the next click samples a page color instead of editing. */
@@ -236,6 +240,9 @@ export function EditorOverlay({
     } else if (tool === "markupInk") {
       dragRef.current = { kind: "create-markup-ink", points: [local] };
       setDraft({ kind: "ink", start: local, cur: local, points: [local] });
+    } else if (tool === "redact") {
+      dragRef.current = { kind: "create-redact", startCss: local };
+      setDraft({ kind: "box", start: local, cur: local });
     }
     svg.setPointerCapture(e.pointerId);
     e.preventDefault();
@@ -350,6 +357,7 @@ export function EditorOverlay({
       drag.kind === "create-text" ||
       drag.kind === "create-link" ||
       drag.kind === "create-markup" ||
+      drag.kind === "create-redact" ||
       drag.kind === "marquee"
     ) {
       setDraft({ kind: "box", start: drag.startCss, cur: local });
@@ -454,7 +462,12 @@ export function EditorOverlay({
       else onCreateStrikeout(pdf);
       return;
     }
-    if (drag.kind === "create-shape" || drag.kind === "create-text" || drag.kind === "create-link") {
+    if (
+      drag.kind === "create-shape" ||
+      drag.kind === "create-text" ||
+      drag.kind === "create-link" ||
+      drag.kind === "create-redact"
+    ) {
       const lock1to1 = drag.kind === "create-shape" && (drag.lock1to1 || e.shiftKey);
       const box = lock1to1 ? constrainCssBox1to1(drag.startCss, local) : cssBoxFromPoints(drag.startCss, local);
       setDraft(null);
@@ -471,6 +484,7 @@ export function EditorOverlay({
       const pdf = viewportRectFromCss(fallback, mapping);
       if (drag.kind === "create-text") onCreateText(pdf);
       else if (drag.kind === "create-link") onCreateLink(pdf);
+      else if (drag.kind === "create-redact") onCreateRedact(pdf);
       else onCreateShape(drag.shape, pdf, drag.lock1to1 || undefined);
       return;
     }
@@ -541,9 +555,9 @@ export function EditorOverlay({
           y={Math.min(draft.start.y, draft.cur.y)}
           width={Math.abs(draft.cur.x - draft.start.x)}
           height={Math.abs(draft.cur.y - draft.start.y)}
-          fill="rgba(37,99,235,0.12)"
-          stroke="#2563eb"
-          strokeDasharray="4 3"
+          fill={tool === "redact" ? "rgba(0,0,0,0.55)" : "rgba(37,99,235,0.12)"}
+          stroke={tool === "redact" ? "#111827" : "#2563eb"}
+          strokeDasharray={tool === "redact" ? "3 3" : "4 3"}
           pointerEvents="none"
         />
       )}
@@ -843,6 +857,39 @@ function ObjectShape({
               strokeLinejoin="round"
             />
           ))}
+        </g>
+      )}
+      {obj.kind === "redact" && (
+        <g style={{ cursor: moveCursor }} onPointerDown={interactive ? (e) => onPointerDownObject(e, obj) : undefined}>
+          <rect
+            x={css.x}
+            y={css.y}
+            width={Math.max(css.w, 1)}
+            height={Math.max(css.h, 1)}
+            fill={obj.fill ?? "#000000"}
+            opacity={0.88}
+          />
+          <rect
+            x={css.x}
+            y={css.y}
+            width={Math.max(css.w, 1)}
+            height={Math.max(css.h, 1)}
+            fill="none"
+            stroke="#fbbf24"
+            strokeWidth={1.5}
+            strokeDasharray="4 3"
+          />
+          {obj.label ? (
+            <text
+              x={css.x + 6}
+              y={css.y + Math.max(14, Math.min(css.h - 4, 16))}
+              fill="#ffffff"
+              fontSize={11}
+              fontFamily="ui-sans-serif, system-ui, sans-serif"
+            >
+              {obj.label}
+            </text>
+          ) : null}
         </g>
       )}
       </g>

@@ -285,6 +285,21 @@ export function canRedo(state: HistoryState): boolean {
 }
 
 /** Helper to build a draft rect object. */
+/** Helper to build a draft redaction object (black fill, no label). */
+export function makeRedactObject(
+  id: string,
+  pageIndex: number,
+  rect: PdfRect,
+): import("./types").RedactObject {
+  return {
+    id,
+    kind: "redact",
+    pageIndex,
+    rect: normalizePdfRect(rect),
+    fill: "#000000",
+  };
+}
+
 export function makeRectObject(
   id: string,
   pageIndex: number,

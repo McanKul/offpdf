@@ -336,6 +336,13 @@ export function EditPdfPage() {
             />
             Flatten annotations{formFields.length > 0 ? " (includes form fields)" : ""}
           </label>
+          {doc.objects.some((o) => o.kind === "redact") && (
+            <Alert variant="info">
+              Pages with a redaction become images. Text on those pages will not stay selectable.
+              Annotations, form values, and attachments are not stripped — Save warns if they may
+              still hold data.
+            </Alert>
+          )}
           <div className="row">
             <Button variant="primary" size="lg" onClick={start} disabled={!canStart} loading={job.isBusy} leftIcon={<Icon name="fileText" size={18} />}>
               Save PDF
@@ -351,6 +358,10 @@ export function EditPdfPage() {
           {formError && (
             <Alert variant="warning">{formError}</Alert>
           )}
+          <Alert variant="info">
+            The Redaction tool permanently removes content. Only pages with a redaction
+            region become images; text on those pages will not stay selectable.
+          </Alert>
           <PdfEditorCanvas
             sourcePath={current.path}
             sourcePage={current.page}
