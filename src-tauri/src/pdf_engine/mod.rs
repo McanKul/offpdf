@@ -15,6 +15,15 @@ pub mod edit_links;
 pub mod edit_overlay;
 #[cfg(test)]
 mod edit_overlay_integ;
+pub mod edit_redact;
+#[cfg(test)]
+mod edit_redact_integ;
+#[cfg(test)]
+mod edit_redact_r2_integ;
+#[cfg(test)]
+mod edit_redact_r3_integ;
+#[cfg(test)]
+mod edit_redact_r4_integ;
 pub mod metadata;
 pub mod nup;
 pub mod ocr;

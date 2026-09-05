@@ -13,6 +13,7 @@ import {
   makeMarkupInkObject,
   makeNoteObject,
   makeRectObject,
+  makeRedactObject,
   makeStrikeoutObject,
   makeTextObject,
   makeUnderlineObject,
@@ -131,6 +132,10 @@ export function useEditSession(
   const addMarkupInk = useCallback((pageIndex: number, strokes: Point[][], author: string) => {
     if (strokes.every((s) => s.length < 2)) return;
     dispatch({ type: "ADD", object: makeMarkupInkObject(newId(), pageIndex, strokes, author) });
+  }, []);
+
+  const addRedact = useCallback((pageIndex: number, rect: PdfRect) => {
+    dispatch({ type: "ADD", object: makeRedactObject(newId(), pageIndex, rect) });
   }, []);
 
   const addMany = useCallback((objects: EditObject[]) => {
@@ -303,6 +308,7 @@ export function useEditSession(
     addUnderline,
     addStrikeout,
     addMarkupInk,
+    addRedact,
     addMany,
     updateRect,
     updateObject,

@@ -18,6 +18,10 @@ invent a second coordinate system.
 - **Links** (`kind: "link"`) are PDF `/Annots`, not overlay stamps. They use
   the same unrotated `EditObject.rect` space. Overlay paint skips them; Save
   rewrites dest `/Link` dictionaries after `qpdf --overlay`.
+- **Redaction** (`kind: "redact"`) is not an overlay stamp. On Save, pages with
+  ≥1 redact object are rasterized in place (fill and optional typed label
+  burned into the image). Overlay paint skips them. Unredacted pages keep their
+  source streams. Leftover `/Annots`, form `/V`, and attachments warn only.
 - It does **not** hold source PDF bytes. Paths and per-page bytes stay in the
   render layer (same pattern as `pagePdf`).
 - Image **bytes** are not stored in the document — only a local path (plus a

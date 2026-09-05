@@ -61,7 +61,8 @@ export type EditObjectKind =
   | "highlight"
   | "underline"
   | "strikeout"
-  | "markupInk";
+  | "markupInk"
+  | "redact";
 
 export type ClosedShapeKind =
   | "rect"
@@ -246,6 +247,14 @@ export interface MarkupInkObject extends EditObjectBase, MarkupAnnotFields {
   strokes: Point[][];
 }
 
+/** Permanent redaction region. Not an overlay stamp; Save rasterizes the page. */
+export interface RedactObject extends EditObjectBase {
+  kind: "redact";
+  fill?: string;
+  /** Optional replacement text burned into the raster. Omitted unless typed. */
+  label?: string;
+}
+
 export type EditObject =
   | RectObject
   | RoundRectObject
@@ -264,7 +273,8 @@ export type EditObject =
   | HighlightObject
   | UnderlineObject
   | StrikeoutObject
-  | MarkupInkObject;
+  | MarkupInkObject
+  | RedactObject;
 
 /** Bounds of a line segment. */
 export function lineBounds(x1: number, y1: number, x2: number, y2: number): PdfRect {

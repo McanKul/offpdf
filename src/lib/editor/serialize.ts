@@ -50,6 +50,10 @@ export function toExportDocument(doc: EditDocument): EditDocument {
         const { previewUrl: _drop, ...rest } = o;
         return rest;
       }
+      if (o.kind === "redact") {
+        const { objectRotate: _rot, ...rest } = cloneObject(o);
+        return rest;
+      }
       return cloneObject(o);
     }),
   };

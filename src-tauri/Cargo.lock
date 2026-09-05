@@ -2848,6 +2848,7 @@ dependencies = [
 name = "offpdf"
 version = "0.3.1"
 dependencies = [
+ "flate2",
  "fs2",
  "heif-rs",
  "image",
