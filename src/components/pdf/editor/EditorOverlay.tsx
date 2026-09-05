@@ -925,7 +925,7 @@ function ObjectShape({
           pointerEvents="none"
         />
       )}
-      {selected && selectedCount === 1 && !obj.locked && obj.kind !== "link" && (
+      {selected && selectedCount === 1 && !obj.locked && obj.kind !== "link" && obj.kind !== "redact" && (
         <>
           <line
             x1={mid.x}

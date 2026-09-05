@@ -301,7 +301,7 @@ export function ObjectInspector({
         </div>
       )}
 
-      {obj.kind !== "link" && !markup && (
+      {obj.kind !== "link" && obj.kind !== "redact" && !markup && (
         <DraftNumber
           label="Rotation"
           value={obj.objectRotate ?? 0}

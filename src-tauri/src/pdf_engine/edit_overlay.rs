@@ -1664,6 +1664,42 @@ where
     .map(|(paths, _warnings)| paths)
 }
 
+/// Test-only: same as [`export_edit_pdf_with_runner`] plus form values / flatten.
+#[cfg(test)]
+pub(crate) fn export_edit_pdf_with_runner_forms<F>(
+    groups: &[PageGroup],
+    output: &str,
+    document: &EditDocumentIn,
+    font_path: &Path,
+    work: &Path,
+    unique: &str,
+    form_values: &[FormValue],
+    flatten_form: bool,
+    run: F,
+) -> Result<(Vec<String>, Vec<String>), AppError>
+where
+    F: FnMut(&[String]) -> Result<(), AppError>,
+{
+    let exe = qpdf::resolve_qpdf_standalone();
+    export_edit_pdf_with_check_exe(
+        groups,
+        output,
+        document,
+        font_path,
+        work,
+        unique,
+        None,
+        &exe,
+        None,
+        None,
+        &[],
+        form_values,
+        flatten_form,
+        false,
+        run,
+    )
+}
+
 /// Same as [`export_edit_pdf_with_runner`], with an explicit `qpdf --check` binary.
 fn export_edit_pdf_with_check_exe<F>(
     groups: &[PageGroup],
@@ -1716,8 +1752,24 @@ where
         let has_redact = !redacts.is_empty();
         let has_paint = document.objects.iter().any(|o| o.triggers_overlay());
         let mut redact_probes: Vec<Vec<u8>> = Vec::new();
+        let mut flatten_form_done = false;
+        let mut flatten_annots_done = false;
         if has_redact {
             assemble_to_tmp(groups, &counts, &tmp, &tmp_str, &mut run)?;
+            // Burn flattened /AP into page content *before* rasterize. A
+            // flatten after apply_redactions would paint leftover field text
+            // on top of /ImR.
+            if flatten_form {
+                apply_form_values(&tmp_str, form_values, true)?;
+                let cleaned = work.join("dest-forms.pdf");
+                qpdf_rewrite(&tmp, &cleaned)?;
+                safe_output::replace_file(&cleaned, &tmp)?;
+                flatten_form_done = true;
+            }
+            if flatten_annotations {
+                edit_annots::apply_markup_annots(&tmp, &[], true)?;
+                flatten_annots_done = true;
+            }
             redact_probes = collect_redact_probes(&tmp, &redacts)?;
             match app {
                 Some(app) => apply_redactions_with_app(app, &tmp, &redacts)?,
@@ -1789,15 +1841,19 @@ where
             run(&[tmp_str.clone(), cleaned_str.clone()])?;
             safe_output::replace_file(&cleaned, &tmp)?;
         }
-        if !form_values.is_empty() || flatten_form {
+        if !flatten_form_done && (!form_values.is_empty() || flatten_form) {
             apply_form_values(&tmp_str, form_values, flatten_form)?;
             let cleaned = work.join("dest-forms.pdf");
             qpdf_rewrite(&tmp, &cleaned)?;
             safe_output::replace_file(&cleaned, &tmp)?;
         }
         let session = session_markup_from_doc(document);
-        if !session.is_empty() || flatten_annotations {
-            edit_annots::apply_markup_annots(&tmp, &session, flatten_annotations)?;
+        if !session.is_empty() || (flatten_annotations && !flatten_annots_done) {
+            edit_annots::apply_markup_annots(
+                &tmp,
+                &session,
+                flatten_annotations && !flatten_annots_done,
+            )?;
         }
         let mut snapshot = output_snapshot_from_source(&geoms, Path::new(&groups[0].path))?;
         snapshot.catalog.annots = expected_annots;

@@ -104,13 +104,15 @@ fn apply_redactions_inner(
                     continue;
                 };
                 let media = crop::media_box(&probe, page_id);
-                let (w, h, mut rgb) = raster_page(&exe, &raster_src, page_no, media, &work)?;
+                let user_unit = crop::page_user_unit(&probe, page_id);
+                let (w, h, mut rgb) =
+                    raster_page(&exe, &raster_src, page_no, media, user_unit, &work)?;
                 for region in page_regions {
                     let color = parse_fill(region.fill.as_deref());
-                    fill_pdf_rect(&mut rgb, w, h, media, &region.rect, color);
+                    fill_pdf_rect(&mut rgb, w, h, media, user_unit, &region.rect, color);
                     if let Some(label) = region.label.as_deref() {
                         if !label.trim().is_empty() {
-                            draw_label(&mut rgb, w, h, media, &region.rect, label);
+                            draw_label(&mut rgb, w, h, media, user_unit, &region.rect, label);
                         }
                     }
                 }
@@ -155,24 +157,19 @@ pub fn verify_redaction(
     let _ = doc.decompress();
 
     if !page_content_probes.is_empty() {
-        let haystack = page_content_haystack(&doc);
-        for probe in page_content_probes {
-            if probe.is_empty() {
-                continue;
-            }
-            if haystack.windows(probe.len()).any(|w| w == *probe) {
-                return Err(AppError::new(
-                    "REDACTION_INCOMPLETE",
-                    "Redaction could not be verified",
-                    "Page content that should have been removed is still in the PDF. The file was not saved.",
-                ));
-            }
+        if probe_remains_on_redacted_pages(&doc, page_content_probes, regions) {
+            return Err(AppError::new(
+                "REDACTION_INCOMPLETE",
+                "Redaction could not be verified",
+                "Page content that should have been removed is still in the PDF. The file was not saved.",
+            ));
         }
     }
 
     let mut warnings = Vec::new();
     warn_intersecting_annots(&doc, regions, &mut warnings);
     warn_intersecting_fields(&doc, regions, &mut warnings);
+    warn_leftover_thumbs_and_struct(&doc, regions, &mut warnings);
     if has_attachments(&doc) {
         warnings.push(
             "This PDF has attachments that were not removed. They may still hold sensitive data."
@@ -269,11 +266,16 @@ fn ensure_pdftoppm(exe: &Path) -> Result<(), AppError> {
     }
 }
 
-fn expected_raster_px(media: [f64; 4]) -> (u32, u32) {
-    let w = ((media[2] - media[0]).abs() * (RASTER_DPI as f64) / 72.0)
+fn expected_raster_px(media: [f64; 4], user_unit: f64) -> (u32, u32) {
+    let uu = if user_unit.is_finite() && user_unit > 0.0 {
+        user_unit
+    } else {
+        1.0
+    };
+    let w = ((media[2] - media[0]).abs() * uu * (RASTER_DPI as f64) / 72.0)
         .round()
         .clamp(1.0, 8192.0) as u32;
-    let h = ((media[3] - media[1]).abs() * (RASTER_DPI as f64) / 72.0)
+    let h = ((media[3] - media[1]).abs() * uu * (RASTER_DPI as f64) / 72.0)
         .round()
         .clamp(1.0, 8192.0) as u32;
     (w, h)
@@ -299,17 +301,37 @@ fn raster_page(
     pdf: &Path,
     page_no: u32,
     media: [f64; 4],
+    user_unit: f64,
     work: &Path,
 ) -> Result<(u32, u32, Vec<u8>), AppError> {
-    let (w, h, rgb) = raster_with_pdftoppm(exe, pdf, page_no, work)?;
-    let expected = expected_raster_px(media);
-    if (w, h) != expected {
-        return Err(raster_failed(format!(
-            "Raster size {w}×{h} does not match unrotated MediaBox {}×{} at {RASTER_DPI} DPI.",
-            expected.0, expected.1
-        )));
+    let expected = expected_raster_px(media, user_unit);
+    let media_only = expected_raster_px(media, 1.0);
+    // Scale -r so a UserUnit-unaware pdftoppm still emits the UU-aware size.
+    let dpi = ((RASTER_DPI as f64) * if user_unit.is_finite() && user_unit > 0.0 {
+        user_unit
+    } else {
+        1.0
+    })
+    .round()
+    .clamp(1.0, 2400.0) as u32;
+    let (w, h, rgb) = raster_with_pdftoppm(exe, pdf, page_no, work, dpi)?;
+    if (w, h) == expected {
+        return Ok((w, h, rgb));
     }
-    Ok((w, h, rgb))
+    // UU-aware pdftoppm already multiplied UserUnit; -r * UU then double-counts.
+    if (user_unit - 1.0).abs() > 1e-9 {
+        let retry = raster_with_pdftoppm(exe, pdf, page_no, work, RASTER_DPI)?;
+        if (retry.0, retry.1) == expected || (retry.0, retry.1) == media_only {
+            return Ok(retry);
+        }
+        if (w, h) == media_only {
+            return Ok((w, h, rgb));
+        }
+    }
+    Err(raster_failed(format!(
+        "Raster size {w}×{h} does not match unrotated MediaBox {}×{} at {RASTER_DPI} DPI (UserUnit {user_unit}).",
+        expected.0, expected.1
+    )))
 }
 
 fn raster_with_pdftoppm(
@@ -317,13 +339,14 @@ fn raster_with_pdftoppm(
     pdf: &Path,
     page_no: u32,
     work: &Path,
+    dpi: u32,
 ) -> Result<(u32, u32, Vec<u8>), AppError> {
-    let prefix = work.join(format!("p{page_no}"));
+    let prefix = work.join(format!("p{page_no}-{dpi}"));
     let mut cmd = Command::new(exe);
     render::configure_poppler_command(&mut cmd, exe);
     cmd.arg("-png")
         .arg("-r")
-        .arg(RASTER_DPI.to_string())
+        .arg(dpi.to_string())
         .arg("-f")
         .arg(page_no.to_string())
         .arg("-l")
@@ -454,22 +477,76 @@ fn collect_refs(obj: &Object, reachable: &mut HashSet<ObjectId>, stack: &mut Vec
     }
 }
 
+fn unique_redact_pages(regions: &[RedactRegion]) -> Vec<u32> {
+    let mut seen = HashSet::new();
+    let mut pages = Vec::new();
+    for region in regions {
+        if seen.insert(region.page_index) {
+            pages.push(region.page_index);
+        }
+    }
+    pages
+}
+
+fn haystack_contains(haystack: &[u8], probe: &[u8]) -> bool {
+    !probe.is_empty() && haystack.windows(probe.len()).any(|w| w == probe)
+}
+
+/// Search each probe only in dest streams of the redacted page it belongs to.
+/// Unredacted siblings are not scanned (identical leftover text must not fail-close).
+fn probe_remains_on_redacted_pages(
+    doc: &Document,
+    probes: &[&[u8]],
+    regions: &[RedactRegion],
+) -> bool {
+    let pages = unique_redact_pages(regions);
+    if pages.is_empty() {
+        let haystack = page_content_haystack(doc);
+        return probes.iter().any(|p| haystack_contains(&haystack, p));
+    }
+    if probes.len() == pages.len() {
+        return probes.iter().zip(pages.iter()).any(|(probe, &page_index)| {
+            haystack_contains(&page_content_haystack_for(doc, page_index), probe)
+        });
+    }
+    let haystacks: Vec<Vec<u8>> = pages
+        .iter()
+        .map(|&page_index| page_content_haystack_for(doc, page_index))
+        .collect();
+    probes
+        .iter()
+        .any(|probe| haystacks.iter().any(|h| haystack_contains(h, probe)))
+}
+
 fn page_content_haystack(doc: &Document) -> Vec<u8> {
     let mut out = Vec::new();
     for &page_id in doc.get_pages().values() {
-        if let Ok(bytes) = doc.get_page_content(page_id) {
-            out.extend_from_slice(&bytes);
-            out.push(b'\n');
-        }
-        for id in doc.get_page_contents(page_id) {
-            if let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) {
-                out.extend_from_slice(&plain_stream(stream));
-                out.push(b'\n');
-            }
-        }
-        append_page_xobjects(doc, page_id, &mut out);
+        append_page_streams(doc, page_id, &mut out);
     }
     out
+}
+
+fn page_content_haystack_for(doc: &Document, page_index: u32) -> Vec<u8> {
+    let Some(&page_id) = doc.get_pages().get(&(page_index + 1)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    append_page_streams(doc, page_id, &mut out);
+    out
+}
+
+fn append_page_streams(doc: &Document, page_id: ObjectId, out: &mut Vec<u8>) {
+    if let Ok(bytes) = doc.get_page_content(page_id) {
+        out.extend_from_slice(&bytes);
+        out.push(b'\n');
+    }
+    for id in doc.get_page_contents(page_id) {
+        if let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) {
+            out.extend_from_slice(&plain_stream(stream));
+            out.push(b'\n');
+        }
+    }
+    append_page_xobjects(doc, page_id, out);
 }
 
 fn append_page_xobjects(doc: &Document, page_id: ObjectId, out: &mut Vec<u8>) {
@@ -628,6 +705,53 @@ fn page_annot_ids(doc: &Document, page_id: ObjectId) -> Vec<ObjectId> {
     }
 }
 
+fn warn_leftover_thumbs_and_struct(
+    doc: &Document,
+    regions: &[RedactRegion],
+    warnings: &mut Vec<String>,
+) {
+    let pages = doc.get_pages();
+    let mut thumb = false;
+    let mut seen = HashSet::new();
+    for region in regions {
+        if !seen.insert(region.page_index) {
+            continue;
+        }
+        let Some(&page_id) = pages.get(&(region.page_index + 1)) else {
+            continue;
+        };
+        let Ok(page) = doc.get_dictionary(page_id) else {
+            continue;
+        };
+        if page.get(b"Thumb").is_ok() {
+            thumb = true;
+            break;
+        }
+    }
+    if thumb {
+        warnings.push(
+            "A redacted page still has a thumbnail (/Thumb) that was not removed. It may still hold sensitive data."
+                .into(),
+        );
+    }
+    if has_struct_tree_root(doc) {
+        warnings.push(
+            "This PDF has a structure tree (/StructTreeRoot) that was not removed. It may still hold sensitive data."
+                .into(),
+        );
+    }
+}
+
+fn has_struct_tree_root(doc: &Document) -> bool {
+    let Ok(root) = doc.trailer.get(b"Root").and_then(Object::as_reference) else {
+        return false;
+    };
+    let Ok(catalog) = doc.get_dictionary(root) else {
+        return false;
+    };
+    catalog.get(b"StructTreeRoot").is_ok()
+}
+
 fn has_attachments(doc: &Document) -> bool {
     let Ok(root) = doc.trailer.get(b"Root").and_then(Object::as_reference) else {
         return false;
@@ -723,10 +847,11 @@ fn fill_pdf_rect(
     iw: u32,
     ih: u32,
     media: [f64; 4],
+    user_unit: f64,
     rect: &PdfRectIn,
     color: [u8; 3],
 ) {
-    let (x0, y0, x1, y1) = pdf_rect_to_pixels(iw, ih, media, rect);
+    let (x0, y0, x1, y1) = pdf_rect_to_pixels(iw, ih, media, user_unit, rect);
     for y in y0..y1 {
         for x in x0..x1 {
             let i = ((y as u32 * iw + x as u32) * 3) as usize;
@@ -739,15 +864,26 @@ fn fill_pdf_rect(
     }
 }
 
-fn pdf_rect_to_pixels(iw: u32, ih: u32, media: [f64; 4], rect: &PdfRectIn) -> (i32, i32, i32, i32) {
+fn pdf_rect_to_pixels(
+    iw: u32,
+    ih: u32,
+    media: [f64; 4],
+    user_unit: f64,
+    rect: &PdfRectIn,
+) -> (i32, i32, i32, i32) {
+    // Map in UserUnit-aware expected pixels, then scale to the actual raster
+    // (some pdftoppm builds ignore /UserUnit and emit MediaBox-only size).
+    let (ew, eh) = expected_raster_px(media, user_unit);
+    let sx = iw as f64 / ew as f64;
+    let sy = ih as f64 / eh as f64;
     let mw = (media[2] - media[0]).abs().max(1.0);
     let mh = (media[3] - media[1]).abs().max(1.0);
-    let x0 = ((rect.x.min(rect.x + rect.w) - media[0]) / mw * iw as f64).floor() as i32;
-    let x1 = ((rect.x.max(rect.x + rect.w) - media[0]) / mw * iw as f64).ceil() as i32;
+    let x0 = ((rect.x.min(rect.x + rect.w) - media[0]) / mw * ew as f64 * sx).floor() as i32;
+    let x1 = ((rect.x.max(rect.x + rect.w) - media[0]) / mw * ew as f64 * sx).ceil() as i32;
     let top = rect.y.max(rect.y + rect.h);
     let bot = rect.y.min(rect.y + rect.h);
-    let y0 = ((media[3] - top) / mh * ih as f64).floor() as i32;
-    let y1 = ((media[3] - bot) / mh * ih as f64).ceil() as i32;
+    let y0 = ((media[3] - top) / mh * eh as f64 * sy).floor() as i32;
+    let y1 = ((media[3] - bot) / mh * eh as f64 * sy).ceil() as i32;
     (
         x0.clamp(0, iw as i32),
         y0.clamp(0, ih as i32),
@@ -756,8 +892,16 @@ fn pdf_rect_to_pixels(iw: u32, ih: u32, media: [f64; 4], rect: &PdfRectIn) -> (i
     )
 }
 
-fn draw_label(rgb: &mut [u8], iw: u32, ih: u32, media: [f64; 4], rect: &PdfRectIn, label: &str) {
-    let (x0, y0, x1, y1) = pdf_rect_to_pixels(iw, ih, media, rect);
+fn draw_label(
+    rgb: &mut [u8],
+    iw: u32,
+    ih: u32,
+    media: [f64; 4],
+    user_unit: f64,
+    rect: &PdfRectIn,
+    label: &str,
+) {
+    let (x0, y0, x1, y1) = pdf_rect_to_pixels(iw, ih, media, user_unit, rect);
     if x1 - x0 < 8 || y1 - y0 < 8 {
         return;
     }
@@ -857,5 +1001,34 @@ fn glyph5x7(ch: char) -> [u8; 7] {
         '_' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F],
         ' ' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
         _ => [0x00, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00],
+    }
+}
+
+#[cfg(test)]
+mod r2_user_unit_gate {
+    use super::*;
+
+    /// R-UU: the pdftoppm size gate must use page `/UserUnit`.
+    /// Letter MediaBox × UserUnit 2 at 72 DPI is 1224×1584. Today
+    /// `expected_raster_px` sees only MediaBox, so a UU-aware pdftoppm
+    /// 2× PNG fails the gate (`raster_failed`).
+    #[test]
+    fn expected_raster_px_includes_user_unit_2() {
+        let media = [0.0, 0.0, 612.0, 792.0];
+        let user_unit = 2.0;
+        let got = expected_raster_px(media, user_unit);
+        let want_w = ((media[2] - media[0]).abs() * user_unit * (RASTER_DPI as f64) / 72.0)
+            .round()
+            .clamp(1.0, 8192.0) as u32;
+        let want_h = ((media[3] - media[1]).abs() * user_unit * (RASTER_DPI as f64) / 72.0)
+            .round()
+            .clamp(1.0, 8192.0) as u32;
+        assert_eq!(
+            got,
+            (want_w, want_h),
+            "R-UU: expected_raster_px must multiply MediaBox by /UserUnit (want {want_w}×{want_h} for UU=2, got {}×{})",
+            got.0,
+            got.1
+        );
     }
 }

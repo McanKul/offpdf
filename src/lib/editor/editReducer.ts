@@ -108,7 +108,14 @@ function applyUpdate(
     ...doc,
     objects: doc.objects.map((o) => {
       if (o.id !== id) return o;
-      const next = { ...o, ...patch } as EditObject;
+      const nextPatch = { ...patch };
+      if (o.kind === "redact") {
+        delete nextPatch.objectRotate;
+      }
+      const next = { ...o, ...nextPatch } as EditObject;
+      if (next.kind === "redact") {
+        delete next.objectRotate;
+      }
       if (patch.rect) {
         next.rect = normalizePdfRect(patch.rect);
         if (
@@ -284,7 +291,6 @@ export function canRedo(state: HistoryState): boolean {
   return state.future.length > 0;
 }
 
-/** Helper to build a draft rect object. */
 /** Helper to build a draft redaction object (black fill, no label). */
 export function makeRedactObject(
   id: string,
@@ -300,6 +306,7 @@ export function makeRedactObject(
   };
 }
 
+/** Helper to build a draft rect object. */
 export function makeRectObject(
   id: string,
   pageIndex: number,
