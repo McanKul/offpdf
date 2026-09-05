@@ -358,10 +358,6 @@ export function EditPdfPage() {
           {formError && (
             <Alert variant="warning">{formError}</Alert>
           )}
-          <Alert variant="info">
-            The Redaction tool permanently removes content. Only pages with a redaction
-            region become images; text on those pages will not stay selectable.
-          </Alert>
           <PdfEditorCanvas
             sourcePath={current.path}
             sourcePage={current.page}

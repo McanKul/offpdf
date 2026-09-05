@@ -13,7 +13,9 @@ use crate::pdf_engine::edit_links::{
     expected_dest_has_annots, list_link_annots, unsafe_uri_error, uri_is_allowed, LinkAction,
     SessionLink, MAX_LINKS,
 };
-use crate::pdf_engine::edit_redact::{apply_redactions, verify_redaction, RedactRegion};
+use crate::pdf_engine::edit_redact::{
+    apply_redactions, apply_redactions_with_app, verify_redaction, RedactRegion,
+};
 use crate::pdf_engine::validate_output::{
     catalog_flags_from_doc, content_digest, validate_staged_pdf, ContentDigest, OutputSnapshot,
     PageSnapshot,
@@ -1525,47 +1527,13 @@ fn collect_redact_probes(
         let Ok(bytes) = doc.get_page_content(id) else {
             continue;
         };
-        for lit in extract_pdf_literals(&bytes) {
-            if lit.len() >= 2 {
-                probes.push(lit);
-            }
-        }
-        if bytes.len() >= 16 {
+        // Whole original stream of the redacted page is unique enough. Short
+        // `(...)` literals over-match unredacted pages that share a header.
+        if !bytes.is_empty() {
             probes.push(bytes);
         }
     }
     Ok(probes)
-}
-
-fn extract_pdf_literals(bytes: &[u8]) -> Vec<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'(' {
-            i += 1;
-            continue;
-        }
-        i += 1;
-        let mut cur = Vec::new();
-        while i < bytes.len() {
-            match bytes[i] {
-                b')' => {
-                    out.push(cur);
-                    i += 1;
-                    break;
-                }
-                b'\\' if i + 1 < bytes.len() => {
-                    cur.push(bytes[i + 1]);
-                    i += 2;
-                }
-                b => {
-                    cur.push(b);
-                    i += 1;
-                }
-            }
-        }
-    }
-    out
 }
 
 fn overlay_onto_assembled<F>(
@@ -1686,6 +1654,7 @@ where
         cancel,
         &exe,
         None,
+        None,
         &[],
         &[],
         false,
@@ -1706,6 +1675,7 @@ fn export_edit_pdf_with_check_exe<F>(
     cancel: Option<&AtomicBool>,
     qpdf_check: &Path,
     handle: Option<&Arc<JobHandle>>,
+    app: Option<&tauri::AppHandle>,
     incomplete_source_paths: &[String],
     form_values: &[FormValue],
     flatten_form: bool,
@@ -1749,7 +1719,10 @@ where
         if has_redact {
             assemble_to_tmp(groups, &counts, &tmp, &tmp_str, &mut run)?;
             redact_probes = collect_redact_probes(&tmp, &redacts)?;
-            apply_redactions(&tmp, &redacts)?;
+            match app {
+                Some(app) => apply_redactions_with_app(app, &tmp, &redacts)?,
+                None => apply_redactions(&tmp, &redacts)?,
+            }
             if has_paint {
                 let font_bytes = std::fs::read(font_path)
                     .map_err(|e| AppError::io("Could not read the editor font.", e))?;
@@ -1962,6 +1935,7 @@ pub fn edit_pdf_overlays(
             Some(&handle.cancelled),
             &qpdf_exe,
             Some(handle),
+            Some(app),
             incomplete_source_paths,
             form_values,
             flatten_form,

@@ -533,6 +533,18 @@ export function EditorOverlay({
       onPointerCancel={onPointerUp}
       onPointerLeave={() => onPickHover?.(null)}
     >
+      <defs>
+        <pattern
+          id="offpdf-redact-hatch"
+          width="8"
+          height="8"
+          patternUnits="userSpaceOnUse"
+          patternTransform="rotate(45)"
+        >
+          <rect width="8" height="8" fill="rgba(185,28,28,0.08)" />
+          <line x1="0" y1="0" x2="0" y2="8" stroke="rgba(185,28,28,0.45)" strokeWidth="2.5" />
+        </pattern>
+      </defs>
       <rect x={0} y={0} width={layout.cssWidth} height={layout.cssHeight} fill="transparent" />
 
       {pageObjects.map((obj) => (
@@ -555,9 +567,10 @@ export function EditorOverlay({
           y={Math.min(draft.start.y, draft.cur.y)}
           width={Math.abs(draft.cur.x - draft.start.x)}
           height={Math.abs(draft.cur.y - draft.start.y)}
-          fill={tool === "redact" ? "rgba(0,0,0,0.55)" : "rgba(37,99,235,0.12)"}
-          stroke={tool === "redact" ? "#111827" : "#2563eb"}
-          strokeDasharray={tool === "redact" ? "3 3" : "4 3"}
+          fill={tool === "redact" ? "url(#offpdf-redact-hatch)" : "rgba(37,99,235,0.12)"}
+          stroke={tool === "redact" ? "#b91c1c" : "#2563eb"}
+          strokeDasharray={tool === "redact" ? undefined : "4 3"}
+          strokeWidth={tool === "redact" ? 2 : 1}
           pointerEvents="none"
         />
       )}
@@ -867,7 +880,14 @@ function ObjectShape({
             width={Math.max(css.w, 1)}
             height={Math.max(css.h, 1)}
             fill={obj.fill ?? "#000000"}
-            opacity={0.88}
+            opacity={0.22}
+          />
+          <rect
+            x={css.x}
+            y={css.y}
+            width={Math.max(css.w, 1)}
+            height={Math.max(css.h, 1)}
+            fill="url(#offpdf-redact-hatch)"
           />
           <rect
             x={css.x}
@@ -875,15 +895,14 @@ function ObjectShape({
             width={Math.max(css.w, 1)}
             height={Math.max(css.h, 1)}
             fill="none"
-            stroke="#fbbf24"
-            strokeWidth={1.5}
-            strokeDasharray="4 3"
+            stroke="#b91c1c"
+            strokeWidth={2}
           />
           {obj.label ? (
             <text
               x={css.x + 6}
               y={css.y + Math.max(14, Math.min(css.h - 4, 16))}
-              fill="#ffffff"
+              fill="#7f1d1d"
               fontSize={11}
               fontFamily="ui-sans-serif, system-ui, sans-serif"
             >

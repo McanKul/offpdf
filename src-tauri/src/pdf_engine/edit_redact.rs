@@ -7,11 +7,15 @@
 use crate::error::AppError;
 use crate::pdf_engine::crop;
 use crate::pdf_engine::edit_overlay::PdfRectIn;
+use crate::pdf_engine::render;
 use crate::utils::safe_output;
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 const RASTER_DPI: u32 = 72;
 
@@ -24,6 +28,23 @@ pub struct RedactRegion {
 
 /// Mutate `path` in place. Tests copy source → dest first.
 pub fn apply_redactions(path: &Path, regions: &[RedactRegion]) -> Result<(), AppError> {
+    apply_redactions_inner(path, regions, None)
+}
+
+/// Same as [`apply_redactions`], using the packaged `pdftoppm` preview uses.
+pub(crate) fn apply_redactions_with_app(
+    app: &tauri::AppHandle,
+    path: &Path,
+    regions: &[RedactRegion],
+) -> Result<(), AppError> {
+    apply_redactions_inner(path, regions, Some(render::resolve_pdftoppm(app)))
+}
+
+fn apply_redactions_inner(
+    path: &Path,
+    regions: &[RedactRegion],
+    pdftoppm: Option<PathBuf>,
+) -> Result<(), AppError> {
     if regions.is_empty() {
         return Ok(());
     }
@@ -48,19 +69,42 @@ pub fn apply_redactions(path: &Path, regions: &[RedactRegion]) -> Result<(), App
         .map_err(|e| AppError::io("Could not create a temp directory.", e))?;
 
     let result = (|| {
+        let exe = match pdftoppm {
+            Some(p) => p,
+            None => resolve_pdftoppm_standalone(),
+        };
+        ensure_pdftoppm(&exe)?;
+
         let mut rasters: HashMap<u32, (u32, u32, Vec<u8>)> = HashMap::new();
         {
             let probe = Document::load(path).map_err(|e| {
                 AppError::engine_failed(format!("Could not read the PDF: {e}"))
             })?;
             let pages = probe.get_pages();
+            let mut needs_unrotated = false;
+            for &page_index in by_page.keys() {
+                let Some(&page_id) = pages.get(&(page_index + 1)) else {
+                    continue;
+                };
+                if crop::page_rotation(&probe, page_id) != 0 {
+                    needs_unrotated = true;
+                    break;
+                }
+            }
+            let raster_src = if needs_unrotated {
+                let sibling = work.join("unrotated.pdf");
+                write_unrotated_copy(path, &sibling)?;
+                sibling
+            } else {
+                path.to_path_buf()
+            };
             for (&page_index, page_regions) in &by_page {
                 let page_no = page_index + 1;
                 let Some(&page_id) = pages.get(&page_no) else {
                     continue;
                 };
                 let media = crop::media_box(&probe, page_id);
-                let (w, h, mut rgb) = raster_page(path, page_no, media, &work);
+                let (w, h, mut rgb) = raster_page(&exe, &raster_src, page_no, media, &work)?;
                 for region in page_regions {
                     let color = parse_fill(region.fill.as_deref());
                     fill_pdf_rect(&mut rgb, w, h, media, &region.rect, color);
@@ -160,78 +204,164 @@ fn save_in_place(doc: &mut Document, path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn raster_page(pdf: &Path, page_no: u32, media: [f64; 4], work: &Path) -> (u32, u32, Vec<u8>) {
-    if let Some(img) = raster_with_pdftoppm(pdf, page_no, work) {
-        return img;
-    }
-    fallback_rgb(media)
+fn renderer_missing() -> AppError {
+    AppError::new(
+        "RENDERER_MISSING",
+        "Page renderer not found",
+        "Redaction needs pdftoppm (poppler) to rasterize the page. The file was not saved.",
+    )
+    .with_suggestion("Install poppler, or reinstall OffPDF so the bundled renderer is available.")
 }
 
-fn fallback_rgb(media: [f64; 4]) -> (u32, u32, Vec<u8>) {
+fn raster_failed(details: impl Into<String>) -> AppError {
+    AppError::engine_failed(details).with_suggestion(
+        "Redaction could not rasterize the page. The file was not saved.",
+    )
+}
+
+/// Locate `pdftoppm` the same way preview/Compress do when no AppHandle exists.
+fn resolve_pdftoppm_standalone() -> PathBuf {
+    let exe = if cfg!(windows) {
+        "pdftoppm.exe"
+    } else {
+        "pdftoppm"
+    };
+    if let Ok(cur) = std::env::current_exe() {
+        if let Some(parent) = cur.parent() {
+            for candidate in [
+                parent.join("binaries").join(exe),
+                parent.join("resources").join("binaries").join(exe),
+                parent.join("binaries").join("binaries").join(exe),
+            ] {
+                if candidate.exists() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        for candidate in [
+            "/opt/homebrew/bin/pdftoppm",
+            "/usr/local/bin/pdftoppm",
+            "/opt/local/bin/pdftoppm",
+            "/usr/bin/pdftoppm",
+        ] {
+            let p = PathBuf::from(candidate);
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+    PathBuf::from(exe)
+}
+
+fn ensure_pdftoppm(exe: &Path) -> Result<(), AppError> {
+    let mut cmd = Command::new(exe);
+    render::configure_poppler_command(&mut cmd, exe);
+    cmd.arg("-v").stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    match cmd.status() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(renderer_missing()),
+        Err(e) => Err(raster_failed(e.to_string())),
+        Ok(_) => Ok(()),
+    }
+}
+
+fn expected_raster_px(media: [f64; 4]) -> (u32, u32) {
     let w = ((media[2] - media[0]).abs() * (RASTER_DPI as f64) / 72.0)
         .round()
         .clamp(1.0, 8192.0) as u32;
     let h = ((media[3] - media[1]).abs() * (RASTER_DPI as f64) / 72.0)
         .round()
         .clamp(1.0, 8192.0) as u32;
-    (w, h, vec![255u8; w as usize * h as usize * 3])
+    (w, h)
 }
 
-fn resolve_pdftoppm() -> Option<PathBuf> {
-    for candidate in [
-        "/opt/homebrew/bin/pdftoppm",
-        "/usr/local/bin/pdftoppm",
-        "/opt/local/bin/pdftoppm",
-        "/usr/bin/pdftoppm",
-    ] {
-        if Path::new(candidate).exists() {
-            return Some(PathBuf::from(candidate));
+fn write_unrotated_copy(src: &Path, dest: &Path) -> Result<(), AppError> {
+    let mut doc = Document::load(src).map_err(|e| {
+        AppError::engine_failed(format!("Could not read the PDF: {e}"))
+    })?;
+    let page_ids: Vec<ObjectId> = doc.get_pages().values().copied().collect();
+    for page_id in page_ids {
+        if let Ok(page) = doc.get_object_mut(page_id).and_then(|o| o.as_dict_mut()) {
+            page.set("Rotate", 0);
         }
     }
-    Command::new("pdftoppm")
-        .arg("-v")
-        .output()
-        .ok()
-        .filter(|o| o.status.success() || !o.stderr.is_empty())
-        .map(|_| PathBuf::from("pdftoppm"))
+    doc.save(dest)
+        .map_err(|e| AppError::io("Could not write an unrotated render copy.", e))?;
+    Ok(())
 }
 
-fn raster_with_pdftoppm(pdf: &Path, page_no: u32, work: &Path) -> Option<(u32, u32, Vec<u8>)> {
-    let exe = resolve_pdftoppm()?;
+fn raster_page(
+    exe: &Path,
+    pdf: &Path,
+    page_no: u32,
+    media: [f64; 4],
+    work: &Path,
+) -> Result<(u32, u32, Vec<u8>), AppError> {
+    let (w, h, rgb) = raster_with_pdftoppm(exe, pdf, page_no, work)?;
+    let expected = expected_raster_px(media);
+    if (w, h) != expected {
+        return Err(raster_failed(format!(
+            "Raster size {w}×{h} does not match unrotated MediaBox {}×{} at {RASTER_DPI} DPI.",
+            expected.0, expected.1
+        )));
+    }
+    Ok((w, h, rgb))
+}
+
+fn raster_with_pdftoppm(
+    exe: &Path,
+    pdf: &Path,
+    page_no: u32,
+    work: &Path,
+) -> Result<(u32, u32, Vec<u8>), AppError> {
     let prefix = work.join(format!("p{page_no}"));
-    let run = |norotate: bool| -> bool {
-        let mut cmd = Command::new(&exe);
-        cmd.arg("-png")
-            .arg("-r")
-            .arg(RASTER_DPI.to_string())
-            .arg("-f")
-            .arg(page_no.to_string())
-            .arg("-l")
-            .arg(page_no.to_string());
-        if norotate {
-            cmd.arg("-norotate");
+    let mut cmd = Command::new(exe);
+    render::configure_poppler_command(&mut cmd, exe);
+    cmd.arg("-png")
+        .arg("-r")
+        .arg(RASTER_DPI.to_string())
+        .arg("-f")
+        .arg(page_no.to_string())
+        .arg("-l")
+        .arg(page_no.to_string())
+        .arg("-singlefile")
+        .arg(pdf)
+        .arg(&prefix)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    let out = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            renderer_missing()
+        } else {
+            raster_failed(e.to_string())
         }
-        cmd.arg("-singlefile")
-            .arg(pdf)
-            .arg(&prefix)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        cmd.status().map(|s| s.success()).unwrap_or(false)
-    };
-    if !run(true) {
-        let _ = run(false);
-    }
+    })?;
     let png = prefix.with_extension("png");
-    if !png.exists() {
-        return None;
+    if !out.status.success() || !png.exists() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(raster_failed(if stderr.trim().is_empty() {
+            format!("pdftoppm failed to rasterize page {page_no}.")
+        } else {
+            stderr.trim().to_string()
+        }));
     }
-    let img = image::open(&png).ok()?.to_rgb8();
+    let img = image::open(&png)
+        .map_err(|e| raster_failed(format!("Could not read the rasterized page: {e}")))?
+        .to_rgb8();
     let _ = std::fs::remove_file(&png);
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 {
-        return None;
+        return Err(raster_failed(format!(
+            "pdftoppm produced an empty raster for page {page_no}."
+        )));
     }
-    Some((w, h, img.into_raw()))
+    Ok((w, h, img.into_raw()))
 }
 
 fn install_page_image(
