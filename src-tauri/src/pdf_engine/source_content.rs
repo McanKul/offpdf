@@ -2,6 +2,11 @@
 //!
 //! Walks page streams and Form XObjects on the original source path. Does not
 //! write a dest, call `Document::replace_text`, or apply page `/Rotate`.
+//!
+//! Research prototype only; no Tauri command or UI invokes this module.
+//! Decoded-size checks currently run after allocation, and font/geometry
+//! support is incomplete. Complete #33's resource bounds and compatibility
+//! evaluation before exposing this API to user files or enabling editing.
 
 use crate::error::AppError;
 use crate::pdf_engine::crop;
@@ -145,6 +150,7 @@ struct Flags {
     rotated: bool,
     skewed: bool,
     no_tounicode: bool,
+    missing_font: bool,
     ambiguous: bool,
     masked: bool,
     shared: bool,
@@ -226,6 +232,7 @@ struct FormInfo {
 }
 
 struct TextInspect {
+    missing_font: bool,
     type3: bool,
     vertical: bool,
     no_tounicode: bool,
@@ -282,10 +289,10 @@ impl Walker<'_> {
         visiting: &mut Vec<ObjectId>,
         geom_unsafe: bool,
     ) -> Result<(), AppError> {
-        let inline_total = count_inline_images(bytes);
+        let inline_total = count_inline_images(bytes)?;
         // BI…EI: do not trust a prefix Content::decode Ok; strip payloads first.
         let stripped = if inline_total > 0 {
-            Some(strip_inline_image_payloads(bytes))
+            Some(strip_inline_image_payloads(bytes)?)
         } else {
             None
         };
@@ -593,6 +600,7 @@ impl Walker<'_> {
             rotated: is_rotated_tm(effective),
             skewed: is_skewed_tm(effective),
             no_tounicode: inspect.no_tounicode,
+            missing_font: inspect.missing_font,
             ambiguous: inspect.ambiguous,
             masked: gs.masked,
             geometry: geom_unsafe,
@@ -711,7 +719,7 @@ impl Walker<'_> {
         Ok(())
     }
 
-    fn push(&mut self, pending: Pending) -> Result<(), AppError> {
+    fn push(&mut self, mut pending: Pending) -> Result<(), AppError> {
         if self.pending.len() >= MAX_OCCURRENCES {
             return Err(malformed_content(
                 "This PDF has more than 5,000 text or image occurrences.",
@@ -720,6 +728,9 @@ impl Walker<'_> {
         if let Some(id) = pending.paint_id {
             *self.paint_counts.entry(id).or_insert(0) += 1;
         }
+        // A Form stream/operator can be visited more than once on the same
+        // page. Include its deterministic occurrence ordinal, not just its ID.
+        pending.locator.push_str(&format!(":{}", self.pending.len()));
         self.pending.push(pending);
         Ok(())
     }
@@ -765,6 +776,8 @@ fn pick_reason(flags: &Flags) -> (SourceCapability, Option<String>) {
         Some("ROTATED_TEXT")
     } else if flags.skewed {
         Some("SKEWED_TEXT")
+    } else if flags.missing_font {
+        Some("MISSING_FONT")
     } else if flags.no_tounicode {
         Some("NO_TOUNICODE")
     } else if flags.ambiguous {
@@ -1003,6 +1016,7 @@ fn inspect_text(
     }
     let size = font_size.abs().max(0.01);
     TextInspect {
+        missing_font: dict.is_none(),
         type3,
         vertical,
         no_tounicode,
@@ -1444,7 +1458,7 @@ fn spacing_advance(pieces: &[Vec<u8>], tc: f64, tw: f64) -> f64 {
     extra
 }
 
-fn strip_inline_image_payloads(data: &[u8]) -> Vec<u8> {
+fn strip_inline_image_payloads(data: &[u8]) -> Result<Vec<u8>, AppError> {
     let mut out = Vec::with_capacity(data.len());
     let mut i = 0;
     // Normal → Keys (after BI) → Payload (after ID). Copy BI/keys/ID/EI;
@@ -1479,7 +1493,7 @@ fn strip_inline_image_payloads(data: &[u8]) -> Vec<u8> {
         }
         if data[i] == b'(' {
             let start = i;
-            i = skip_literal(data, i);
+            i = skip_literal(data, i)?;
             out.extend_from_slice(&data[start..i]);
             continue;
         }
@@ -1511,10 +1525,13 @@ fn strip_inline_image_payloads(data: &[u8]) -> Vec<u8> {
         out.push(data[i]);
         i += 1;
     }
-    out
+    if after_bi || after_id {
+        return Err(malformed_content("An inline image is unterminated."));
+    }
+    Ok(out)
 }
 
-fn count_inline_images(data: &[u8]) -> usize {
+fn count_inline_images(data: &[u8]) -> Result<usize, AppError> {
     let mut count = 0;
     let mut i = 0;
     let mut in_inline = false;
@@ -1530,7 +1547,7 @@ fn count_inline_images(data: &[u8]) -> usize {
             continue;
         }
         if !in_inline && data[i] == b'(' {
-            i = skip_literal(data, i);
+            i = skip_literal(data, i)?;
             continue;
         }
         if !in_inline && data[i] == b'<' && data.get(i + 1) != Some(&b'<') {
@@ -1550,7 +1567,10 @@ fn count_inline_images(data: &[u8]) -> usize {
         }
         i += 1;
     }
-    count
+    if in_inline {
+        return Err(malformed_content("An inline image is unterminated."));
+    }
+    Ok(count)
 }
 
 fn is_delim(b: u8) -> bool {
@@ -1570,13 +1590,13 @@ fn is_op_token(data: &[u8], i: usize, token: &[u8]) -> bool {
     before && after
 }
 
-fn skip_literal(data: &[u8], start: usize) -> usize {
+fn skip_literal(data: &[u8], start: usize) -> Result<usize, AppError> {
     let mut i = start + 1;
     let mut depth = 1;
     while i < data.len() && depth > 0 {
         match data[i] {
             b'\\' => {
-                i = i.saturating_add(2);
+                i = i.saturating_add(2).min(data.len());
                 continue;
             }
             b'(' => depth += 1,
@@ -1585,7 +1605,10 @@ fn skip_literal(data: &[u8], start: usize) -> usize {
         }
         i += 1;
     }
-    i
+    if depth != 0 {
+        return Err(malformed_content("A literal string is unterminated."));
+    }
+    Ok(i)
 }
 
 fn skip_hex(data: &[u8], start: usize) -> usize {

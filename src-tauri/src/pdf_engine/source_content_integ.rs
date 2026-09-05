@@ -34,6 +34,7 @@ use std::time::SystemTime;
 const FILE_CAP_BYTES: u64 = 400 * 1024 * 1024;
 
 const FROZEN_REASONS: &[&str] = &[
+    "MISSING_FONT",
     "NO_TOUNICODE",
     "AMBIGUOUS_UNICODE",
     "TYPE3",
@@ -697,6 +698,50 @@ fn classify_oversize_sparse_file_is_file_too_large() {
 
 fn box_obj(b: [i64; 4]) -> Object {
     Object::Array(b.into_iter().map(Object::Integer).collect())
+}
+
+#[test]
+fn classify_malformed_inline_tail_returns_error_without_panicking() {
+    let scratch = Scratch::new("review-malformed-inline");
+    let path = scratch.file("tail.pdf");
+    let mut content = b"BI /W 1 /H 1 /BPC 8 /CS /G ID x EI\n(".to_vec();
+    content.push(b'\\');
+    write_helvetica_page(&path, &content);
+    let result = std::panic::catch_unwind(|| classify_source_content(&path));
+    assert!(result.is_ok(), "Malformed content must return an AppError, not panic");
+    assert!(result.unwrap().is_err());
+}
+
+#[test]
+fn classify_missing_font_is_not_supported() {
+    let scratch = Scratch::new("review-missing-font");
+    let path = scratch.file("missing-font.pdf");
+    write_helvetica_page(&path, b"BT /Missing 12 Tf 72 400 Td (Hi) Tj ET");
+    let hits = classify(&path, "REVIEW-MISSING-FONT");
+    assert_eq!(capability_token(&hits[0]), "unsupported");
+    assert_eq!(reason_code(&hits[0]).as_deref(), Some("MISSING_FONT"));
+}
+
+#[test]
+fn classify_repeated_form_occurrences_have_unique_locators() {
+    let scratch = Scratch::new("review-repeated-form");
+    let path = scratch.file("repeated-form.pdf");
+    let mut doc = Document::load(fixture("image-in-form.pdf")).unwrap();
+    let page = *doc.get_pages().values().next().unwrap();
+    let ids = doc.get_page_contents(page);
+    let bytes = doc.get_page_content(page).unwrap();
+    let mut repeated = bytes.clone();
+    repeated.extend_from_slice(b"\n1 0 0 1 100 0 cm\n");
+    repeated.extend_from_slice(&bytes);
+    doc.objects.insert(ids[0], Object::Stream(Stream::new(Dictionary::new(), repeated)));
+    doc.save(&path).unwrap();
+    let hits = classify(&path, "REVIEW-REPEATED-FORM");
+    assert!(hits.len() >= 2);
+    let locators: std::collections::HashSet<_> = hits.iter().map(|h| &h.locator).collect();
+    assert_eq!(locators.len(), hits.len(), "Every occurrence needs its own locator");
+    assert_ne!(hits[0].rect, hits[1].rect);
+    assert_eq!(resolve_source_locator(&path, &hits[1].locator).unwrap(), hits[1]);
+    assert_eq!(classify(&path, "REVIEW-REPEATED-FORM"), hits);
 }
 
 fn helvetica_resources() -> Dictionary {
