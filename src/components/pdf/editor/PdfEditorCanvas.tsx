@@ -11,14 +11,15 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Button } from "@/components/ui/Button";
-import { Icon } from "@/components/ui/Icon";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import { Spinner } from "@/components/ui/Spinner";
 import { Alert } from "@/components/ui/Alert";
 import { useToast } from "@/components/ui/Toast";
-import { pagePdf, pickImageFile, previewImage } from "@/lib/tauriCommands";
+import { listPdfAnnots, pagePdf, pickImageFile, previewImage } from "@/lib/tauriCommands";
 import { toAppError } from "@/lib/types";
 import { base64ToBytes } from "@/lib/pdfjs";
-import type { EditObject, ShapeStyle } from "@/lib/editor";
+import type { EditObject, FormField, ShapeStyle } from "@/lib/editor";
+import type { ListedMarkup } from "@/lib/types";
 import {
   cloneObject,
   isClosedShapeObject,
@@ -32,6 +33,7 @@ import {
 } from "@/lib/editor";
 import { PageSurface, type PageLayout } from "./PageSurface";
 import { EditorOverlay, type EditorTool } from "./EditorOverlay";
+import { FormFieldsOverlay } from "./FormFieldsOverlay";
 import { ObjectList } from "./ObjectList";
 import { ObjectInspector, type ColorPickTarget } from "./ObjectInspector";
 import { ShapePicker, SHAPE_TOOLS } from "./ShapePicker";
@@ -60,6 +62,14 @@ const MAIN_TOOLS: {
   { id: "link", label: "Link", icon: "external" },
 ];
 
+const MARKUP_TOOLS: { id: EditorTool; label: string; icon: IconName }[] = [
+  { id: "note", label: "Note", icon: "badge" },
+  { id: "highlight", label: "Highlight", icon: "sparkles" },
+  { id: "underline", label: "Underline", icon: "type" },
+  { id: "strikeout", label: "Strikeout", icon: "slash" },
+  { id: "markupInk", label: "Ink annot", icon: "stamp" },
+];
+
 function isTextEntryTarget(t: EventTarget | null): boolean {
   const el = t as HTMLElement | null;
   if (!el) return false;
@@ -74,6 +84,9 @@ export function PdfEditorCanvas({
   pageCount,
   session,
   onPageChange,
+  formFields = [],
+  formValues = {},
+  onFormChange,
 }: {
   sourcePath: string;
   /** 1-based page number inside `sourcePath` (pagePdf). */
@@ -83,6 +96,9 @@ export function PdfEditorCanvas({
   pageCount: number;
   session: EditSession;
   onPageChange?: (pageIndex: number) => void;
+  formFields?: FormField[];
+  formValues?: Record<string, string>;
+  onFormChange?: (name: string, value: string) => void;
 }) {
   const { toast } = useToast();
   const [zoom, setZoom] = useState(1);
@@ -99,6 +115,8 @@ export function PdfEditorCanvas({
   const [fitWidth, setFitWidth] = useState(640);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [colorPick, setColorPick] = useState<ColorPickTarget | null>(null);
+  const [markupAuthor, setMarkupAuthor] = useState("");
+  const [leftovers, setLeftovers] = useState<ListedMarkup[]>([]);
   const [pickCursor, setPickCursor] = useState<{ x: number; y: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -172,6 +190,20 @@ export function PdfEditorCanvas({
       active = false;
     };
   }, [sourcePath, sourcePage]);
+
+  useEffect(() => {
+    let active = true;
+    listPdfAnnots(sourcePath)
+      .then((items) => {
+        if (active) setLeftovers(items);
+      })
+      .catch(() => {
+        if (active) setLeftovers([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [sourcePath]);
 
   const clampZoom = (z: number) =>
     Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 100) / 100));
@@ -416,6 +448,15 @@ export function PdfEditorCanvas({
 
   return (
     <div className="pdf-editor" ref={rootRef} tabIndex={0}>
+      {tool === "redact" && (
+        <div className="pdf-editor__redact-note">
+          <Alert variant="info">
+            Redaction permanently removes content on Save. Only pages with a
+            redaction region become images; text on those pages will not stay
+            selectable.
+          </Alert>
+        </div>
+      )}
       <div className="pdf-editor__toolbar thumb-toolbar wrap">
         <Button size="sm" variant="secondary" onClick={session.undo} disabled={!session.canUndo} title="Undo" aria-label="Undo">
           <Icon name="undo" size={15} />
@@ -493,6 +534,29 @@ export function PdfEditorCanvas({
         >
           <Icon name="external" size={16} />
         </Button>
+        <Button
+          size="sm"
+          variant={tool === "redact" ? "primary" : "ghost"}
+          title="Redaction — permanently remove content in this region on Save"
+          aria-label="Redaction"
+          aria-pressed={tool === "redact"}
+          onClick={() => setTool("redact")}
+        >
+          <Icon name="squareFill" size={16} />
+        </Button>
+        {MARKUP_TOOLS.map((t) => (
+          <Button
+            key={t.id}
+            size="sm"
+            variant={tool === t.id ? "primary" : "ghost"}
+            title={t.label}
+            aria-label={t.label}
+            aria-pressed={tool === t.id}
+            onClick={() => setTool(t.id)}
+          >
+            <Icon name={t.icon} size={16} />
+          </Button>
+        ))}
         <span className="pdf-editor__sep" />
         <Button size="sm" variant="ghost" onClick={() => setZoomSafe((z) => z - STEP)} title="Zoom out" aria-label="Zoom out">
           <Icon name="minus" size={15} />
@@ -523,6 +587,32 @@ export function PdfEditorCanvas({
             selectedIds={pageSelectedIds}
             onSelect={session.select}
             onDelete={session.remove}
+          />
+          {leftovers.filter((a) => a.pageIndex === sourcePage - 1).length > 0 && (
+            <div className="pdf-editor__leftovers" style={{ marginTop: 12 }}>
+              <div className="pdf-editor__sidebar-title">Existing annotations</div>
+              <ul className="pdf-editor__object-list" aria-label="Existing annotations">
+                {leftovers
+                  .filter((a) => a.pageIndex === sourcePage - 1)
+                  .map((a, i) => (
+                    <li key={`${a.subtype}-${i}`} className="muted" style={{ fontSize: 12.5 }}>
+                      {a.subtype}
+                      {a.contents ? `: ${a.contents.slice(0, 24)}` : ""}
+                      {a.author ? ` · ${a.author}` : ""}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+          <label className="field__label" style={{ marginTop: 10 }}>
+            Annot author
+          </label>
+          <input
+            className="input"
+            type="text"
+            value={markupAuthor}
+            placeholder="Author"
+            onChange={(e) => setMarkupAuthor(e.target.value)}
           />
           {selected && pageSelectedIds.length > 1 && (
             <div className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>
@@ -589,6 +679,15 @@ export function PdfEditorCanvas({
                 onLayout={setLayout}
                 onFail={(reason) => setLoadError(reason ?? "Could not render this page.")}
               />
+              {layout && onFormChange && (
+                <FormFieldsOverlay
+                  layout={layout}
+                  fields={formFields}
+                  values={formValues}
+                  sourcePage={sourcePage}
+                  onChange={onFormChange}
+                />
+              )}
               {layout && (
                 <EditorOverlay
                   layout={layout}
@@ -625,6 +724,30 @@ export function PdfEditorCanvas({
                   }}
                   onCreateInk={(pts) => {
                     session.addInk(pageIndex, pts);
+                    setTool("select");
+                  }}
+                  onCreateNote={(rect) => {
+                    session.addNote(pageIndex, rect, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateHighlight={(rect) => {
+                    session.addHighlight(pageIndex, rect, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateUnderline={(rect) => {
+                    session.addUnderline(pageIndex, rect, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateStrikeout={(rect) => {
+                    session.addStrikeout(pageIndex, rect, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateMarkupInk={(strokes) => {
+                    session.addMarkupInk(pageIndex, strokes, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateRedact={(rect) => {
+                    session.addRedact(pageIndex, rect);
                     setTool("select");
                   }}
                   onRequestImage={(at) => void placeImage(at)}

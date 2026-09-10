@@ -39,11 +39,18 @@ npm run tauri:dev
 Useful checks:
 
 ```bash
+npm run check:versions
 npm run build
 npm test
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
+
+`npm run check:versions` verifies that the release version matches in
+`package.json`, both root version fields in `package-lock.json`,
+`src-tauri/Cargo.toml`, the OffPDF entry in `src-tauri/Cargo.lock`, and
+`src-tauri/tauri.conf.json`. Update these together when changing the version.
+CI runs this check on pull requests and reports mismatched files and values.
 
 ## Engineering guidelines
 

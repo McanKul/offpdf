@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OffPDF",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "identifier": "app.offpdf.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -61,7 +61,30 @@
     "macOS": {
       "minimumSystemVersion": "11.0",
       "hardenedRuntime": true
-    }
+    },
+    "fileAssociations": [
+      { "ext": ["pdf"], "mimeType": "application/pdf", "name": "PDF Document", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["png"], "mimeType": "image/png", "name": "PNG Image", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["jpg", "jpeg"], "mimeType": "image/jpeg", "name": "JPEG Image", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["gif"], "mimeType": "image/gif", "name": "GIF Image", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["bmp"], "mimeType": "image/bmp", "name": "Bitmap Image", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["webp"], "mimeType": "image/webp", "name": "WebP Image", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["tif", "tiff"], "mimeType": "image/tiff", "name": "TIFF Image", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["heic"], "mimeType": "image/heic", "name": "HEIC Image", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["heif"], "mimeType": "image/heif", "name": "HEIF Image", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["doc"], "mimeType": "application/msword", "name": "Word Document", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["docx"], "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "name": "Word Document", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["xls"], "mimeType": "application/vnd.ms-excel", "name": "Excel Spreadsheet", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["xlsx"], "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "name": "Excel Spreadsheet", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["ppt"], "mimeType": "application/vnd.ms-powerpoint", "name": "PowerPoint Presentation", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["pptx"], "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "name": "PowerPoint Presentation", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["odt"], "mimeType": "application/vnd.oasis.opendocument.text", "name": "OpenDocument Text", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["ods"], "mimeType": "application/vnd.oasis.opendocument.spreadsheet", "name": "OpenDocument Spreadsheet", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["odp"], "mimeType": "application/vnd.oasis.opendocument.presentation", "name": "OpenDocument Presentation", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["rtf"], "mimeType": "application/rtf", "name": "Rich Text", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["csv"], "mimeType": "text/csv", "name": "CSV", "role": "Editor", "rank": "Alternate" },
+      { "ext": ["htm", "html"], "mimeType": "text/html", "name": "HTML Document", "role": "Editor", "rank": "Alternate" }
+    ]
   },
   "plugins": {}
 }

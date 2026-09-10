@@ -22,9 +22,19 @@ export type {
   InkObject,
   LinkAction,
   LinkObject,
+  MarkupAnnotFields,
+  NoteObject,
+  HighlightObject,
+  UnderlineObject,
+  StrikeoutObject,
+  MarkupInkObject,
+  RedactObject,
   TextAlign,
   EditObject,
   EditDocument,
+  FormFieldKind,
+  FormField,
+  FormValue,
 } from "./types";
 export {
   createEmptyDocument,
@@ -36,6 +46,7 @@ export {
   mapPointsToRect,
   isClosedShape,
   isClosedShapeObject,
+  isMarkupObject,
 } from "./types";
 
 export type { CssRect, ViewportMapping } from "./coords";
@@ -63,12 +74,18 @@ export {
   canRedo,
   reorderOnPage,
   makeRectObject,
+  makeRedactObject,
   makeClosedShape,
   makeTextObject,
   makeImageObject,
   makeLineObject,
   makeInkObject,
   makeLinkObject,
+  makeNoteObject,
+  makeHighlightObject,
+  makeUnderlineObject,
+  makeStrikeoutObject,
+  makeMarkupInkObject,
 } from "./editReducer";
 
 export type { ResizeHandle } from "./resizeRect";

@@ -56,7 +56,13 @@ export type EditObjectKind =
   | "image"
   | "line"
   | "ink"
-  | "link";
+  | "link"
+  | "note"
+  | "highlight"
+  | "underline"
+  | "strikeout"
+  | "markupInk"
+  | "redact";
 
 export type ClosedShapeKind =
   | "rect"
@@ -95,6 +101,14 @@ export function isClosedShapeObject(
   | BubbleObject
   | ArrowObject {
   return isClosedShape(o.kind);
+}
+
+const MARKUP = new Set<string>(["note", "highlight", "underline", "strikeout", "markupInk"]);
+
+export function isMarkupObject(
+  o: EditObject,
+): o is NoteObject | HighlightObject | UnderlineObject | StrikeoutObject | MarkupInkObject {
+  return MARKUP.has(o.kind);
 }
 
 export type TextAlign = "left" | "center" | "right";
@@ -198,6 +212,49 @@ export interface LinkObject extends EditObjectBase {
   action: LinkAction;
 }
 
+/** Inspector author / color / optional comment for session markup annots. */
+export interface MarkupAnnotFields {
+  /** Inspector string only. No OS user / "OffPDF" default. */
+  author: string;
+  color?: string;
+  /** Optional comment text written as `/Contents` when set. */
+  comment?: string;
+}
+
+export interface NoteObject extends EditObjectBase, MarkupAnnotFields {
+  kind: "note";
+}
+
+export interface HighlightObject extends EditObjectBase, MarkupAnnotFields {
+  kind: "highlight";
+  /** Unrotated user-space QuadPoints (8×n). Winding is not frozen. */
+  quads: number[];
+}
+
+export interface UnderlineObject extends EditObjectBase, MarkupAnnotFields {
+  kind: "underline";
+  quads: number[];
+}
+
+export interface StrikeoutObject extends EditObjectBase, MarkupAnnotFields {
+  kind: "strikeout";
+  quads: number[];
+}
+
+export interface MarkupInkObject extends EditObjectBase, MarkupAnnotFields {
+  kind: "markupInk";
+  /** Strokes in unrotated user space (`/InkList`). Not overlay Draw `ink`. */
+  strokes: Point[][];
+}
+
+/** Permanent redaction region. Not an overlay stamp; Save rasterizes the page. */
+export interface RedactObject extends EditObjectBase {
+  kind: "redact";
+  fill?: string;
+  /** Optional replacement text burned into the raster. Omitted unless typed. */
+  label?: string;
+}
+
 export type EditObject =
   | RectObject
   | RoundRectObject
@@ -211,7 +268,13 @@ export type EditObject =
   | ImageObject
   | LineObject
   | InkObject
-  | LinkObject;
+  | LinkObject
+  | NoteObject
+  | HighlightObject
+  | UnderlineObject
+  | StrikeoutObject
+  | MarkupInkObject
+  | RedactObject;
 
 /** Bounds of a line segment. */
 export function lineBounds(x1: number, y1: number, x2: number, y2: number): PdfRect {
@@ -250,6 +313,29 @@ export interface EditDocument {
   version: 1;
   objects: EditObject[];
   selectedIds: string[];
+}
+
+/** Fillable AcroForm control from `list_pdf_form_fields` (lopdf walker). */
+export type FormFieldKind = "text" | "checkbox" | "radio" | "combo" | "list";
+
+export interface FormField {
+  name: string;
+  kind: FormFieldKind;
+  pageIndex: number | null;
+  rect: PdfRect | null;
+  value: string | null;
+  exportValues: string[];
+  choices: string[];
+  readOnly: boolean;
+  hidden: boolean;
+  maxLen: number | null;
+  multiline: boolean;
+  comboEdit: boolean;
+}
+
+export interface FormValue {
+  name: string;
+  value: string;
 }
 
 export function createEmptyDocument(): EditDocument {

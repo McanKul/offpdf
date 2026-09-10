@@ -1,6 +1,6 @@
 [package]
 name = "offpdf"
-version = "0.3.1"
+version = "0.3.2"
 description = "Free, open-source, offline-first desktop PDF utility."
 authors = ["OffPDF contributors"]
 edition = "2021"
@@ -43,6 +43,12 @@ image = { version = "0.25", default-features = false, features = [
 # Decode iPhone/iPad HEIC and HEIF photos. libheif is built and linked into the
 # app so users do not need to install a system codec or upload their photos.
 heif-rs = { path = "vendor/heif-rs" }
+
+[dev-dependencies]
+flate2 = "1"
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
 
 [features]
 # By default Tauri uses custom protocols. Keep network features off.

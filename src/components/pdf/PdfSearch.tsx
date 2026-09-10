@@ -14,6 +14,7 @@ import { useToast } from "@/components/ui/Toast";
 import {
   pdfText,
   ocrPdf,
+  ocrListLangs,
   getTempDir,
   copyFile,
   pickOutputFolder,
@@ -22,6 +23,7 @@ import {
 } from "@/lib/tauriCommands";
 import { joinPath } from "@/lib/validation";
 import { toAppError, type PageRef } from "@/lib/types";
+import { pickSearchOcrLang, searchOcrEmptyToast } from "@/lib/ocrLangs";
 import { buildPicks } from "./useCombinedDoc";
 
 const cache = new Map<string, string[]>();
@@ -110,10 +112,16 @@ export function PdfSearch({ refs, onOpen }: { refs: PageRef[]; onOpen: (ref: Pag
     const jobId = newJobId();
     let un: undefined | (() => void);
     try {
+      const installed = await ocrListLangs();
+      const lang = pickSearchOcrLang(installed);
+      if (!lang) {
+        toast({ ...searchOcrEmptyToast(), variant: "error" });
+        return;
+      }
       const dir = await getTempDir();
       const out = joinPath(dir, `search-${jobId}.pdf`);
       un = await onJobUpdate((u) => setOcrPct(Math.round(u.percent ?? 0)), jobId);
-      await ocrPdf(jobId, out, buildPicks(refs), "eng+tur");
+      await ocrPdf(jobId, out, buildPicks(refs), lang);
       const texts = await pdfText(out);
       const map: Record<string, string> = {};
       refs.forEach((r, i) => {

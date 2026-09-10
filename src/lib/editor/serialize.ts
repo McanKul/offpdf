@@ -5,6 +5,10 @@ export function cloneObject(o: EditObject): EditObject {
   const next = { ...o, rect: { ...o.rect } } as EditObject;
   if (next.kind === "ink") {
     next.points = next.points.map((p) => ({ x: p.x, y: p.y }));
+  } else if (next.kind === "markupInk") {
+    next.strokes = next.strokes.map((s) => s.map((p) => ({ x: p.x, y: p.y })));
+  } else if (next.kind === "highlight" || next.kind === "underline" || next.kind === "strikeout") {
+    next.quads = next.quads.slice();
   }
   return next;
 }
@@ -20,6 +24,10 @@ export function offsetObject(o: EditObject, dx: number, dy: number): EditObject 
     next.y2 += dy;
   } else if (next.kind === "ink") {
     next.points = next.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+  } else if (next.kind === "markupInk") {
+    next.strokes = next.strokes.map((s) => s.map((p) => ({ x: p.x + dx, y: p.y + dy })));
+  } else if (next.kind === "highlight" || next.kind === "underline" || next.kind === "strikeout") {
+    next.quads = next.quads.map((n, i) => n + (i % 2 === 0 ? dx : dy));
   }
   return next;
 }
@@ -40,6 +48,10 @@ export function toExportDocument(doc: EditDocument): EditDocument {
     objects: doc.objects.map((o) => {
       if (o.kind === "image") {
         const { previewUrl: _drop, ...rest } = o;
+        return rest;
+      }
+      if (o.kind === "redact") {
+        const { objectRotate: _rot, ...rest } = cloneObject(o);
         return rest;
       }
       return cloneObject(o);

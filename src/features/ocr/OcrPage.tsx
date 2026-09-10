@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { ToolPage, ToolSection } from "@/components/tools/ToolPage";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Select } from "@/components/ui/Select";
 import { Icon } from "@/components/ui/Icon";
 import { Alert } from "@/components/ui/Alert";
 import { useToast } from "@/components/ui/Toast";
@@ -15,22 +14,16 @@ import {
   buildPicks,
 } from "@/components/pdf";
 import { useJob, JobStatus, useDiskGuard } from "@/components/jobs";
-import { ocrPdf, ocrAvailable } from "@/lib/tauriCommands";
+import { ocrPdf, ocrAvailable, ocrListLangs } from "@/lib/tauriCommands";
+import { documentOcrLangs, joinOcrLangs, ocrLangLabel } from "@/lib/ocrLangs";
 import { getTool } from "@/lib/tools";
+import { toAppError } from "@/lib/types";
 import { estimateRequiredBytes, validateOutputName, joinPath } from "@/lib/validation";
 import { stripExt } from "@/lib/formatBytes";
 import { useSettingsStore } from "@/state/settingsStore";
 import { useWorkspace } from "@/state/workspaceStore";
 
 const tool = getTool("ocr");
-
-const LANGS = [
-  { value: "eng", label: "English" },
-  { value: "tur", label: "Turkish" },
-  { value: "eng+tur", label: "English + Turkish" },
-  { value: "deu", label: "German" },
-  { value: "fra", label: "French" },
-];
 
 export function OcrPage() {
   const files = useWorkspace((s) => s.files);
@@ -42,8 +35,10 @@ export function OcrPage() {
   const lastFolder = useSettingsStore((s) => s.lastOutputFolder);
   const [folder, setFolder] = useState<string | null>(lastFolder);
   const [name, setName] = useState("searchable.pdf");
-  const [lang, setLang] = useState("eng");
   const [available, setAvailable] = useState(true);
+  const [installed, setInstalled] = useState<string[] | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
 
   const first = files[0];
   useEffect(() => {
@@ -51,15 +46,59 @@ export function OcrPage() {
   }, [first?.path]);
   useEffect(() => {
     let on = true;
-    ocrAvailable().then((v) => on && setAvailable(v)).catch(() => {});
+    ocrAvailable()
+      .then((v) => {
+        if (on) setAvailable(v);
+      })
+      .catch(() => {});
+    return () => {
+      on = false;
+    };
+  }, []);
+  useEffect(() => {
+    let on = true;
+    ocrListLangs()
+      .then((codes) => {
+        if (!on) return;
+        setInstalled(codes);
+        setListError(null);
+        setSelected(documentOcrLangs(codes).includes("eng") ? ["eng"] : []);
+      })
+      .catch((e) => {
+        if (!on) return;
+        setInstalled(null);
+        setListError(toAppError(e).message);
+        setSelected([]);
+      });
     return () => {
       on = false;
     };
   }, []);
 
+  const toggle = (code: string, on: boolean) => {
+    setSelected((prev) => (on ? [...prev, code] : prev.filter((c) => c !== code)));
+  };
+
   const start = async () => {
     if (refs.length === 0) return toast({ title: "Add a PDF first", variant: "error" });
     if (!folder) return toast({ title: "Choose an output folder", variant: "error" });
+    if (!installed) {
+      return toast({
+        title: "Languages unavailable",
+        description: listError ?? "Could not list installed OCR languages.",
+        variant: "error",
+      });
+    }
+    const lang = joinOcrLangs(selected);
+    if (!lang) return toast({ title: "Select a language", variant: "error" });
+    const missing = selected.filter((c) => !installed.includes(c));
+    if (missing.length > 0) {
+      return toast({
+        title: "Language pack not installed",
+        description: `“${missing[0]}” is not installed for this Tesseract.`,
+        variant: "error",
+      });
+    }
     const nameRes = validateOutputName(name);
     if (!nameRes.ok) return toast({ title: "Invalid file name", description: nameRes.error, variant: "error" });
     const outputPath = joinPath(folder, nameRes.value);
@@ -71,7 +110,9 @@ export function OcrPage() {
     });
   };
 
-  const canStart = refs.length > 0 && !!folder && available && !job.isBusy;
+  const documentLangs = installed === null ? [] : documentOcrLangs(installed);
+  const listedOk = installed !== null && documentLangs.length > 0;
+  const canStart = refs.length > 0 && !!folder && available && !job.isBusy && selected.length > 0 && listedOk;
 
   return (
     <ToolPage tool={tool}>
@@ -92,7 +133,33 @@ export function OcrPage() {
       </ToolSection>
 
       <ToolSection label="Language">
-        <Select label="Document language" value={lang} onChange={setLang} options={LANGS} />
+        {listError && available && (
+          <Alert variant="danger" title="Could not list OCR languages">
+            {listError}
+          </Alert>
+        )}
+        {installed && documentLangs.length > 0 && (
+          <div className="col" role="group" aria-label="Document languages">
+            {documentLangs.map((code) => (
+              <label key={code} className="row" style={{ gap: 8, cursor: "pointer", alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={selected.includes(code)}
+                  onChange={(e) => toggle(code, e.target.checked)}
+                />
+                <span>{ocrLangLabel(code)}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        {available && installed === null && !listError && (
+          <p className="muted">Loading languages…</p>
+        )}
+        {installed && !listError && documentLangs.length === 0 && (
+          <p className="muted">
+            No document language packs. Install tesseract-lang (OffPDF does not download them).
+          </p>
+        )}
         <div className="mt">
           <Alert variant="info">
             Pages are rendered to images and a searchable text layer is added on top. Pick the language

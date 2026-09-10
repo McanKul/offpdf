@@ -57,6 +57,29 @@ service in the middle.
 | Compare PDFs | | |
 | Remove blank pages | | |
 
+### Edit PDF capabilities
+
+The Edit PDF workspace adds text, images, shapes, links, and freehand drawing as
+new content. It can also create PDF notes, highlights, underlines, strikeouts,
+and ink annotations while preserving existing annotations.
+
+For interactive PDFs, OffPDF can fill existing AcroForm text fields (including
+multiline fields), checkboxes, radio buttons, combo boxes, and list boxes. Form
+fields stay interactive by default.
+
+The two flattening options have different scopes:
+
+- **Flatten form fields** turns supported form widgets into page content while
+  leaving other annotations interactive.
+- **Flatten annotations** turns all remaining annotations into non-interactive
+  page content. When a PDF contains form fields, OffPDF requires form fields to
+  be flattened as part of this operation.
+
+Current limits: XFA forms are not supported; only the first PDF's AcroForm can
+be filled when several files are combined; and Edit PDF does not rewrite text
+or images already embedded in a source page. New text and images are added as
+overlays instead.
+
 ## Downloads
 
 | Platform | Package | Status |
@@ -76,6 +99,22 @@ All published binaries are available on the
 
 See the [code signing policy](./CODE_SIGNING_POLICY.md) for how official release
 artifacts are built, approved, and verified.
+
+## Open With (desktop)
+
+A packaged build registers OffPDF as an **Open With** handler for the same types
+the in-app picker already accepts (PDF, images including HEIC/HEIF, and Office).
+It is not the silent default PDF app (`bundle.fileAssociations` uses
+`rank: Alternate`). Choose OffPDF from Finder, Explorer, or your Linux file
+manager.
+
+Opened files go into the existing workspace. No merge, compress, convert, or
+redact job starts until you pick a tool. If OffPDF is already running, the
+existing window is focused and the files are added there.
+
+Association metadata lives in `src-tauri/tauri.conf.json`. Full Finder/Explorer
+clicks need a packaged build (`npm run tauri:build`) or a local `tauri:dev`
+session plus a manual OS association.
 
 ## Privacy model
 

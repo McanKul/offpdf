@@ -174,6 +174,27 @@ describe("rotation: PDF export coords stable across display rotation", () => {
   });
 });
 
+describe("F13 form widget chrome uses unrotated PDF rect", () => {
+  it("maps widget /Rect [llx lly urx ury] as {x:llx,y:lly,w,h} on rotate 90 + Crop ≠ Media", () => {
+    // Widget /Rect [100 200 180 240] → EditObject.rect { x: 100, y: 200, w: 80, h: 40 }.
+    // Crop [72 72 540 720] ≠ Media. Overlay chrome uses pdfRectToViewport / geometry.box.
+    const g = geom({ x: 72, y: 72, w: 468, h: 648 }, 90);
+    const size = displayedSize(g);
+    expect(size).toEqual({ w: 648, h: 468 });
+    const m = makeMapping(g, size.w, size.h);
+    const widget: PdfRect = { x: 100, y: 200, w: 80, h: 40 };
+    const css = pdfRectToViewport(widget, m);
+    const back = viewportRectToPdf(css, m);
+    approx(back.x, 100);
+    approx(back.y, 200);
+    approx(back.w, 80);
+    approx(back.h, 40);
+    // Not display-swapped as { x: 200, y: 100, w: 40, h: 80 }.
+    expect(Math.abs(back.w - 40)).toBeGreaterThan(1);
+    expect(Math.abs(back.h - 80)).toBeGreaterThan(1);
+  });
+});
+
 describe("pdfRectToViewport / viewportRectToPdf", () => {
   it("round-trips a rect at 0°", () => {
     const m = makeMapping(letter, 612, 792);
@@ -195,5 +216,23 @@ describe("pdfRectToViewport / viewportRectToPdf", () => {
     approx(back.y, rect.y, 1e-5);
     approx(back.w, rect.w, 1e-5);
     approx(back.h, rect.h, 1e-5);
+  });
+});
+
+describe("C6 markup rect space (rotate 90 + Crop ≠ Media)", () => {
+  it("stores highlight rubber-band as unrotated PDF, not display-swapped", () => {
+    const cropBox = { x: 72, y: 72, w: 468, h: 648 };
+    const g = geom(cropBox, 90);
+    const size = displayedSize(g);
+    const m = makeMapping(g, size.w, size.h);
+    const unrotated: PdfRect = { x: 100, y: 200, w: 80, h: 40 };
+    const css = pdfRectToViewport(unrotated, m);
+    const back = viewportRectToPdf(css, m);
+    approx(back.x, unrotated.x, 1e-5);
+    approx(back.y, unrotated.y, 1e-5);
+    approx(back.w, unrotated.w, 1e-5);
+    approx(back.h, unrotated.h, 1e-5);
+    // Display size is swapped; stored /Rect + /QuadPoints stay unrotated.
+    expect(size).toEqual({ w: 648, h: 468 });
   });
 });

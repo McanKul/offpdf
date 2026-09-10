@@ -14,6 +14,7 @@ export interface ToolMeta {
   icon: IconName;
   path: string;
   category: ToolCategory;
+  aliases?: readonly string[];
 }
 
 export const TOOLS: ToolMeta[] = [
@@ -90,11 +91,13 @@ export const TOOLS: ToolMeta[] = [
   {
     id: "editPdf",
     name: "Edit PDF",
-    description: "Add text, images and shapes to a PDF.",
-    longDescription: "Add text, images and shapes to a PDF, then save a new copy.",
+    description: "Add text, images and shapes, or fill existing form fields.",
+    longDescription:
+      "Add text, images and shapes, or fill existing AcroForm fields, then save a new copy.",
     icon: "fileText",
     path: "/tools/edit-pdf",
     category: "Organize",
+    aliases: ["annotations"],
   },
   {
     id: "poster",
@@ -135,6 +138,7 @@ export const TOOLS: ToolMeta[] = [
     icon: "fileText",
     path: "/tools/office-to-pdf",
     category: "Convert",
+    aliases: ["docx", "xlsx", "pptx"],
   },
   {
     id: "pdfToOffice",
@@ -145,6 +149,7 @@ export const TOOLS: ToolMeta[] = [
     icon: "fileText",
     path: "/tools/pdf-to-office",
     category: "Convert",
+    aliases: ["docx", "pptx"],
   },
   {
     id: "images",
@@ -175,6 +180,7 @@ export const TOOLS: ToolMeta[] = [
     icon: "badge",
     path: "/tools/pdfa",
     category: "Convert",
+    aliases: ["archival"],
   },
   {
     id: "compress",

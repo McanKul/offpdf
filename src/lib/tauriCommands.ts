@@ -17,6 +17,7 @@ import type {
   ImagePreview,
   JobResult,
   JobUpdate,
+  ListedMarkup,
   OutlineItem,
   PdfLink,
   PageGroup,
@@ -26,7 +27,7 @@ import type {
   RotationAngle,
   SplitMode,
 } from "./types";
-import type { EditDocument } from "./editor";
+import type { EditDocument, FormField, FormValue } from "./editor";
 
 /** Generate a unique job id on the frontend (passed into every operation). */
 export function newJobId(): string {
@@ -83,6 +84,20 @@ export function clearTempFiles(): Promise<number> {
 
 export function getTempDir(): Promise<string> {
   return invoke<string>("get_temp_dir");
+}
+
+/** Drain OS-opened paths queued before the frontend listener was ready. */
+export function takeOpenedPaths(): Promise<string[]> {
+  return invoke<string[]>("take_opened_paths");
+}
+
+/** Subscribe to later Open With / second-instance paths (paths only). */
+export async function onOpenedPaths(
+  handler: (paths: string[]) => void,
+): Promise<UnlistenFn> {
+  return listen<string[]>("os-open:paths", (event) => {
+    handler(event.payload ?? []);
+  });
 }
 
 /** Copy a file to a new path; returns the destination path. */
@@ -259,6 +274,11 @@ export function listPdfLinks(inputPath: string): Promise<PdfLink[]> {
   return invoke<PdfLink[]>("list_pdf_links", { inputPath });
 }
 
+/** List leftover and session markup annots (paths in, JSON out). */
+export function listPdfAnnots(inputPath: string): Promise<ListedMarkup[]> {
+  return invoke<ListedMarkup[]>("list_pdf_annots", { inputPath });
+}
+
 /** Visually compare two pages; returns a diff-overlay image + changed percent. */
 export function diffPages(
   aPath: string,
@@ -275,6 +295,11 @@ export function ocrAvailable(): Promise<boolean> {
   return invoke<boolean>("ocr_available");
 }
 
+/** Installed Tesseract language codes from the same binary the OCR job uses. */
+export function ocrListLangs(): Promise<string[]> {
+  return invoke<string[]>("ocr_list_langs");
+}
+
 /** OCR the combined document into one searchable PDF. `lang` e.g. "eng" or "tur". */
 export function ocrPdf(
   jobId: string,
@@ -286,12 +311,19 @@ export function ocrPdf(
 }
 
 /** Stamp a line of text (typed signature / "APPROVED" / date) on one page. */
+export function listPdfFormFields(inputPath: string): Promise<FormField[]> {
+  return invoke<FormField[]>("list_pdf_form_fields", { inputPath });
+}
+
 export function editPdfOverlays(
   jobId: string,
   outputPath: string,
   groups: PageGroup[],
   document: EditDocument,
   incompleteSourcePaths: string[] = [],
+  formValues: FormValue[] = [],
+  flattenForm = false,
+  flattenAnnotations = false,
 ): Promise<JobResult> {
   return invoke<JobResult>("edit_pdf_overlays", {
     jobId,
@@ -299,6 +331,9 @@ export function editPdfOverlays(
     groups,
     document,
     incompleteSourcePaths,
+    formValues,
+    flattenForm,
+    flattenAnnotations,
   });
 }
 

@@ -4,6 +4,30 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+## 0.3.2 - 2026-09-11
+
+### Added
+
+- Edit PDF now includes secure redaction. Only affected pages are rasterized, covered source content is verified absent before publishing, and the original file is never overwritten.
+- Open supported PDF, image, and Office files with OffPDF directly from Finder, Explorer, or the Linux desktop without automatically starting a tool.
+- OCR now discovers locally installed Tesseract language packs and supports selecting multiple document languages.
+- The desktop home screen has a keyboard-first tool search with Ctrl/Cmd+K focus.
+- Edit PDF supports markup annotations and common AcroForm text, checkbox, radio, combo, and list fields.
+
+### Fixed
+
+- Windows qpdf staging files are removed after the runtime is bundled.
+- Edit PDF output validation and form-overlay interaction coverage were expanded.
+- Existing PDF text and image structures can be classified read-only as groundwork for safely bounded source editing.
+
+### Known issues
+
+- Some real-device HEIC/HEIF files may still crash on Windows; investigation continues in issue #14.
+
+### Contributors
+
+- Thank you to @nonamexishere, @lKolabrodl, and @terminalchai for their contributions to this release.
+
 ## 0.3.1 - 2026-08-28
 
 ### Added

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   isImagePath,
@@ -129,5 +131,70 @@ describe("isSupportedPath", () => {
   it("rejects near misses where a supported extension is not the last one", () => {
     expect(isSupportedPath("report.pdf.exe")).toBe(false);
     expect(isSupportedPath("photo.heic.tmp")).toBe(false);
+  });
+
+  it("accepts spaces and non-ASCII characters in the path", () => {
+    expect(isSupportedPath("/tmp/ünicode 报告.pdf")).toBe(true);
+    expect(isSupportedPath("/tmp/my file.pdf")).toBe(true);
+    expect(isSupportedPath("C:\\Temp\\ünicode 报告.PDF")).toBe(true);
+  });
+});
+
+const SUPPORTED_EXTENSIONS = [...IMAGE_EXTENSIONS, "pdf", ...OFFICE_EXTENSIONS];
+
+type FileAssociation = {
+  ext?: string | string[];
+  rank?: string;
+};
+
+function registeredAssociationExts(associations: FileAssociation[]): string[] {
+  const out: string[] = [];
+  for (const item of associations) {
+    const raw = item.ext;
+    const list = typeof raw === "string" ? [raw] : raw ?? [];
+    for (const ext of list) {
+      out.push(String(ext).replace(/^\./, "").toLowerCase());
+    }
+  }
+  return out;
+}
+
+describe("os-open-associations-match-filetypes", () => {
+  it("registers exactly the isSupportedPath extensions as Open With (rank Alternate)", () => {
+    const tauriConf = JSON.parse(
+      readFileSync(join(process.cwd(), "src-tauri/tauri.conf.json"), "utf8"),
+    ) as { bundle?: { fileAssociations?: FileAssociation[] } };
+    const associations = tauriConf.bundle?.fileAssociations;
+
+    expect(
+      Array.isArray(associations),
+      "os-open-associations-match-filetypes: bundle.fileAssociations must exist",
+    ).toBe(true);
+
+    const list = associations as FileAssociation[];
+    expect(
+      list.length,
+      "os-open-associations-match-filetypes: bundle.fileAssociations must not be empty",
+    ).toBeGreaterThan(0);
+
+    for (const item of list) {
+      expect(
+        item.rank,
+        "os-open-associations-match-filetypes: every association must be rank Alternate (Open With, not silent default)",
+      ).toBe("Alternate");
+    }
+
+    const registered = registeredAssociationExts(list);
+    expect(
+      new Set(registered),
+      "os-open-associations-match-filetypes: registered ext list must match isSupportedPath",
+    ).toEqual(new Set(SUPPORTED_EXTENSIONS));
+
+    for (const ext of registered) {
+      expect(isSupportedPath(`file.${ext}`)).toBe(true);
+    }
+    for (const ext of SUPPORTED_EXTENSIONS) {
+      expect(registered).toContain(ext);
+    }
   });
 });

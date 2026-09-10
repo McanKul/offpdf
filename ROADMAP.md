@@ -5,15 +5,13 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 
 ## Current release
 
-- **v0.3.0** is the latest published release. Its Windows package is unsigned
+- **v0.3.1** is the latest published release. Its Windows package is unsigned
   and remains available through GitHub Releases.
 - The Apple Silicon macOS build is signed and notarized. It bundles qpdf,
   Poppler, and Tesseract; LibreOffice remains optional for Office and PDF/A work.
 
-## Next release
+## Distribution
 
-- **v0.3.1** is being prepared for distribution through GitHub Releases and
-  [offpdf.com](https://offpdf.com).
 - The Windows x64 installer bundles qpdf, Poppler, Tesseract, and LibreOffice so
   the supported workflows run offline. It is distributed through GitHub Releases
   with an explicit unsigned warning while Authenticode signing is completed;
@@ -34,7 +32,7 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 - Reduce the Windows package size without weakening offline functionality.
 - Add official Intel Mac and Linux packages.
 - Improve OCR language selection and optional language-pack guidance.
-- Expand editor support for annotations, links, and common form workflows.
+- Harden annotation, link, and AcroForm editing across more real-world PDFs.
 - Improve accessibility across keyboard navigation, focus states, and screen-reader labels.
 
 ## Known limitations
@@ -46,6 +44,14 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 - Lossy compression rasterizes pages. Use text-preserving compression when text
   selection matters.
 - Complex Office conversions are best effort and may not reproduce every layout.
+- Edit PDF supports notes, highlights, underlines, strikeouts, ink annotations,
+  and common AcroForm text, checkbox, radio, combo, and list fields. XFA forms
+  are not supported.
+- In a multi-file Edit PDF job, only the first PDF's AcroForm can be filled.
+  Additional files that contain form fields must be removed from the job.
+- Flatten form fields converts form widgets to page content while preserving
+  other annotations. Flatten annotations converts all remaining annotations to
+  page content and requires form fields to be flattened when they are present.
 - Edit PDF adds new text, images, and shapes as overlays; it does not rewrite
   existing text or images inside the source document.
 - Auto-update is intentionally not enabled.

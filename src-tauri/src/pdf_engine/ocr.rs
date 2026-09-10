@@ -4,6 +4,7 @@
 
 use crate::error::AppError;
 use crate::models::{JobHandle, JobUpdate, PagePick};
+use crate::pdf_engine::ocr_langs;
 use crate::pdf_engine::render;
 use crate::utils::process::run_qpdf;
 use crate::utils::temp;
@@ -132,6 +133,54 @@ fn missing() -> AppError {
     .with_suggestion("Install it — on macOS: brew install tesseract tesseract-lang.")
 }
 
+fn langs_failed(details: impl Into<String>) -> AppError {
+    AppError::new(
+        "OCR_LANGS_FAILED",
+        "Could not list OCR languages",
+        "Tesseract did not report any installed language packs.",
+    )
+    .with_details(details.into())
+    .with_suggestion(
+        "Install Tesseract language packs locally (macOS: brew install tesseract-lang). OffPDF does not download them.",
+    )
+}
+
+/// Installed Tesseract language codes from the same binary and tessdata the job uses.
+pub fn list_langs(app: &tauri::AppHandle) -> Result<Vec<String>, AppError> {
+    let exe = resolve_tesseract(app);
+    let mut cmd = Command::new(&exe);
+    configure_tesseract_command(&mut cmd, &exe);
+    if let Some(tessdata) = tessdata_dir_for_tool(&exe) {
+        cmd.arg("--tessdata-dir").arg(tessdata);
+    }
+    cmd.arg("--list-langs");
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    let out = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            missing()
+        } else {
+            langs_failed(e.to_string())
+        }
+    })?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+
+    if !out.status.success() {
+        return Err(langs_failed(combined.trim()));
+    }
+
+    let langs = ocr_langs::parse_tesseract_list_langs(&combined);
+    if langs.is_empty() {
+        return Err(langs_failed(combined.trim()));
+    }
+    Ok(langs)
+}
+
 /// OCR every page of the combined document into one searchable PDF. `lang` is a
 /// Tesseract language code (e.g. "eng", "tur", or "eng+tur").
 pub fn ocr(
@@ -145,6 +194,9 @@ pub fn ocr(
     if picks.is_empty() {
         return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
     }
+    let installed = list_langs(app)?;
+    let installed_refs: Vec<&str> = installed.iter().map(String::as_str).collect();
+    ocr_langs::validate_ocr_lang(lang, &installed_refs)?;
     super::ensure_output_dir(output)?;
 
     let pdftoppm = render::resolve_pdftoppm(app);

@@ -4,6 +4,11 @@ const commands = vi.hoisted(() => ({
   getFileInfo: vi.fn(),
   imageToPdf: vi.fn(),
   officeToPdf: vi.fn(),
+  copyFile: vi.fn(),
+  mergePdfs: vi.fn(),
+  compressPdf: vi.fn(),
+  editPdf: vi.fn(),
+  editPdfOverlays: vi.fn(),
 }));
 
 vi.mock("@/lib/tauriCommands", () => commands);
@@ -112,5 +117,77 @@ describe("workspace image imports", () => {
     expect(result.errors).toEqual(["bad.heic: The image is incomplete."]);
     expect(useWorkspace.getState().files).toHaveLength(1);
     expect(useWorkspace.getState().loading).toBe(false);
+  });
+});
+
+describe("OS-open workspace intake", () => {
+  it("rejects OS-open of report.pdf.exe and .zip without adding them", async () => {
+    const result = await useWorkspace
+      .getState()
+      .addPaths(["/tmp/report.pdf.exe", "/tmp/archive.zip"]);
+
+    expect(result.added).toBe(0);
+    expect(result.notPdf).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(useWorkspace.getState().files).toHaveLength(0);
+    expect(commands.getFileInfo).not.toHaveBeenCalled();
+    expect(commands.copyFile).not.toHaveBeenCalled();
+    expect(commands.mergePdfs).not.toHaveBeenCalled();
+    expect(commands.compressPdf).not.toHaveBeenCalled();
+    expect(commands.editPdf).not.toHaveBeenCalled();
+    expect(commands.editPdfOverlays).not.toHaveBeenCalled();
+  });
+
+  it("keeps a supported path when mixed with unsupported OS-open files", async () => {
+    const result = await useWorkspace
+      .getState()
+      .addPaths(["/tmp/report.pdf.exe", "/tmp/opened.pdf", "/tmp/archive.zip"]);
+
+    expect(result.added).toBe(1);
+    expect(result.notPdf).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(useWorkspace.getState().files).toHaveLength(1);
+    expect(useWorkspace.getState().files[0]?.path).toBe("/tmp/opened.pdf");
+    expect(commands.getFileInfo).toHaveBeenCalledTimes(1);
+    expect(commands.getFileInfo).toHaveBeenCalledWith("/tmp/opened.pdf");
+  });
+
+  it("collects a missing OS-open path as an error and does not write a dest", async () => {
+    commands.getFileInfo.mockRejectedValueOnce({
+      code: "IO",
+      title: "Could not read file",
+      message: "Could not read file information.",
+    });
+
+    const missing = "/tmp/does-not-exist-os-open.pdf";
+    const result = await useWorkspace.getState().addPaths([missing]);
+
+    expect(result.added).toBe(0);
+    expect(result.notPdf).toBe(false);
+    expect(result.errors).toEqual([
+      "does-not-exist-os-open.pdf: Could not read file information.",
+    ]);
+    expect(useWorkspace.getState().files).toHaveLength(0);
+    expect(commands.copyFile).not.toHaveBeenCalled();
+    expect(commands.mergePdfs).not.toHaveBeenCalled();
+    expect(commands.compressPdf).not.toHaveBeenCalled();
+    expect(commands.editPdf).not.toHaveBeenCalled();
+    expect(commands.editPdfOverlays).not.toHaveBeenCalled();
+    expect(commands.imageToPdf).not.toHaveBeenCalled();
+    expect(commands.officeToPdf).not.toHaveBeenCalled();
+  });
+
+  it("OS-open intake addPaths does not start merge, compress, or redact", async () => {
+    const result = await useWorkspace.getState().addPaths(["/tmp/opened.pdf"]);
+
+    expect(result.added).toBe(1);
+    expect(result.notPdf).toBe(false);
+    expect(result.errors).toEqual([]);
+    expect(commands.getFileInfo).toHaveBeenCalledWith("/tmp/opened.pdf");
+    expect(commands.mergePdfs).not.toHaveBeenCalled();
+    expect(commands.compressPdf).not.toHaveBeenCalled();
+    expect(commands.editPdf).not.toHaveBeenCalled();
+    expect(commands.editPdfOverlays).not.toHaveBeenCalled();
+    expect(commands.copyFile).not.toHaveBeenCalled();
   });
 });

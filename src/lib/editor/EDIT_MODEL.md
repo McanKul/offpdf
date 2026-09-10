@@ -18,6 +18,10 @@ invent a second coordinate system.
 - **Links** (`kind: "link"`) are PDF `/Annots`, not overlay stamps. They use
   the same unrotated `EditObject.rect` space. Overlay paint skips them; Save
   rewrites dest `/Link` dictionaries after `qpdf --overlay`.
+- **Redaction** (`kind: "redact"`) is not an overlay stamp. On Save, pages with
+  ≥1 redact object are rasterized in place (fill and optional typed label
+  burned into the image). Overlay paint skips them. Unredacted pages keep their
+  source streams. Leftover `/Annots`, form `/V`, and attachments warn only.
 - It does **not** hold source PDF bytes. Paths and per-page bytes stay in the
   render layer (same pattern as `pagePdf`).
 - Image **bytes** are not stored in the document — only a local path (plus a
@@ -77,6 +81,13 @@ Source path and 1-based page number are **session props**, not part of the
 document, so the same model can be reapplied after reordering tools assemble a
 job.
 
+Existing AcroForm fill is **not** an overlay stamp. `list_form_fields` walks
+catalog `/AcroForm` on the **source path** (never `pagePdf --empty`). Widget
+`/Rect [llx lly urx ury]` is listed as `{x: llx, y: lly, w, h}` in the same
+unrotated user space as `EditObject.rect`. Preview chrome maps those rects with
+`pdfRectToViewport` / `geometry.box`. Live values stay in a session map (field
+name → value), not on the undo stamp stack.
+
 ## History rules
 
 - `ADD` / `UPDATE` / `DELETE` create undo steps.
@@ -91,6 +102,13 @@ job.
   **clears undo** (dropped indices). The editor session lives on the page so
   removing an earlier file cannot unmount and wipe later pages. Do not wipe the
   session with a concatenated `resetKey`.
+
+Markup kinds `note` / `highlight` / `underline` / `strikeout` / `markupInk` are
+session `/Annots` dictionaries (not overlay stamps). They use the same
+unrotated `rect` space as stamps. Overlay paint skips them; Save copies every
+existing annot through and appends or removes only session `/NM` dicts. Draw
+`kind: "ink"` stays a content-stream stroke. Flatten is opt-in
+`qpdf --flatten-annotations=all` (default off).
 
 ## How export consumes this
 
