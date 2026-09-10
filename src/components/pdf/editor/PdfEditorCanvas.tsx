@@ -448,6 +448,15 @@ export function PdfEditorCanvas({
 
   return (
     <div className="pdf-editor" ref={rootRef} tabIndex={0}>
+      {tool === "redact" && (
+        <div className="pdf-editor__redact-note">
+          <Alert variant="info">
+            Redaction permanently removes content on Save. Only pages with a
+            redaction region become images; text on those pages will not stay
+            selectable.
+          </Alert>
+        </div>
+      )}
       <div className="pdf-editor__toolbar thumb-toolbar wrap">
         <Button size="sm" variant="secondary" onClick={session.undo} disabled={!session.canUndo} title="Undo" aria-label="Undo">
           <Icon name="undo" size={15} />
@@ -524,6 +533,16 @@ export function PdfEditorCanvas({
           onClick={() => setTool("link")}
         >
           <Icon name="external" size={16} />
+        </Button>
+        <Button
+          size="sm"
+          variant={tool === "redact" ? "primary" : "ghost"}
+          title="Redaction — permanently remove content in this region on Save"
+          aria-label="Redaction"
+          aria-pressed={tool === "redact"}
+          onClick={() => setTool("redact")}
+        >
+          <Icon name="squareFill" size={16} />
         </Button>
         {MARKUP_TOOLS.map((t) => (
           <Button
@@ -725,6 +744,10 @@ export function PdfEditorCanvas({
                   }}
                   onCreateMarkupInk={(strokes) => {
                     session.addMarkupInk(pageIndex, strokes, markupAuthor);
+                    setTool("select");
+                  }}
+                  onCreateRedact={(rect) => {
+                    session.addRedact(pageIndex, rect);
                     setTool("select");
                   }}
                   onRequestImage={(at) => void placeImage(at)}

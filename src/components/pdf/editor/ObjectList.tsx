@@ -30,6 +30,7 @@ function labelFor(obj: EditObject, layer: string): string {
   if (obj.kind === "underline") return `Underline · ${page} · ${layer}`;
   if (obj.kind === "strikeout") return `Strikeout · ${page} · ${layer}`;
   if (obj.kind === "markupInk") return `Ink annot · ${page} · ${layer}`;
+  if (obj.kind === "redact") return `Redaction · ${page} · ${layer}`;
   return `${isNearlySquare(obj.rect) ? "Square" : "Rectangle"} · ${page} · ${layer}`;
 }
 

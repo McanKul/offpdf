@@ -1321,6 +1321,9 @@ button {
   gap: 12px;
   min-height: 0;
 }
+.pdf-editor__redact-note {
+  margin-bottom: 4px;
+}
 .pdf-editor__toolbar {
   flex-wrap: wrap;
 }

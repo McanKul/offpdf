@@ -180,6 +180,29 @@ export function ObjectInspector({
         </>
       )}
 
+      {obj.kind === "redact" && (
+        <>
+          <ColorField
+            label="Fill"
+            icon="squareFill"
+            value={toCssHex(obj.fill, "#000000")}
+            active={picking === "fill"}
+            onChange={(hex) => onChange({ fill: hex } as Partial<EditObject>)}
+            onPickFromPage={onPickFromPage ? () => onPickFromPage("fill") : undefined}
+          />
+          <label className="field__label">Label</label>
+          <input
+            className="pdf-editor__inspector-text"
+            type="text"
+            value={obj.label ?? ""}
+            placeholder="Optional (e.g. REDACTED)"
+            onChange={(e) =>
+              onChange({ label: e.target.value.trim() ? e.target.value : undefined } as Partial<EditObject>)
+            }
+          />
+        </>
+      )}
+
       {shape && (
         <>
           <button
@@ -278,7 +301,7 @@ export function ObjectInspector({
         </div>
       )}
 
-      {obj.kind !== "link" && !markup && (
+      {obj.kind !== "link" && obj.kind !== "redact" && !markup && (
         <DraftNumber
           label="Rotation"
           value={obj.objectRotate ?? 0}
@@ -289,8 +312,8 @@ export function ObjectInspector({
         />
       )}
 
-      {obj.kind !== "link" && !markup && <label className="field__label">Opacity</label>}
-      {obj.kind !== "link" && !markup && (
+      {obj.kind !== "link" && obj.kind !== "redact" && !markup && <label className="field__label">Opacity</label>}
+      {obj.kind !== "link" && obj.kind !== "redact" && !markup && (
         <div className="pdf-editor__opacity">
           <input
             type="range"
