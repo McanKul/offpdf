@@ -30,6 +30,17 @@
 //!
 //! Jobs (`commands::jobs`):
 //!   - `cancel_job(registry, job_id: String) -> Result<(), AppError>`
+//!
+//! Local model setup (`commands::ai`) — paths in, never file bytes:
+//!   - `ai_pick_model_file() -> Result<Option<String>, AppError>`
+//!   - `ai_preview_model(path) -> Result<ModelPreview, AppError>`
+//!   - `ai_import_model(path, expected_sha256) -> Result<ModelManifest, AppError>`
+//!   - `ai_list_models() -> Result<ModelSetupSnapshot, AppError>`
+//!   - `ai_load_model(checksum) -> Result<(), AppError>`
+//!   - `ai_unload_model() -> Result<(), AppError>`
+//!   - `ai_cancel() -> Result<(), AppError>`
+//!   - `ai_generate(prompt) -> Result<String, AppError>`
+//!   - `ai_remove_model(checksum) -> Result<ModelRemoveResult, AppError>`
 
 mod ai;
 mod commands;
@@ -39,10 +50,15 @@ mod pdf_engine;
 mod utils;
 
 #[cfg(test)]
+mod ai_lifecycle_tests;
+#[cfg(test)]
 mod ai_store_tests;
 #[cfg(test)]
 mod ai_tests;
 
+use std::sync::Arc;
+
+use commands::ai::AiSession;
 use models::JobRegistry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -54,6 +70,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // Shared, cancellable job registry.
         .manage(JobRegistry::default())
+        // In-process Fake + selected checksum. Store on disk is the source of truth.
+        .manage(Arc::new(AiSession::new()))
         .invoke_handler(tauri::generate_handler![
             // files / system
             commands::files::pick_pdf_files,
@@ -89,6 +107,16 @@ pub fn run() {
             commands::pdf::nup_pdf,
             // jobs
             commands::jobs::cancel_job,
+            // local model setup (paths in, never file bytes)
+            commands::ai::ai_pick_model_file,
+            commands::ai::ai_preview_model,
+            commands::ai::ai_import_model,
+            commands::ai::ai_list_models,
+            commands::ai::ai_load_model,
+            commands::ai::ai_unload_model,
+            commands::ai::ai_cancel,
+            commands::ai::ai_generate,
+            commands::ai::ai_remove_model,
             // page preview / review
             commands::render::renderer_available,
             commands::render::render_thumbnails,

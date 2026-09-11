@@ -26,6 +26,10 @@ import type {
   RotateGroup,
   RotationAngle,
   SplitMode,
+  ModelManifest,
+  ModelPreview,
+  ModelRemoveResult,
+  ModelSetupSnapshot,
 } from "./types";
 import type { EditDocument, FormField, FormValue } from "./editor";
 
@@ -544,6 +548,55 @@ export function renderThumbnails(
 
 export function cancelJob(jobId: string): Promise<void> {
   return invoke<void>("cancel_job", { jobId });
+}
+
+// ---------------------------------------------------------------------------
+// Local model setup — paths in, never file bytes. Import-only; no download.
+// ---------------------------------------------------------------------------
+
+/** Native "All files" picker. `null` if the user cancelled. */
+export function aiPickModelFile(): Promise<string | null> {
+  return invoke<string | null>("ai_pick_model_file");
+}
+
+/** Hash a chosen path. Does not write a blob. */
+export function aiPreviewModel(path: string): Promise<ModelPreview> {
+  return invoke<ModelPreview>("ai_preview_model", { path });
+}
+
+/** Copy the chosen file into the store after the user confirms the preview hash. */
+export function aiImportModel(path: string, expectedSha256: string): Promise<ModelManifest> {
+  return invoke<ModelManifest>("ai_import_model", { path, expectedSha256 });
+}
+
+/** Ready manifests on disk plus Fake status. Does not auto-load. */
+export function aiListModels(): Promise<ModelSetupSnapshot> {
+  return invoke<ModelSetupSnapshot>("ai_list_models");
+}
+
+/** Load a ready checksum into the Fake. */
+export function aiLoadModel(checksum: string): Promise<void> {
+  return invoke<void>("ai_load_model", { checksum });
+}
+
+/** Unload the Fake. Ready blobs stay on disk. */
+export function aiUnloadModel(): Promise<void> {
+  return invoke<void>("ai_unload_model");
+}
+
+/** Cooperative cancel of an in-flight generate. */
+export function aiCancel(): Promise<void> {
+  return invoke<void>("ai_cancel");
+}
+
+/** Prompt-only generate for tests / later assistant work. No PDF path. */
+export function aiGenerate(prompt: string): Promise<string> {
+  return invoke<string>("ai_generate", { prompt });
+}
+
+/** Delete one imported model and report recovered bytes. */
+export function aiRemoveModel(checksum: string): Promise<ModelRemoveResult> {
+  return invoke<ModelRemoveResult>("ai_remove_model", { checksum });
 }
 
 /**

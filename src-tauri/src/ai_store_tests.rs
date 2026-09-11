@@ -661,6 +661,146 @@ fn store_no_gguf_in_clone() {
     );
 }
 
+/// store-sweep-install-staging — leftover `<root>/staging/install-dead/`
+/// (junk blob) is gone after `ModelStore::open`. Crash leftovers must
+/// not accumulate; do not rely on Drop.
+#[test]
+fn store_sweep_install_staging() {
+    let root = Scratch::new("sweep-install");
+    let dead = root.path().join("staging").join("install-dead");
+    std::fs::create_dir_all(&dead).unwrap();
+    std::fs::write(dead.join("blob"), b"junk").unwrap();
+    assert!(
+        dead.is_dir(),
+        "store-sweep-install-staging: pre-condition: leftover staging/install-dead must exist before open"
+    );
+
+    let _store = ModelStore::open(root.path()).unwrap_or_else(|err| {
+        panic!("store-sweep-install-staging: open injected root must succeed: {err}")
+    });
+
+    assert!(
+        !dead.exists(),
+        "store-sweep-install-staging: leftover staging/install-dead must be gone after ModelStore::open"
+    );
+}
+
+/// store-commit-over-existing-manifest — import fixture, overwrite dest
+/// `manifests/<sha>.json` with valid JSON but a different `license`
+/// (same checksum/size/schema), import again. `list_ready` has one
+/// entry; `get` works. Locks dest replace when the dest `*.json`
+/// already exists (Unix rename-over still passes on macOS).
+#[test]
+fn store_commit_over_existing_manifest() {
+    let root = Scratch::new("commit-over-manifest");
+    let store = ModelStore::open(root.path()).unwrap_or_else(|err| {
+        panic!("store-commit-over-existing-manifest: open: {err}")
+    });
+
+    let mut first = std::io::Cursor::new(FIXTURE);
+    store
+        .install_from_reader(&mut first, FIXTURE_SHA256)
+        .unwrap_or_else(|err| {
+            panic!("store-commit-over-existing-manifest: first import: {err}")
+        });
+
+    let dest = root
+        .path()
+        .join("manifests")
+        .join(format!("{FIXTURE_SHA256}.json"));
+    assert!(
+        dest.is_file(),
+        "store-commit-over-existing-manifest: first import must write dest manifests/<sha>.json"
+    );
+
+    const OTHER_LICENSE: &str = "OTHER-LICENSE";
+    let overwritten = format!(
+        r#"{{"schema_version":1,"size":{size},"license":"{license}","runtime_compat":"any","checksum":"{sum}"}}"#,
+        size = FIXTURE.len(),
+        license = OTHER_LICENSE,
+        sum = FIXTURE_SHA256
+    );
+    let parsed = ModelManifest::parse(&overwritten).unwrap_or_else(|err| {
+        panic!(
+            "store-commit-over-existing-manifest: overwritten dest JSON must be valid: {err}"
+        )
+    });
+    assert_eq!(parsed.schema_version, 1);
+    assert_eq!(parsed.size, FIXTURE.len() as u64);
+    assert_eq!(parsed.checksum, FIXTURE_SHA256);
+    assert_eq!(parsed.license, OTHER_LICENSE);
+    std::fs::write(&dest, overwritten.as_bytes()).unwrap();
+
+    let mut second = std::io::Cursor::new(FIXTURE);
+    store
+        .install_from_reader(&mut second, FIXTURE_SHA256)
+        .unwrap_or_else(|err| {
+            panic!("store-commit-over-existing-manifest: re-import over existing dest json: {err}")
+        });
+
+    let ready = store.list_ready().unwrap_or_else(|err| {
+        panic!("store-commit-over-existing-manifest: list_ready after re-import: {err}")
+    });
+    assert_eq!(
+        ready.len(),
+        1,
+        "store-commit-over-existing-manifest: re-import must leave one ready entry, got {}",
+        ready.len()
+    );
+    assert_eq!(ready[0].checksum, FIXTURE_SHA256);
+
+    let got = store.get(FIXTURE_SHA256).unwrap_or_else(|err| {
+        panic!("store-commit-over-existing-manifest: get after re-import: {err}")
+    });
+    assert_eq!(got.checksum, FIXTURE_SHA256);
+    assert_eq!(got.size, FIXTURE.len() as u64);
+    assert_eq!(
+        got.license, "imported",
+        "store-commit-over-existing-manifest: dest json must be replaced, not left as {OTHER_LICENSE}"
+    );
+}
+
+/// store-sweep-skip-live-pid — leftover `staging/install-{pid}-live/`
+/// survives `ModelStore::open`; crash leftover `install-dead` is still
+/// removed. Mid-import `open` (list/snapshot) must not unlink this
+/// process's staging dir. Keep `store_sweep_install_staging`.
+#[test]
+fn store_sweep_skip_live_pid() {
+    let root = Scratch::new("sweep-skip-live");
+    let live_name = format!("install-{}-live", std::process::id());
+    let live = root.path().join("staging").join(&live_name);
+    let dead = root.path().join("staging").join("install-dead");
+    std::fs::create_dir_all(&live).unwrap();
+    std::fs::write(live.join("blob"), b"junk").unwrap();
+    std::fs::create_dir_all(&dead).unwrap();
+    std::fs::write(dead.join("blob"), b"junk").unwrap();
+    assert!(
+        live.is_dir(),
+        "store-sweep-skip-live-pid: pre-condition: staging/{live_name} must exist before open"
+    );
+    assert!(
+        dead.is_dir(),
+        "store-sweep-skip-live-pid: pre-condition: leftover staging/install-dead must exist before open"
+    );
+
+    let _store = ModelStore::open(root.path()).unwrap_or_else(|err| {
+        panic!("store-sweep-skip-live-pid: open injected root must succeed: {err}")
+    });
+
+    assert!(
+        live.exists(),
+        "store-sweep-skip-live-pid: staging/{live_name} must still exist after ModelStore::open (this process's live staging)"
+    );
+    assert!(
+        live.join("blob").is_file(),
+        "store-sweep-skip-live-pid: live staging blob must not be swept"
+    );
+    assert!(
+        !dead.exists(),
+        "store-sweep-skip-live-pid: leftover staging/install-dead must be gone after ModelStore::open"
+    );
+}
+
 fn walk_src_tauri_lock(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
