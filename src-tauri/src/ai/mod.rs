@@ -9,6 +9,7 @@
 //! document path and not file bytes.
 
 mod fake;
+pub mod store;
 
 use crate::error::AppError;
 

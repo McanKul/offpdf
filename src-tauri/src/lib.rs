@@ -39,6 +39,8 @@ mod pdf_engine;
 mod utils;
 
 #[cfg(test)]
+mod ai_store_tests;
+#[cfg(test)]
 mod ai_tests;
 
 use models::JobRegistry;
