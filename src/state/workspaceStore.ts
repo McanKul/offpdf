@@ -35,6 +35,10 @@ export interface AddResult {
   errors: string[];
 }
 
+export interface AddPathsOptions {
+  dedupe?: boolean;
+}
+
 function baseName(p: string): string {
   return p.split(/[\\/]/).pop() || p;
 }
@@ -45,7 +49,7 @@ interface WorkspaceState {
   activeIndex: number;
   loading: boolean;
 
-  addPaths: (paths: string[]) => Promise<AddResult>;
+  addPaths: (paths: string[], options?: AddPathsOptions) => Promise<AddResult>;
   removeAt: (index: number) => void;
   clear: () => void;
   reorder: (from: number, to: number) => void;
@@ -57,10 +61,10 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   activeIndex: 0,
   loading: false,
 
-  addPaths: async (paths) => {
-    const supported = paths.filter((p) => SUPPORTED_RE.test(p));
-    // True if some dropped/picked items were not a supported type at all.
-    const notPdf = supported.length < paths.length;
+  addPaths: async (paths, options) => {
+    const inputPaths = options?.dedupe ? [...new Set(paths)] : paths;
+    const supported = inputPaths.filter((p) => SUPPORTED_RE.test(p));
+    const notPdf = supported.length < inputPaths.length;
     if (supported.length === 0) return { added: 0, invalid: [], notPdf, errors: [] };
 
     activeAddOperations += 1;
@@ -77,6 +81,10 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
       for (const p of supported) {
         try {
           if (isImagePath(p)) {
+            if (options?.dedupe && existing.has(p)) {
+              infos.push(null);
+              continue;
+            }
             let pdfPath = convertedImages.get(p);
             if (!pdfPath) {
               pdfPath = await imageToPdfSerial(p);
@@ -84,6 +92,10 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
             }
             infos.push(await getFileInfo(pdfPath));
           } else if (isOfficePath(p)) {
+            if (options?.dedupe && existing.has(p)) {
+              infos.push(null);
+              continue;
+            }
             infos.push(await getFileInfo(await officeToPdf(p)));
           } else if (existing.has(p)) {
             infos.push(null); // already loaded

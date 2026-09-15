@@ -116,3 +116,38 @@ fn os_open_parse_utf8_cjk_argv() {
         "R-UTF8: argv CJK paths must survive parse_opened_argv",
     );
 }
+
+#[test]
+fn os_open_queue_preserves_order_and_deduplicates_pending_paths() {
+    let mut queue = crate::os_open::OpenedPathQueue::default();
+
+    assert_eq!(
+        queue.enqueue(vec![
+            "/tmp/first file.pdf".into(),
+            "/tmp/second.pdf".into(),
+            "/tmp/first file.pdf".into(),
+        ]),
+        None,
+    );
+    assert_eq!(
+        queue.enqueue(vec!["/tmp/second.pdf".into(), "/tmp/第三.pdf".into()]),
+        None,
+    );
+    assert_eq!(
+        queue.take_pending(),
+        vec![
+            "/tmp/first file.pdf",
+            "/tmp/second.pdf",
+            "/tmp/第三.pdf",
+        ],
+    );
+}
+
+#[test]
+fn os_open_queue_switches_atomically_to_live_events() {
+    let mut queue = crate::os_open::OpenedPathQueue::default();
+    queue.enqueue(vec!["/tmp/cold.pdf".into()]);
+
+    assert_eq!(queue.take_pending(), vec!["/tmp/cold.pdf"]);
+    assert_eq!(queue.enqueue(vec!["/tmp/live.pdf".into()]), Some(vec!["/tmp/live.pdf"]));
+}

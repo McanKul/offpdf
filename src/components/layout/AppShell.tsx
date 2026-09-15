@@ -40,18 +40,20 @@ export function AppShell() {
     if (!isTauriRuntime()) return;
     let cancelled = false;
     let unlisten: (() => void) | undefined;
+    let intakeQueue = Promise.resolve();
 
-    const apply = async (paths: string[]) => {
-      if (!paths.length || cancelled) return;
-      // Neutral workspace intake only — do not start a tool or change route.
-      const result = await useWorkspace.getState().addPaths(paths);
-      if (!cancelled) reportIntake(toast, result);
+    const apply = (paths: string[]) => {
+      intakeQueue = intakeQueue.then(async () => {
+        if (!paths.length || cancelled) return;
+        const result = await useWorkspace.getState().addPaths(paths, { dedupe: true });
+        if (!cancelled) reportIntake(toast, result);
+      });
     };
 
     void (async () => {
       try {
         const stop = await onOpenedPaths((paths) => {
-          void apply(paths);
+          apply(paths);
         });
         if (cancelled) {
           stop();
@@ -59,7 +61,8 @@ export function AppShell() {
         }
         unlisten = stop;
         const pending = await takeOpenedPaths();
-        await apply(pending);
+        apply(pending);
+        await intakeQueue;
       } catch {
         // Browser / missing IPC — in-app picker still works.
       }
