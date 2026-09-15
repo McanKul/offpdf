@@ -149,5 +149,8 @@ fn os_open_queue_switches_atomically_to_live_events() {
     queue.enqueue(vec!["/tmp/cold.pdf".into()]);
 
     assert_eq!(queue.take_pending(), vec!["/tmp/cold.pdf"]);
-    assert_eq!(queue.enqueue(vec!["/tmp/live.pdf".into()]), Some(vec!["/tmp/live.pdf"]));
+    assert_eq!(
+        queue.enqueue(vec!["/tmp/live.pdf".into()]),
+        Some(vec!["/tmp/live.pdf".to_string()]),
+    );
 }

@@ -18,7 +18,7 @@ pub struct OpenedPathQueue {
 }
 
 impl OpenedPathQueue {
-    fn enqueue(&mut self, paths: Vec<String>) -> Option<Vec<String>> {
+    pub(crate) fn enqueue(&mut self, paths: Vec<String>) -> Option<Vec<String>> {
         let mut paths = dedupe_paths(paths);
         if paths.is_empty() {
             return None;
@@ -32,7 +32,7 @@ impl OpenedPathQueue {
         None
     }
 
-    fn take_pending(&mut self) -> Vec<String> {
+    pub(crate) fn take_pending(&mut self) -> Vec<String> {
         self.frontend_ready = true;
         std::mem::take(&mut self.pending)
     }
