@@ -17,6 +17,27 @@ pub struct OpenedPathQueue {
     frontend_ready: bool,
 }
 
+impl OpenedPathQueue {
+    fn enqueue(&mut self, paths: Vec<String>) -> Option<Vec<String>> {
+        let mut paths = dedupe_paths(paths);
+        if paths.is_empty() {
+            return None;
+        }
+        if self.frontend_ready {
+            return Some(paths);
+        }
+
+        paths.retain(|path| !self.pending.contains(path));
+        self.pending.extend(paths);
+        None
+    }
+
+    fn take_pending(&mut self) -> Vec<String> {
+        self.frontend_ready = true;
+        std::mem::take(&mut self.pending)
+    }
+}
+
 /// Skip argv[0], then map the rest through [`parse_opened_token`].
 pub fn parse_opened_argv(args: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<PathBuf> {
     let mut iter = args.into_iter();
@@ -69,11 +90,9 @@ pub fn enqueue_opened_paths(app: &AppHandle, paths: Vec<PathBuf>) {
         Ok(g) => g,
         Err(_) => return,
     };
-    if guard.frontend_ready {
+    if let Some(live_paths) = guard.enqueue(strings) {
         drop(guard);
-        let _ = app.emit(OPENED_PATHS_EVENT, strings);
-    } else {
-        guard.pending.extend(strings);
+        let _ = app.emit(OPENED_PATHS_EVENT, live_paths);
     }
 }
 
@@ -93,8 +112,17 @@ pub fn take_opened_paths(queue: State<'_, Mutex<OpenedPathQueue>>) -> Vec<String
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
-    guard.frontend_ready = true;
-    std::mem::take(&mut guard.pending)
+    guard.take_pending()
+}
+
+fn dedupe_paths(paths: Vec<String>) -> Vec<String> {
+    let mut unique = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !unique.contains(&path) {
+            unique.push(path);
+        }
+    }
+    unique
 }
 
 fn strip_file_scheme(token: &str) -> Option<&str> {
