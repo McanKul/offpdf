@@ -11,7 +11,6 @@ import { useSettingsStore, type Theme } from "@/state/settingsStore";
 import { clearTempFiles, getTempDir, openPath } from "@/lib/tauriCommands";
 import { formatBytes } from "@/lib/formatBytes";
 import { toAppError } from "@/lib/types";
-import { LocalModelSection } from "@/features/settings/LocalModelSection";
 
 export function SettingsPage() {
   const theme = useSettingsStore((s) => s.theme);
@@ -123,8 +122,6 @@ export function SettingsPage() {
           <Badge variant="neutral">{version === "—" ? version : `v${version}`}</Badge>
         </div>
       </Card>
-
-      <LocalModelSection />
 
       <Alert variant="success" title="Privacy statement" icon="shield">
         OffPDF processes everything on your computer. It does not upload your files, file
