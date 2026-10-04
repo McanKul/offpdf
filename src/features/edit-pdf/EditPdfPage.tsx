@@ -38,6 +38,9 @@ import {
 import { isTauriRuntime } from "@/lib/tauriEnv";
 import { toAppError, type AppError } from "@/lib/types";
 import { Alert } from "@/components/ui/Alert";
+import { UI, jobLabel } from "@/lib/editor/sourceTextCopy";
+import { useTextSources } from "./useTextSources";
+import { finishOpenTextEdit, textSaveGuard, type OpenTextEdit } from "./textSaveGuards";
 
 const tool = getTool("editPdf");
 
@@ -80,6 +83,34 @@ export function EditPdfPage() {
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [flattenForm, setFlattenForm] = useState(false);
+  const textSources = useTextSources({
+    onReleaseError: (_path, err) => toast({ title: err.title, description: err.message, variant: "error" }),
+  });
+  const { release: releaseTextSource, reopen: reopenTextSource } = textSources;
+  // The open Edit text line (owned here so Save can finish it before reading the objects).
+  const textGuard = useRef<OpenTextEdit | null>(null);
+  const [saveAfterTextEdit, setSaveAfterTextEdit] = useState(false);
+  const textChangeCount = doc.objects.filter((o) => o.kind === "sourceText").length;
+
+  // A file that left the workspace no longer needs its Edit text snapshot.
+  const filePaths = useMemo(() => new Set(files.map((f) => f.path)), [files]);
+  const openText = textSources.sources;
+  useEffect(() => {
+    for (const path of Object.keys(openText)) if (!filePaths.has(path)) releaseTextSource(path);
+  }, [filePaths, openText, releaseTextSource]);
+
+  // Save said a file changed on disk: read every file with text changes again. A changed
+  // file gets a new fingerprint, so its changes show the stale banner and its action.
+  const jobError = job.error;
+  useEffect(() => {
+    if (jobError?.code !== "STALE") return;
+    const paths = new Set<string>();
+    for (const o of doc.objects) {
+      const ref = o.kind === "sourceText" ? refs[o.pageIndex] : undefined;
+      if (ref) paths.add(ref.path);
+    }
+    for (const path of paths) void reopenTextSource(path);
+  }, [jobError, reopenTextSource]); // only when a new error arrives; objects and refs are read as they are then
 
   useEffect(() => {
     const live = new Set(files.map((f) => f.uid));
@@ -246,6 +277,10 @@ export function EditPdfPage() {
   const canSaveEdits = doc.objects.length > 0 || formDirty || (flattenForm && formFields.length > 0);
 
   const start = async () => {
+    // Clicking Save also commits an open line edit; wait for it and save again with it included.
+    const openEdit = await finishOpenTextEdit(textGuard.current);
+    if (openEdit === "blocked") return toast({ title: UI.navBlocked, variant: "error" });
+    if (openEdit === "finished") return setSaveAfterTextEdit(true);
     if (refs.length === 0) return toast({ title: "Add a PDF first", variant: "error" });
     if (!hydrateReady) return toast({ title: "Still reading links from the PDF", variant: "error" });
     if (formError) return toast({ title: "Cannot fill this form", description: formError, variant: "error" });
@@ -265,6 +300,8 @@ export function EditPdfPage() {
     if (files.some((f) => f.path === outputPath)) {
       return toast({ title: "Choose a new file name", description: "The original file is never overwritten.", variant: "error" });
     }
+    const textBlock = textSaveGuard({ objects: doc.objects, refs, sources: textSources.sources });
+    if (textBlock) return toast({ title: textBlock.title, description: textBlock.description, variant: "error" });
     if (!(await disk.ensure(folder, estimateRequiredBytes("editPdf", files.map((f) => f.sizeBytes))))) return;
 
     const failedLinkErr = sessionLinkErrorOnFailedFile(doc.objects, refs, hydrateErrors.current);
@@ -290,10 +327,16 @@ export function EditPdfPage() {
         ),
       {
         tool: "editPdf",
-        label: `Edit PDF · ${doc.objects.length} object${doc.objects.length === 1 ? "" : "s"}`,
+        label: jobLabel(doc.objects.length - textChangeCount, textChangeCount),
       },
     );
   };
+
+  useEffect(() => {
+    if (!saveAfterTextEdit) return;
+    setSaveAfterTextEdit(false);
+    void start(); // this render's start() sees the objects with the just-committed edit
+  }, [saveAfterTextEdit]);
 
   const canStart = !job.isBusy && inTauri && hydrateReady;
 
@@ -336,6 +379,7 @@ export function EditPdfPage() {
             />
             Flatten annotations{formFields.length > 0 ? " (includes form fields)" : ""}
           </label>
+          {textChangeCount > 0 && <Alert variant="info">{UI.outputAlert}</Alert>}
           {doc.objects.some((o) => o.kind === "redact") && (
             <Alert variant="info">
               Pages with a redaction become images. Text on those pages will not stay selectable.
@@ -368,6 +412,12 @@ export function EditPdfPage() {
             formFields={current.path === first?.path ? formFields : []}
             formValues={formValues}
             onFormChange={(name, value) => setFormValues((prev) => ({ ...prev, [name]: value }))}
+            text={{
+              sources: textSources,
+              fileName: current.fileName,
+              duplicatePage: refs.filter((r) => r.path === current.path && r.page === current.page).length > 1,
+              guardRef: textGuard,
+            }}
           />
         </ToolSection>
       )}

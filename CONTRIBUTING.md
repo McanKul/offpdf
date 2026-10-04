@@ -46,6 +46,14 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+Text-edit verification tests need qpdf ≥ 11 and Poppler (`pdftotext`,
+`pdftoppm`). Set `OFFPDF_REQUIRE_ENGINES=1` to make missing engines fail instead
+of skip. CI installs both, sets the variable, and fails when any Rust test prints
+a `skip:` line. Edit text's design, reason codes and module map are in
+[docs/EDIT_TEXT.md](./docs/EDIT_TEXT.md); adding a reason code, a font class or a
+producer fixture, and regenerating benchmarks and goldens are in
+[src/lib/editor/EDIT_MODEL.md](./src/lib/editor/EDIT_MODEL.md#edit-text-contributor-workflow).
+
 `npm run check:versions` verifies that the release version matches in
 `package.json`, both root version fields in `package-lock.json`,
 `src-tauri/Cargo.toml`, the OffPDF entry in `src-tauri/Cargo.lock`, and

@@ -1,7 +1,9 @@
 export { PdfEditorCanvas } from "./PdfEditorCanvas";
+export type { CanvasTextProps } from "./PdfEditorCanvas";
 export { PageSurface } from "./PageSurface";
 export type { PageLayout } from "./PageSurface";
 export { EditorOverlay } from "./EditorOverlay";
+export { EditorToolbar, DEFAULT_EDITOR_TOOL, editorShortcut } from "./EditorToolbar";
 export { FormFieldsOverlay } from "./FormFieldsOverlay";
 export { ObjectList } from "./ObjectList";
 export { useEditSession } from "./useEditSession";

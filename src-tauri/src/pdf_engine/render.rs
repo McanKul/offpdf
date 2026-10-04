@@ -216,9 +216,74 @@ pub fn page_texts(app: &tauri::AppHandle, input: &str) -> Result<Vec<String>, Ap
 /// giant raster page) returns None so the viewer falls back to raster preview.
 const MAX_PAGE_PDF_BYTES: u64 = 48 * 1024 * 1024;
 
+/// Bytes hashed at each end of a file for its page-cache version.
+const PAGE_CACHE_HEAD_TAIL: u64 = 64 * 1024;
+
+/// FNV of the first and last `PAGE_CACHE_HEAD_TAIL` bytes of `input` (empty when unreadable).
+fn head_tail_hex(input: &str, len: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut bytes = Vec::new();
+    if let Ok(mut f) = std::fs::File::open(input) {
+        let _ = f
+            .by_ref()
+            .take(PAGE_CACHE_HEAD_TAIL)
+            .read_to_end(&mut bytes);
+        let tail = len.saturating_sub(PAGE_CACHE_HEAD_TAIL);
+        if f.seek(SeekFrom::Start(tail)).is_ok() {
+            let _ = f.take(PAGE_CACHE_HEAD_TAIL).read_to_end(&mut bytes);
+        }
+    }
+    let hash = bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
+    });
+    format!("{hash:016x}")
+}
+
+/// The page-cache folders of `input`: one per path, holding one version folder keyed by the
+/// file's length, modification time and first/last 64 KiB, so a file changed on disk (even with
+/// the same size and mtime at the ends) never serves a page extracted from its old bytes.
+fn page_cache_key(input: &str) -> (String, String) {
+    let meta = std::fs::metadata(input).ok();
+    let len = meta.as_ref().map_or(0, std::fs::Metadata::len);
+    let mtime = meta
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    let ends = head_tail_hex(input, len);
+    (
+        fnv1a_hex(input),
+        fnv1a_hex(&format!("{len}\u{0}{mtime}\u{0}{ends}")),
+    )
+}
+
+/// `<pagepdf>/<path key>/<version key>/`, created; older versions of the same path (and the
+/// v0.3 pages stored directly in the path folder) are deleted.
+fn page_cache_dir(pagepdf: &Path, input: &str) -> Result<PathBuf, AppError> {
+    let (path_key, version) = page_cache_key(input);
+    let base = pagepdf.join(path_key);
+    let dir = base.join(&version);
+    if !dir.is_dir() {
+        for entry in std::fs::read_dir(&base).into_iter().flatten().flatten() {
+            let stale = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => {
+                    let _ = std::fs::remove_dir_all(&stale);
+                }
+                _ => {
+                    let _ = std::fs::remove_file(&stale);
+                }
+            }
+        }
+    }
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| AppError::io("Could not create the page cache.", e))?;
+    Ok(dir)
+}
+
 /// Extract one page into a tiny standalone PDF and return it base64-encoded, for
 /// true-vector rendering with pdf.js in the webview. Returns `None` if the page
-/// is too large to safely load into the webview. Cached on disk per (file,page).
+/// is too large to safely load into the webview. Cached on disk per (file, length,
+/// modification time, first/last 64 KiB, page).
 pub fn page_pdf_b64(
     app: &tauri::AppHandle,
     input: &str,
@@ -227,9 +292,7 @@ pub fn page_pdf_b64(
     if !Path::new(input).is_file() {
         return Err(AppError::invalid_pdf(input));
     }
-    let dir = temp::root(app)?.join("pagepdf").join(fnv1a_hex(input));
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| AppError::io("Could not create the page cache.", e))?;
+    let dir = page_cache_dir(&temp::root(app)?.join("pagepdf"), input)?;
     let out = dir.join(format!("p{page}.pdf"));
     let out_str = out.to_string_lossy().to_string();
 
@@ -589,4 +652,77 @@ pub(crate) fn fnv1a_hex(s: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{page_cache_dir, page_cache_key};
+
+    /// The one-page cache is keyed by the file's length and mtime, not only its path (stale
+    /// page previews after the file changed on disk).
+    #[test]
+    fn page_cache_key_changes_when_the_file_changes() {
+        let dir = std::env::temp_dir().join(format!("offpdf-pagekey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("doc.pdf");
+        let p = path.to_string_lossy().into_owned();
+        std::fs::write(&path, b"%PDF-1.7 one").expect("write");
+        let first = page_cache_key(&p);
+        assert_eq!(first, page_cache_key(&p), "stable while unchanged");
+        std::fs::write(&path, b"%PDF-1.7 longer").expect("rewrite");
+        let second = page_cache_key(&p);
+        assert_ne!(first, second, "length change");
+        let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|f| f.set_modified(t))
+            .expect("mtime");
+        assert_ne!(second, page_cache_key(&p), "mtime change");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// review-T5 L1: a same-size rewrite that keeps the mtime still gets a new version, and the
+    /// old version (and v0.3's pages stored directly in the path folder) are deleted.
+    #[test]
+    fn page_cache_versions_follow_the_bytes_and_replace_older_ones() {
+        let dir = std::env::temp_dir().join(format!("offpdf-pagever-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("doc.pdf");
+        let p = path.to_string_lossy().into_owned();
+        let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000);
+        let write = |bytes: &[u8]| {
+            std::fs::write(&path, bytes).expect("write");
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .and_then(|f| f.set_modified(t))
+                .expect("mtime");
+        };
+        write(b"%PDF-1.7 aaaa");
+        let first = page_cache_key(&p);
+        write(b"%PDF-1.7 bbbb");
+        let second = page_cache_key(&p);
+        assert_eq!(first.0, second.0, "one folder per path");
+        assert_ne!(first.1, second.1, "same size and mtime, other bytes");
+        let pagepdf = dir.join("pagepdf");
+        let base = pagepdf.join(&second.0);
+        std::fs::create_dir_all(base.join(&first.1)).expect("old version");
+        std::fs::write(base.join(&first.1).join("p1.pdf"), b"old").expect("old page");
+        std::fs::write(base.join("p1.pdf"), b"v0.3 page").expect("v0.3 page");
+        let got = page_cache_dir(&pagepdf, &p).expect("cache dir");
+        assert_eq!(got, base.join(&second.1));
+        let left: Vec<_> = std::fs::read_dir(&base)
+            .expect("base")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(
+            left,
+            vec![std::ffi::OsString::from(&second.1)],
+            "only the current version"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

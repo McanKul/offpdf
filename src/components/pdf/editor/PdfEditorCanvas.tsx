@@ -10,8 +10,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Button } from "@/components/ui/Button";
-import { Icon, type IconName } from "@/components/ui/Icon";
+import { Icon } from "@/components/ui/Icon";
 import { Spinner } from "@/components/ui/Spinner";
 import { Alert } from "@/components/ui/Alert";
 import { useToast } from "@/components/ui/Toast";
@@ -20,6 +19,9 @@ import { toAppError } from "@/lib/types";
 import { base64ToBytes } from "@/lib/pdfjs";
 import type { EditObject, FormField, ShapeStyle } from "@/lib/editor";
 import type { ListedMarkup } from "@/lib/types";
+import type { TextStamp } from "@/lib/editor/sourceText";
+import { UI } from "@/lib/editor/sourceTextCopy";
+import type { TextSources } from "@/features/edit-pdf/useTextSources";
 import {
   cloneObject,
   isClosedShapeObject,
@@ -27,6 +29,7 @@ import {
   offsetObject,
   pdfRectToViewport,
   placeImagePdfRect,
+  editsSignature,
   rgbToHex,
   selectedIdsOnPage,
   stageJustify,
@@ -36,8 +39,17 @@ import { EditorOverlay, type EditorTool } from "./EditorOverlay";
 import { FormFieldsOverlay } from "./FormFieldsOverlay";
 import { ObjectList } from "./ObjectList";
 import { ObjectInspector, type ColorPickTarget } from "./ObjectInspector";
-import { ShapePicker, SHAPE_TOOLS } from "./ShapePicker";
+import type { SHAPE_TOOLS } from "./ShapePicker";
 import type { EditSession } from "./useEditSession";
+import { DEFAULT_EDITOR_TOOL, EditorToolbar, editorShortcut } from "./EditorToolbar";
+import {
+  PreviewStatusChip,
+  SourceTextBanners,
+  SourceTextMode,
+  useSourceTextPage,
+  type SourceTextGuard,
+  type TextRequest,
+} from "./sourceText/SourceTextMode";
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 4;
@@ -49,32 +61,26 @@ function newObjectId(): string {
   return `obj-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-const MAIN_TOOLS: {
-  id: EditorTool;
-  label: string;
-  icon: "mousePointer" | "hand" | "type" | "image" | "pencil" | "external";
-}[] = [
-  { id: "select", label: "Select", icon: "mousePointer" },
-  { id: "hand", label: "Hand", icon: "hand" },
-  { id: "text", label: "Text", icon: "type" },
-  { id: "image", label: "Image", icon: "image" },
-  { id: "ink", label: "Draw", icon: "pencil" },
-  { id: "link", label: "Link", icon: "external" },
-];
-
-const MARKUP_TOOLS: { id: EditorTool; label: string; icon: IconName }[] = [
-  { id: "note", label: "Note", icon: "badge" },
-  { id: "highlight", label: "Highlight", icon: "sparkles" },
-  { id: "underline", label: "Underline", icon: "type" },
-  { id: "strikeout", label: "Strikeout", icon: "slash" },
-  { id: "markupInk", label: "Ink annot", icon: "stamp" },
-];
+/** Inside the Edit text layer, inline editor, format bar or reason popover. */
+function inSourceText(t: EventTarget | null): boolean {
+  return t instanceof Element && !!t.closest("[data-source-text]");
+}
 
 function isTextEntryTarget(t: EventTarget | null): boolean {
   const el = t as HTMLElement | null;
   if (!el) return false;
   const tag = el.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!el.isContentEditable;
+}
+
+/** What the canvas needs for Edit text (owned by `EditPdfPage`). */
+export interface CanvasTextProps {
+  sources: TextSources;
+  /** Display name of `sourcePath`. */
+  fileName: string;
+  /** The shown source page is listed more than once. */
+  duplicatePage: boolean;
+  guardRef: { current: SourceTextGuard | null }; // the open line edit, so Save can finish it first
 }
 
 export function PdfEditorCanvas({
@@ -87,6 +93,7 @@ export function PdfEditorCanvas({
   formFields = [],
   formValues = {},
   onFormChange,
+  text,
 }: {
   sourcePath: string;
   /** 1-based page number inside `sourcePath` (pagePdf). */
@@ -99,6 +106,7 @@ export function PdfEditorCanvas({
   formFields?: FormField[];
   formValues?: Record<string, string>;
   onFormChange?: (name: string, value: string) => void;
+  text: CanvasTextProps;
 }) {
   const { toast } = useToast();
   const [zoom, setZoom] = useState(1);
@@ -106,7 +114,12 @@ export function PdfEditorCanvas({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [layout, setLayout] = useState<PageLayout | null>(null);
-  const [tool, setTool] = useState<EditorTool>("text");
+  const [tool, setTool] = useState<EditorTool>(DEFAULT_EDITOR_TOOL);
+  /** Show original is on for one set of changes; a commit, restore or undo turns it off. */
+  const [originalFor, setOriginalFor] = useState<string | null>(null);
+  const [modeDismissed, setModeDismissed] = useState(false);
+  const [textRequest, setTextRequest] = useState<TextRequest | null>(null);
+  const textGuard = text.guardRef;
   const [spacePan, setSpacePan] = useState(false);
   const [panning, setPanning] = useState(false);
   const [shapeOpen, setShapeOpen] = useState(false);
@@ -139,12 +152,60 @@ export function PdfEditorCanvas({
     () => selectedIdsOnPage(session.objects, session.selectedIds, pageIndex),
     [pageIndex, session.objects, session.selectedIds],
   );
+  const st = useSourceTextPage({
+    objects: session.objects,
+    path: sourcePath,
+    fileName: text.fileName,
+    sourcePage,
+    pageIndex,
+    sources: text.sources,
+    active: tool === "editText",
+    duplicate: text.duplicatePage,
+  });
+  const hasTextChanges = st.objects.length > 0;
+  const textSig = editsSignature(st.objects);
+  const original = st.canShowOriginal && originalFor === textSig;
+  const toggleOriginal = () => setOriginalFor((at) => (at === textSig ? null : textSig));
+  const surfaceBytes = bytes && (original || !st.preview.bytes ? bytes : st.preview.bytes);
 
   useEffect(() => {
     setEditingTextId(null);
     setColorPick(null);
     setPickCursor(null);
+    setOriginalFor(null);
+    setTextRequest(null);
   }, [pageIndex]);
+
+  /** An open line edit must finish (or stay, with its message) before the page or tool changes. */
+  const finishTextEdit = async (): Promise<boolean> => {
+    const guard = textGuard.current;
+    if (!guard?.isEditing() || (await guard.tryClose())) return true;
+    toast({ title: UI.navBlocked, variant: "error" });
+    return false;
+  };
+
+  const requestTool = async (next: EditorTool) => {
+    if (next !== tool && (await finishTextEdit())) setTool(next);
+  };
+
+  /** Switch to Edit text and focus (or open) one line, from the sidebar or inspector. */
+  const showTextLine = (runId: string, open: boolean) => {
+    setTool("editText");
+    setTextRequest((r) => ({ runId, open, tick: (r?.tick ?? 0) + 1 }));
+  };
+
+  /** A drawn object is placed: back to Select. */
+  const thenSelect = <A extends unknown[]>(place: (...args: A) => void) => (...args: A) => {
+    place(...args);
+    setTool("select");
+  };
+
+  const addTextHere = (stamp: TextStamp) => {
+    const id = session.addTextStamp(pageIndex, stamp.rect, stamp.fontSize);
+    session.select([id]);
+    setTool("text");
+    setEditingTextId(id);
+  };
 
   useEffect(() => {
     const el = stageRef.current;
@@ -215,10 +276,10 @@ export function PdfEditorCanvas({
     });
   };
 
-  const go = (delta: number) => {
+  const go = async (delta: number) => {
     if (!onPageChange) return;
     const next = Math.min(pageCount - 1, Math.max(0, pageIndex + delta));
-    onPageChange(next);
+    if (next !== pageIndex && (await finishTextEdit())) onPageChange(next);
   };
 
   const placeImage = async (atCss?: { x: number; y: number }) => {
@@ -245,7 +306,8 @@ export function PdfEditorCanvas({
 
   const copySelection = useCallback(() => {
     const activeIds = new Set(selectedIdsOnPage(session.objects, session.selectedIds, pageIndex));
-    const sel = session.objects.filter((object) => activeIds.has(object.id));
+    // Text changes are never copied (one per line, locked to it).
+    const sel = session.objects.filter((object) => activeIds.has(object.id) && object.kind !== "sourceText");
     if (sel.length === 0) return false;
     clipboardRef.current = sel.map(cloneObject);
     pasteGen.current = 1;
@@ -279,9 +341,11 @@ export function PdfEditorCanvas({
       }
 
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod && e.key.toLowerCase() === "h") {
+      const shortcut = t?.closest?.(".st-editor, .st-popover") ? null : editorShortcut(e, st.canShowOriginal);
+      if (shortcut) {
         e.preventDefault();
-        setTool("hand");
+        if (shortcut.kind === "tool") void requestTool(shortcut.tool);
+        else toggleOriginal();
         return;
       }
       if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) {
@@ -307,10 +371,11 @@ export function PdfEditorCanvas({
       if (mod && e.key.toLowerCase() === "d") {
         if (pageSelectedIds.length === 0) return;
         e.preventDefault();
-        copySelection();
-        pasteClipboard();
+        if (copySelection()) pasteClipboard();
         return;
       }
+      // The Edit text layer owns arrows, Enter, Delete and Esc while it has focus.
+      if (inSourceText(t) && /^(Arrow|Enter$|Escape$|Delete$|Backspace$|Home$|End$|Page)/.test(e.key)) return;
       if (e.key === "Escape") {
         if (shapeOpen) {
           setShapeOpen(false);
@@ -349,7 +414,7 @@ export function PdfEditorCanvas({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [session, colorPick, copySelection, pageIndex, pageSelectedIds, pasteClipboard, shapeOpen]);
+  }, [session, colorPick, copySelection, pageIndex, pageSelectedIds, pasteClipboard, shapeOpen, st.canShowOriginal, requestTool]);
 
   useEffect(() => {
     const stopSpacePan = () => {
@@ -360,6 +425,8 @@ export function PdfEditorCanvas({
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code !== "Space" && e.key !== " ") return;
       if (isTextEntryTarget(e.target) || isTextEntryTarget(document.activeElement)) return;
+      // Space activates a focused line or button of Edit text; it never pans there.
+      if (inSourceText(e.target) || inSourceText(document.activeElement)) return;
       const ae = document.activeElement;
       const root = rootRef.current;
       const stage = stageRef.current;
@@ -384,10 +451,12 @@ export function PdfEditorCanvas({
   }, []);
 
   const selected = pageObjects.find((object) => object.id === pageSelectedIds[0]) ?? null;
+  const layerObjects = pageObjects.filter((object) => object.kind !== "sourceText");
   const panMode = !colorPick && (tool === "hand" || spacePan);
 
   const onStagePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    rootRef.current?.focus();
+    // The inline editor and the reason popover keep their own focus.
+    if (!(e.target instanceof Element && e.target.closest(".st-editor, .st-popover"))) rootRef.current?.focus({ preventScroll: true });
     if (!panMode) return;
     if (e.button !== 0) return;
     const el = stageRef.current;
@@ -454,130 +523,38 @@ export function PdfEditorCanvas({
             Redaction permanently removes content on Save. Only pages with a
             redaction region become images; text on those pages will not stay
             selectable.
+            {hasTextChanges && ` ${UI.redactionConflict}`}
           </Alert>
         </div>
       )}
-      <div className="pdf-editor__toolbar thumb-toolbar wrap">
-        <Button size="sm" variant="secondary" onClick={session.undo} disabled={!session.canUndo} title="Undo" aria-label="Undo">
-          <Icon name="undo" size={15} />
-        </Button>
-        <Button size="sm" variant="secondary" onClick={session.redo} disabled={!session.canRedo} title="Redo" aria-label="Redo">
-          <Icon name="undo" size={15} style={{ transform: "scaleX(-1)" }} />
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={copySelection}
-          disabled={pageSelectedIds.length === 0}
-          title="Copy (Ctrl/Cmd+C)"
-          aria-label="Copy"
-        >
-          <Icon name="copy" size={15} />
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={pasteClipboard}
-          disabled={!canPaste}
-          title="Paste (Ctrl/Cmd+V)"
-          aria-label="Paste"
-        >
-          <Icon name="clipboard" size={15} />
-        </Button>
-        <span className="pdf-editor__sep" />
-        {MAIN_TOOLS.filter((t) => t.id !== "ink" && t.id !== "link").map((t) => (
-          <Button
-            key={t.id}
-            size="sm"
-            variant={tool === t.id ? "primary" : "ghost"}
-            title={t.id === "hand" ? "Hand — drag to slide the page (H, hold Space)" : t.label}
-            aria-label={t.id === "hand" ? "Hand" : t.label}
-            aria-pressed={tool === t.id}
-            onClick={() => {
-              if (t.id === "image") {
-                void placeImage();
-                return;
-              }
-              setTool(t.id);
-            }}
-          >
-            <Icon name={t.icon} size={16} />
-          </Button>
-        ))}
-        <ShapePicker
-          tool={tool}
-          open={shapeOpen}
-          lastShape={lastShape}
-          onOpenChange={setShapeOpen}
-          onPick={(id) => {
-            setLastShape(id);
-            setTool(id);
-          }}
-        />
-        <Button
-          size="sm"
-          variant={tool === "ink" ? "primary" : "ghost"}
-          title="Draw"
-          aria-label="Draw"
-          aria-pressed={tool === "ink"}
-          onClick={() => setTool("ink")}
-        >
-          <Icon name="pencil" size={16} />
-        </Button>
-        <Button
-          size="sm"
-          variant={tool === "link" ? "primary" : "ghost"}
-          title="Link — draw a hotspot (does not open the address)"
-          aria-label="Link"
-          aria-pressed={tool === "link"}
-          onClick={() => setTool("link")}
-        >
-          <Icon name="external" size={16} />
-        </Button>
-        <Button
-          size="sm"
-          variant={tool === "redact" ? "primary" : "ghost"}
-          title="Redaction — permanently remove content in this region on Save"
-          aria-label="Redaction"
-          aria-pressed={tool === "redact"}
-          onClick={() => setTool("redact")}
-        >
-          <Icon name="squareFill" size={16} />
-        </Button>
-        {MARKUP_TOOLS.map((t) => (
-          <Button
-            key={t.id}
-            size="sm"
-            variant={tool === t.id ? "primary" : "ghost"}
-            title={t.label}
-            aria-label={t.label}
-            aria-pressed={tool === t.id}
-            onClick={() => setTool(t.id)}
-          >
-            <Icon name={t.icon} size={16} />
-          </Button>
-        ))}
-        <span className="pdf-editor__sep" />
-        <Button size="sm" variant="ghost" onClick={() => setZoomSafe((z) => z - STEP)} title="Zoom out" aria-label="Zoom out">
-          <Icon name="minus" size={15} />
-        </Button>
-        <button type="button" className="btn btn--ghost btn--sm" title="Reset zoom" aria-label="Reset zoom" onClick={() => setZoomSafe(1)} style={{ minWidth: 44 }}>
-          {Math.round(zoom * 100)}%
-        </button>
-        <Button size="sm" variant="ghost" onClick={() => setZoomSafe((z) => z + STEP)} title="Zoom in" aria-label="Zoom in">
-          <Icon name="plus" size={15} />
-        </Button>
-        <span className="pdf-editor__sep" />
-        <Button size="sm" variant="ghost" onClick={() => go(-1)} disabled={pageIndex <= 0} title="Previous page" aria-label="Previous page">
-          <Icon name="chevronRight" size={15} style={{ transform: "rotate(180deg)" }} />
-        </Button>
-        <span className="muted" style={{ fontSize: 12.5 }}>
-          {pageIndex + 1} / {pageCount}
-        </span>
-        <Button size="sm" variant="ghost" onClick={() => go(1)} disabled={pageIndex >= pageCount - 1} title="Next page" aria-label="Next page">
-          <Icon name="chevronRight" size={15} />
-        </Button>
-      </div>
+      <EditorToolbar
+        tool={tool}
+        onTool={(next) => void requestTool(next)}
+        onImage={() => void finishTextEdit().then((ok) => (ok ? placeImage() : undefined))}
+        shapeOpen={shapeOpen}
+        onShapeOpenChange={setShapeOpen}
+        lastShape={lastShape}
+        onPickShape={(id) => {
+          setLastShape(id);
+          void requestTool(id);
+        }}
+        history={{
+          canUndo: session.canUndo,
+          canRedo: session.canRedo,
+          onUndo: session.undo,
+          onRedo: session.redo,
+          canCopy: pageSelectedIds.length > 0,
+          onCopy: () => void copySelection(),
+          canPaste,
+          onPaste: pasteClipboard,
+        }}
+        showOriginal={{ visible: st.canShowOriginal, pressed: original, onToggle: toggleOriginal }}
+        zoom={zoom}
+        onZoom={(step) => setZoomSafe(step === 0 ? 1 : (z) => z + step * STEP)}
+        pageIndex={pageIndex}
+        pageCount={pageCount}
+        onPage={(delta) => void go(delta)}
+      />
 
       <div className="pdf-editor__body">
         <aside className="pdf-editor__sidebar">
@@ -585,7 +562,11 @@ export function PdfEditorCanvas({
           <ObjectList
             objects={pageObjects}
             selectedIds={pageSelectedIds}
-            onSelect={session.select}
+            onSelect={(ids) => {
+              session.select(ids);
+              const picked = ids.length === 1 ? pageObjects.find((o) => o.id === ids[0]) : undefined;
+              if (picked?.kind === "sourceText") showTextLine(picked.runId, false);
+            }}
             onDelete={session.remove}
           />
           {leftovers.filter((a) => a.pageIndex === sourcePage - 1).length > 0 && (
@@ -624,8 +605,8 @@ export function PdfEditorCanvas({
               obj={selected}
               picking={colorPick}
               pageCount={pageCount}
-              layerIndex={pageObjects.findIndex((object) => object.id === selected.id) + 1}
-              layerCount={pageObjects.length}
+              layerIndex={layerObjects.findIndex((object) => object.id === selected.id) + 1}
+              layerCount={layerObjects.length}
               onChange={(patch) => {
                 session.updateObject(selected.id, patch);
                 if (isClosedShapeObject(selected)) {
@@ -637,133 +618,137 @@ export function PdfEditorCanvas({
                 setPickCursor(null);
               }}
               onReorder={(dir) => session.reorder(selected.id, dir)}
+              sourceText={
+                selected.kind === "sourceText"
+                  ? {
+                      run: st.pageText.page?.runs.find((r) => r.id === selected.runId) ?? null,
+                      fonts: st.fonts,
+                      onEditLine: () => showTextLine(selected.runId, true),
+                      onRestore: () => session.revertSourceText(selected.id),
+                    }
+                  : undefined
+              }
             />
           )}
         </aside>
 
-        <div
-          className={`pdf-editor__stage${colorPick ? " is-eyedrop" : ""}${panMode ? " is-hand" : ""}${panning ? " is-panning" : ""}${stageJustify(layout?.cssWidth ?? 0, fitWidth) === "start" ? " is-start" : ""}`}
-          ref={stageRef}
-          onPointerDown={onStagePointerDown}
-          onPointerMove={onStagePointerMove}
-          onPointerUp={onStagePointerUp}
-          onPointerCancel={onStagePointerUp}
-        >
-          {loading && (
-            <div className="pdf-editor__status">
-              <Spinner /> Loading page…
-            </div>
-          )}
-          {loadError && <Alert variant="danger">{loadError}</Alert>}
-          {colorPick && (
-            <div className="muted" style={{ fontSize: 12.5, padding: "8px 12px 0" }}>
-              Click the page to sample a color · Esc cancels
-            </div>
-          )}
-          {bytes && !loadError && (
-            <div
-              className="pdf-editor__page-wrap"
-              style={
-                layout
-                  ? { width: layout.cssWidth, height: layout.cssHeight }
-                  : { width: fitWidth, minHeight: 200 }
-              }
-            >
-              <PageSurface
-                key={`${sourcePath}:${sourcePage}:${surfaceKey}`}
-                bytes={bytes}
-                zoom={zoom}
-                fitWidth={fitWidth}
-                pageIndex={pageIndex}
-                canvasRef={pageCanvasRef}
-                onLayout={setLayout}
-                onFail={(reason) => setLoadError(reason ?? "Could not render this page.")}
-              />
-              {layout && onFormChange && (
-                <FormFieldsOverlay
-                  layout={layout}
-                  fields={formFields}
-                  values={formValues}
-                  sourcePage={sourcePage}
-                  onChange={onFormChange}
-                />
-              )}
-              {layout && (
-                <EditorOverlay
-                  layout={layout}
-                  objects={pageObjects}
-                  selectedIds={pageSelectedIds}
+        <div className="pdf-editor__main">
+          <SourceTextBanners
+            page={st}
+            onRemoveStale={session.removeSourceTextForFingerprint}
+            modeDismissed={modeDismissed}
+            onDismissMode={() => setModeDismissed(true)}
+          />
+          <div
+            className={`pdf-editor__stage${colorPick ? " is-eyedrop" : ""}${panMode ? " is-hand" : ""}${panning ? " is-panning" : ""}${stageJustify(layout?.cssWidth ?? 0, fitWidth) === "start" ? " is-start" : ""}`}
+            ref={stageRef}
+            onPointerDown={onStagePointerDown}
+            onPointerMove={onStagePointerMove}
+            onPointerUp={onStagePointerUp}
+            onPointerCancel={onStagePointerUp}
+          >
+            {loading && (
+              <div className="pdf-editor__status">
+                <Spinner /> Loading page…
+              </div>
+            )}
+            {loadError && <Alert variant="danger">{loadError}</Alert>}
+            {colorPick && (
+              <div className="muted" style={{ fontSize: 12.5, padding: "8px 12px 0" }}>
+                Click the page to sample a color · Esc cancels
+              </div>
+            )}
+            {bytes && !loadError && (
+              <div
+                className="pdf-editor__page-wrap"
+                style={
+                  layout
+                    ? { width: layout.cssWidth, height: layout.cssHeight }
+                    : { width: fitWidth, minHeight: 200 }
+                }
+              >
+                <PageSurface
+                  key={`${sourcePath}:${sourcePage}:${surfaceKey}`}
+                  bytes={surfaceBytes ?? bytes}
+                  zoom={zoom}
+                  fitWidth={fitWidth}
                   pageIndex={pageIndex}
-                  tool={panMode ? "hand" : tool}
-                  createStyle={lastShapeStyle.current}
-                  pickColor={!!colorPick}
-                  onPickColor={samplePageColor}
-                  onPickHover={colorPick ? (p) => setPickCursor(p) : undefined}
-                  onSelect={session.select}
-                  onClearSelection={session.clearSelection}
-                  onBeginGesture={session.beginGesture}
-                  onEndGesture={session.endGesture}
-                  onUpdateRect={session.updateRect}
-                  onUpdateRotate={(id, deg) => session.updateObject(id, { objectRotate: deg })}
-                  onCreateShape={(kind, rect, keepAspect) => {
-                    session.addShape(kind, pageIndex, rect, lastShapeStyle.current, keepAspect);
-                    setTool("select");
-                  }}
-                  onCreateText={(rect) => {
-                    session.addText(pageIndex, rect);
-                    setTool("select");
-                  }}
-                  onCreateLink={(rect) => {
-                    session.addLink(pageIndex, rect);
-                    setTool("select");
-                  }}
-                  onCreateLine={(a, b) => {
-                    session.addLine(pageIndex, a.x, a.y, b.x, b.y);
-                    setLastShape("line");
-                    setTool("select");
-                  }}
-                  onCreateInk={(pts) => {
-                    session.addInk(pageIndex, pts);
-                    setTool("select");
-                  }}
-                  onCreateNote={(rect) => {
-                    session.addNote(pageIndex, rect, markupAuthor);
-                    setTool("select");
-                  }}
-                  onCreateHighlight={(rect) => {
-                    session.addHighlight(pageIndex, rect, markupAuthor);
-                    setTool("select");
-                  }}
-                  onCreateUnderline={(rect) => {
-                    session.addUnderline(pageIndex, rect, markupAuthor);
-                    setTool("select");
-                  }}
-                  onCreateStrikeout={(rect) => {
-                    session.addStrikeout(pageIndex, rect, markupAuthor);
-                    setTool("select");
-                  }}
-                  onCreateMarkupInk={(strokes) => {
-                    session.addMarkupInk(pageIndex, strokes, markupAuthor);
-                    setTool("select");
-                  }}
-                  onCreateRedact={(rect) => {
-                    session.addRedact(pageIndex, rect);
-                    setTool("select");
-                  }}
-                  onRequestImage={(at) => void placeImage(at)}
-                  onActivateText={(id) => setEditingTextId(id)}
+                  canvasRef={pageCanvasRef}
+                  onLayout={setLayout}
+                  onFail={(reason) => setLoadError(reason ?? "Could not render this page.")}
                 />
-              )}
-              {editingTextId && layout && (
-                <TextEditor
-                  obj={pageObjects.find((object) => object.id === editingTextId)}
-                  layout={layout}
-                  onChange={(content) => session.updateObject(editingTextId, { content } as Partial<EditObject>)}
-                  onClose={() => setEditingTextId(null)}
-                />
-              )}
-            </div>
-          )}
+                {layout && onFormChange && (
+                  <FormFieldsOverlay
+                    layout={layout}
+                    fields={formFields}
+                    values={formValues}
+                    sourcePage={sourcePage}
+                    onChange={onFormChange}
+                  />
+                )}
+                {layout && (
+                  <EditorOverlay
+                    layout={layout}
+                    objects={pageObjects}
+                    selectedIds={pageSelectedIds}
+                    pageIndex={pageIndex}
+                    tool={panMode ? "hand" : tool}
+                    createStyle={lastShapeStyle.current}
+                    pickColor={!!colorPick}
+                    onPickColor={samplePageColor}
+                    onPickHover={colorPick ? (p) => setPickCursor(p) : undefined}
+                    onSelect={session.select}
+                    onClearSelection={session.clearSelection}
+                    onBeginGesture={session.beginGesture}
+                    onEndGesture={session.endGesture}
+                    onUpdateRect={session.updateRect}
+                    onUpdateRotate={(id, deg) => session.updateObject(id, { objectRotate: deg })}
+                    onCreateShape={thenSelect((kind, rect, keepAspect) => session.addShape(kind, pageIndex, rect, lastShapeStyle.current, keepAspect))}
+                    onCreateText={thenSelect((rect) => session.addText(pageIndex, rect))}
+                    onCreateLink={thenSelect((rect) => session.addLink(pageIndex, rect))}
+                    onCreateLine={(a, b) => {
+                      session.addLine(pageIndex, a.x, a.y, b.x, b.y);
+                      setLastShape("line");
+                      setTool("select");
+                    }}
+                    onCreateInk={thenSelect((pts) => session.addInk(pageIndex, pts))}
+                    onCreateNote={thenSelect((rect) => session.addNote(pageIndex, rect, markupAuthor))}
+                    onCreateHighlight={thenSelect((rect) => session.addHighlight(pageIndex, rect, markupAuthor))}
+                    onCreateUnderline={thenSelect((rect) => session.addUnderline(pageIndex, rect, markupAuthor))}
+                    onCreateStrikeout={thenSelect((rect) => session.addStrikeout(pageIndex, rect, markupAuthor))}
+                    onCreateMarkupInk={thenSelect((strokes) => session.addMarkupInk(pageIndex, strokes, markupAuthor))}
+                    onCreateRedact={thenSelect((rect) => session.addRedact(pageIndex, rect))}
+                    onRequestImage={(at) => void placeImage(at)}
+                    onActivateText={(id) => setEditingTextId(id)}
+                  />
+                )}
+                {layout && tool === "editText" && (
+                  <SourceTextMode
+                    key={`${pageIndex}:${sourcePath}:${sourcePage}`}
+                    page={st}
+                    layout={layout}
+                    session={session}
+                    stage={stageRef.current}
+                    inert={panMode}
+                    guardRef={textGuard}
+                    request={textRequest}
+                    onRequestHandled={() => setTextRequest(null)}
+                    onLeave={() => rootRef.current?.focus({ preventScroll: true })}
+                    onAddTextHere={addTextHere}
+                  />
+                )}
+                {layout && <PreviewStatusChip page={st} showOriginal={original} />}
+                {editingTextId && layout && (
+                  <TextEditor
+                    obj={pageObjects.find((object) => object.id === editingTextId)}
+                    layout={layout}
+                    onChange={(content) => session.updateObject(editingTextId, { content } as Partial<EditObject>)}
+                    onClose={() => setEditingTextId(null)}
+                  />
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
       {colorPick && pickCursor && (

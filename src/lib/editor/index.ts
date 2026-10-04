@@ -29,6 +29,7 @@ export type {
   StrikeoutObject,
   MarkupInkObject,
   RedactObject,
+  SourceTextObject,
   TextAlign,
   EditObject,
   EditDocument,
@@ -65,7 +66,13 @@ export type { PdfBoxQuad } from "./visibleBox";
 export { visiblePageBox, alignPageBox, quadToBox, boxToQuad } from "./visibleBox";
 export { imageCssRect, placeImagePdfRect } from "./placeImage";
 
-export type { HistoryState, EditAction, LayerDir } from "./editReducer";
+export type {
+  HistoryState,
+  EditAction,
+  LayerDir,
+  SourceTextFields,
+  SetSourceTextInput,
+} from "./editReducer";
 export {
   MAX_HISTORY,
   createHistoryState,
@@ -86,6 +93,8 @@ export {
   makeUnderlineObject,
   makeStrikeoutObject,
   makeMarkupInkObject,
+  makeSourceTextObject,
+  setSourceTextAction,
 } from "./editReducer";
 
 export type { ResizeHandle } from "./resizeRect";
@@ -110,7 +119,40 @@ export {
   isNoneFill,
   toCssHex,
   rgbToHex,
+  compactSourceTextStyle,
 } from "./serialize";
+
+export type { NeighbourKey } from "./sourceText";
+export {
+  STYLE_EPSILON,
+  EDIT_TEXT_CHARS_MAX,
+  SIZE_MIN_PT,
+  SIZE_MAX_PT,
+  SIZE_STEP_PT,
+  LETTER_SPACING_MIN_PT,
+  LETTER_SPACING_MAX_PT,
+  LETTER_SPACING_STEP_PT,
+  TEXT_INKS,
+  normaliseTyped,
+  fontsByKey,
+  surfaceFor,
+  missingChars,
+  spaceProblem,
+  estimateDeltaPt,
+  estimateCaretOffsets,
+  normaliseStyle,
+  isNoOpEdit,
+  blockingVerdict,
+  blockingProblem,
+  overlapsNext,
+  caretIndexAt,
+  editedGeometry,
+  problemMessage,
+  readingNeighbour,
+  toTextEditIn,
+  editsSignature,
+  textStampGeometry,
+} from "./sourceText";
 
 export {
   remapEditDocument,

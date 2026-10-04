@@ -31,6 +31,12 @@
 //!
 //! Jobs (`commands::jobs`):
 //!   - `cancel_job(registry, job_id: String) -> Result<(), AppError>`
+//!
+//! Edit text (`commands::text_edit`, state `text_edit::cache::TextEditCache`):
+//!   - `open_text_source(input_path) -> TextSourceDto`
+//!   - `inspect_text_page(input_path, fingerprint, page_index) -> PageTextDto`
+//!   - `preview_text_edits(input_path, fingerprint, page_index, edits) -> TextPreviewDto`
+//!   - `release_text_source(input_path) -> ()`
 
 mod commands;
 mod error;
@@ -67,6 +73,8 @@ pub fn run() {
         // Shared, cancellable job registry.
         .manage(JobRegistry::default())
         .manage(Mutex::new(os_open::OpenedPathQueue::default()))
+        // Snapshots of the files open in Edit text (paths in, JSON out).
+        .manage(crate::pdf_engine::text_edit::cache::TextEditCache::default())
         .invoke_handler(tauri::generate_handler![
             // files / system
             commands::files::pick_pdf_files,
@@ -127,9 +135,18 @@ pub fn run() {
             commands::render::read_pdf_meta,
             commands::render::write_pdf_meta,
             commands::render::export_pdf_text,
+            // edit text (in-place changes of existing text; Save is edit_pdf_overlays)
+            commands::text_edit::open_text_source,
+            commands::text_edit::inspect_text_page,
+            commands::text_edit::preview_text_edits,
+            commands::text_edit::release_text_source,
         ])
         .setup(|app| {
             os_open::enqueue_cold_start_argv(app.handle());
+            // No Edit text source is open yet: copies left by a crash are deleted.
+            if let Ok(root) = utils::temp::root(app.handle()) {
+                pdf_engine::text_edit::cache::clear_stale_folders(&root);
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

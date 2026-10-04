@@ -43,6 +43,7 @@ pub async fn merge_pdfs(
     input_paths: Vec<String>,
     output_path: String,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -65,6 +66,7 @@ pub async fn split_pdf(
     picks: Vec<PagePick>,
     mode: SplitMode,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -86,6 +88,7 @@ pub async fn assemble_pdf(
     output_path: String,
     groups: Vec<PageGroup>,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -108,6 +111,7 @@ pub async fn edit_pdf(
     groups: Vec<PageGroup>,
     rotations: Vec<RotateGroup>,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -130,6 +134,7 @@ pub async fn unlock_pdf(
     output_path: String,
     password: String,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -153,6 +158,7 @@ pub async fn watermark_pdf(
     text: String,
     opacity: f64,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -187,6 +193,7 @@ pub async fn crop_pdf(
     right: f64,
     bottom: f64,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -223,6 +230,7 @@ pub async fn edit_pdf_overlays(
     flatten_form: Option<bool>,
     flatten_annotations: Option<bool>,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -278,6 +286,7 @@ pub async fn stamp_pdf(
     color: [f64; 3],
     size_pct: f64,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -316,6 +325,7 @@ pub async fn poster_pdf(
     overlap: f64,
     marks: bool,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -352,6 +362,7 @@ pub async fn nup_pdf(
     sheet_w: f64,
     sheet_h: f64,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -388,6 +399,7 @@ pub async fn add_page_numbers(
     pad_width: Option<u32>,
     with_date: Option<bool>,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -430,6 +442,7 @@ pub async fn protect_pdf(
     user_password: String,
     owner_password: String,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -460,6 +473,7 @@ pub async fn extract_pages(
     output_path: String,
     pages: String,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -482,6 +496,7 @@ pub async fn delete_pages(
     output_path: String,
     pages: String,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -505,6 +520,7 @@ pub async fn rotate_pages(
     angle: i32,
     rotate_pages: String,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -535,6 +551,7 @@ pub async fn reorder_pages(
     output_path: String,
     order: String,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -559,6 +576,7 @@ pub async fn compress_pdf(
     quality: u32,
     target_bytes: Option<u64>,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -589,6 +607,7 @@ pub async fn optimize_pdf(
     output_path: String,
     groups: Vec<PageGroup>,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();

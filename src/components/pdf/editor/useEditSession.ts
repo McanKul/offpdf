@@ -19,6 +19,7 @@ import {
   makeUnderlineObject,
   mapPointsToRect,
   planKeyRebind,
+  setSourceTextAction,
   type ClosedShapeKind,
   type EditDocument,
   type EditObject,
@@ -27,7 +28,9 @@ import {
   type LayerDir,
   type PdfRect,
   type Point,
+  type SetSourceTextInput,
 } from "@/lib/editor";
+
 
 function newId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -83,6 +86,30 @@ export function useEditSession(
 
   const addText = useCallback((pageIndex: number, rect: PdfRect, content?: string) => {
     dispatch({ type: "ADD", object: makeTextObject(newId(), pageIndex, rect, content) });
+  }, []);
+
+  /** "Add text here" from the reason popover: a new text box (from `textStampGeometry`). Returns its id. */
+  const addTextStamp = useCallback((pageIndex: number, rect: PdfRect, fontSize: number): string => {
+    const id = newId();
+    dispatch({ type: "ADD", object: { ...makeTextObject(id, pageIndex, rect), fontSize } });
+    return id;
+  }, []);
+
+  /** Commit a text change: upsert by (pageIndex, runId), or remove it when it is a no-op. One history step. */
+  const setSourceText = useCallback((input: SetSourceTextInput) => {
+    dispatch(setSourceTextAction(input, newId()));
+  }, []);
+
+  /** Restore the original of one line (deletes its text change). */
+  const revertSourceText = useCallback((id: string) => {
+    const obj = stateRef.current.present.objects.find((o) => o.id === id);
+    if (!obj || obj.kind !== "sourceText") return;
+    dispatch({ type: "DELETE", ids: [id] });
+  }, []);
+
+  /** Drop every text change made on one snapshot of a file (STALE recovery). One history step. */
+  const removeSourceTextForFingerprint = useCallback((fingerprint: string) => {
+    dispatch({ type: "REMOVE_SOURCE_TEXT_FOR_FINGERPRINT", fingerprint });
   }, []);
 
   const addImage = useCallback(
@@ -298,6 +325,10 @@ export function useEditSession(
     addRect,
     addShape,
     addText,
+    addTextStamp,
+    setSourceText,
+    revertSourceText,
+    removeSourceTextForFingerprint,
     addImage,
     addLine,
     addInk,

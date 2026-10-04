@@ -1,7 +1,10 @@
 import { isNearlySquare, type EditObject } from "@/lib/editor";
+import { listLabel } from "@/lib/editor/sourceTextCopy";
 
 function labelFor(obj: EditObject, layer: string): string {
   const page = `p${obj.pageIndex + 1}`;
+  // A text change is not a layer object: no layer number, never "Rectangle".
+  if (obj.kind === "sourceText") return listLabel(obj.text, obj.pageIndex + 1);
   if (obj.kind === "text") {
     const t = obj.content.trim() || "Text";
     return `Text: ${t.length > 18 ? `${t.slice(0, 18)}…` : t} · ${page} · ${layer}`;
@@ -57,7 +60,7 @@ export function ObjectList({
     <ul className="pdf-editor__object-list" role="listbox" aria-label="Edit objects">
       {objects.map((obj) => {
         const selected = selectedIds.includes(obj.id);
-        const onPage = objects.filter((o) => o.pageIndex === obj.pageIndex);
+        const onPage = objects.filter((o) => o.pageIndex === obj.pageIndex && o.kind !== "sourceText");
         const z = onPage.findIndex((o) => o.id === obj.id) + 1;
         const layer = `${z}/${onPage.length}`;
         return (

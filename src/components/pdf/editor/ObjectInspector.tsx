@@ -1,7 +1,17 @@
-import { useEffect, useState } from "react";
-import type { EditObject, LayerDir } from "@/lib/editor";
-import { isClosedShapeObject, isMarkupObject, isNoneFill, sizeWithAspect, toCssHex } from "@/lib/editor";
+import type { EditObject, LayerDir, SourceTextObject } from "@/lib/editor";
+import {
+  TEXT_INKS,
+  isClosedShapeObject,
+  isMarkupObject,
+  isNoneFill,
+  sizeWithAspect,
+  surfaceFor,
+  toCssHex,
+} from "@/lib/editor";
+import { UI, fontDescription, truncateCopy } from "@/lib/editor/sourceTextCopy";
+import type { TextFont, TextRun } from "@/lib/types";
 import { Icon } from "@/components/ui/Icon";
+import { ColorField as SharedColorField, DraftNumber } from "./controls";
 
 const PRESETS = [
   "#111827",
@@ -14,6 +24,19 @@ const PRESETS = [
 
 export type ColorPickTarget = "color" | "fill" | "stroke";
 
+/** The object inspector's colour field: its presets, the first one when unreadable. */
+function ColorField(props: Omit<Parameters<typeof SharedColorField>[0], "presets" | "fallback">) {
+  return <SharedColorField {...props} presets={PRESETS} fallback={PRESETS[0]} />;
+}
+
+/** What the inspector needs to describe a text change (the run comes from the page's text). */
+export interface SourceTextInspectorProps {
+  run: TextRun | null;
+  fonts: Map<string, TextFont>;
+  onEditLine: () => void;
+  onRestore: () => void;
+}
+
 export function ObjectInspector({
   obj,
   picking,
@@ -23,6 +46,7 @@ export function ObjectInspector({
   onChange,
   onPickFromPage,
   onReorder,
+  sourceText,
 }: {
   obj: EditObject;
   picking?: ColorPickTarget | null;
@@ -34,7 +58,12 @@ export function ObjectInspector({
   onChange: (patch: Partial<EditObject>) => void;
   onPickFromPage?: (target: ColorPickTarget) => void;
   onReorder?: (dir: LayerDir) => void;
+  /** Required to show a text change (`kind: "sourceText"`). */
+  sourceText?: SourceTextInspectorProps;
 }) {
+  if (obj.kind === "sourceText") {
+    return sourceText ? <SourceTextInspector obj={obj} {...sourceText} /> : null;
+  }
   const opacity = "opacity" in obj && typeof obj.opacity === "number" ? obj.opacity : 1;
   const shape = isClosedShapeObject(obj) ? obj : null;
   const filled = !!shape && !isNoneFill(shape.fill);
@@ -362,178 +391,85 @@ export function ObjectInspector({
   );
 }
 
-function formatNum(n: number): string {
-  if (Number.isInteger(n)) return String(n);
-  return String(Math.round(n * 1000) / 1000);
+const LETTERS_MAX_CHARS = 120;
+
+function formatPt(n: number): string {
+  return `${Number(n.toFixed(2))} pt`;
 }
 
-function parseDraft(s: string): number | null {
-  const t = s.trim().replace(",", ".");
-  if (t === "" || t === "-" || t === "." || t === "-.") return null;
-  const n = Number(t);
-  return Number.isFinite(n) ? n : null;
-}
-
-/** Word/Paint-style number field: empty while typing, commit on blur/Enter. */
-function DraftNumber({
-  label,
-  hideLabel,
-  inline,
-  value,
-  min,
-  max,
-  suffix,
-  onCommit,
-}: {
-  label: string;
-  hideLabel?: boolean;
-  /** W/H row: label | input | suffix as sibling grid cells. */
-  inline?: boolean;
-  value: number;
-  min: number;
-  max: number;
-  suffix?: string;
-  onCommit: (n: number) => void;
-}) {
-  const [focused, setFocused] = useState(false);
-  const [draft, setDraft] = useState(formatNum(value));
-  useEffect(() => {
-    if (!focused) setDraft(formatNum(value));
-  }, [value, focused]);
-
-  const commit = (raw: string) => {
-    const n = parseDraft(raw);
-    if (n == null) {
-      setDraft(formatNum(value));
-      return;
-    }
-    const clamped = Math.min(max, Math.max(min, n));
-    onCommit(clamped);
-    setDraft(formatNum(clamped));
-  };
-
-  const input = (
-    <input
-      className="pdf-editor__num-input"
-      inputMode="decimal"
-      value={draft}
-      aria-label={label}
-      onFocus={() => setFocused(true)}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={(e) => {
-        setFocused(false);
-        commit(e.target.value);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        if (e.key === "Escape") {
-          setDraft(formatNum(value));
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-    />
-  );
-  const suf = suffix ? (
-    <span className="pdf-editor__num-suffix" aria-hidden>
-      {suffix}
-    </span>
-  ) : null;
-
-  if (inline) {
-    return (
-      <>
-        <span className="pdf-editor__wh-key">{label}</span>
-        {input}
-        {suf}
-      </>
-    );
+/** The letters a face can type: space named, the rest in font order, cut at 120. */
+function lettersOf(run: TextRun, fonts: Map<string, TextFont>, face: SourceTextObject["style"]["face"]): string {
+  const seen = new Set<string>();
+  for (const key of surfaceFor(run, face)) {
+    for (const ch of Array.from(fonts.get(key)?.alphabet ?? "")) seen.add(ch);
   }
-
-  return (
-    <div className="pdf-editor__num">
-      {!hideLabel && <label className="field__label">{label}</label>}
-      <div className="pdf-editor__num-row">
-        {input}
-        {suf}
-      </div>
-    </div>
-  );
+  const letters = [...seen].filter((ch) => ch !== " ").join("");
+  return truncateCopy(seen.has(" ") ? `${UI.spaceName} ${letters}` : letters, LETTERS_MAX_CHARS);
 }
 
-function ColorField({
-  label,
-  icon,
-  value,
-  active,
-  onChange,
-  onPickFromPage,
-}: {
-  label: string;
-  icon?: "droplet" | "square" | "squareFill";
-  value: string;
-  active?: boolean;
-  onChange: (hex: string) => void;
-  onPickFromPage?: () => void;
-}) {
-  const hex = toCssHex(value, "#111827");
-  const [typed, setTyped] = useState(hex);
-  useEffect(() => {
-    setTyped(hex);
-  }, [hex]);
+function styleSummary(obj: SourceTextObject, run: TextRun | null): string {
+  const parts: string[] = [];
+  const size = obj.style.sizePt ?? run?.metrics?.effectiveSize;
+  if (size !== undefined) parts.push(formatPt(size));
+  const face = obj.style.face ?? run?.style?.face;
+  if (face) parts.push(UI.faceLabel[face]);
+  const fill = (obj.style.fill ?? run?.style?.fill ?? "").toLowerCase();
+  const ink = TEXT_INKS.find((i) => i.hex === fill);
+  if (ink) parts.push(UI.bar[ink.key]);
+  else if (fill) parts.push(fill);
+  const spacing = obj.style.letterSpacingPt;
+  if (spacing !== undefined) parts.push(`${UI.bar.letterSpacing} ${formatPt(spacing)}`);
+  return parts.join(" · ");
+}
+
+/** Inspector branch for a text change (§D.6.4): read-only rows and two actions. */
+function SourceTextInspector({
+  obj,
+  run,
+  fonts,
+  onEditLine,
+  onRestore,
+}: { obj: SourceTextObject } & SourceTextInspectorProps) {
+  const primary = run ? fonts.get(surfaceFor(run, obj.style.face)[0] ?? "") : undefined;
+  const subset = !!primary && primary.embedded && primary.subset;
+  const summary = styleSummary(obj, run);
   return (
-    <div className="pdf-editor__color">
-      <div className="pdf-editor__color-row">
-        {icon ? (
-          <span className="pdf-editor__color-kind" title={label} aria-hidden>
-            <Icon name={icon} size={15} />
-          </span>
-        ) : (
-          <label className="field__label">{label}</label>
+    <div className="pdf-editor__inspector st-inspector">
+      <div className="pdf-editor__sidebar-title">{UI.inspector.header}</div>
+      <dl className="st-inspector__rows">
+        <dt>{UI.inspector.original}</dt>
+        <dd>{obj.originalText}</dd>
+        <dt>{UI.inspector.new}</dt>
+        <dd>{obj.text === "" ? UI.removal : obj.text}</dd>
+        {primary && (
+          <>
+            <dt>{UI.inspector.font}</dt>
+            <dd>{fontDescription(primary)}</dd>
+          </>
         )}
-        <input
-          type="color"
-          aria-label={label}
-          value={hex}
-          onChange={(e) => onChange(e.target.value)}
-          className="pdf-editor__color-input"
-        />
-        <input
-          className="pdf-editor__hex"
-          value={typed}
-          spellCheck={false}
-          aria-label={`${label} hex`}
-          onChange={(e) => {
-            const v = e.target.value.trim();
-            setTyped(v.startsWith("#") || v.length === 0 ? v : `#${v}`);
-            const next = v.startsWith("#") ? v : `#${v}`;
-            if (/^#[0-9a-fA-F]{6}$/.test(next)) onChange(next.toLowerCase());
-            else if (/^#[0-9a-fA-F]{3}$/.test(next)) onChange(toCssHex(next));
-          }}
-        />
-        {onPickFromPage && (
-          <button
-            type="button"
-            className={`pdf-editor__eyedrop${active ? " is-active" : ""}`}
-            onClick={onPickFromPage}
-            title={active ? "Click the page to sample a color" : "Pick color from the page"}
-            aria-label={active ? "Click the page to sample a color" : "Pick color from the page"}
-            aria-pressed={active}
-          >
-            <Icon name="eyedropper" size={16} />
-          </button>
+        {subset && run && (
+          <>
+            <dt>{UI.bar.letters}</dt>
+            <dd className="st-inspector__letters">{lettersOf(run, fonts, obj.style.face)}</dd>
+          </>
         )}
-      </div>
-      <div className="pdf-editor__swatches">
-        {PRESETS.map((c) => (
-          <button
-            key={c}
-            type="button"
-            title={c}
-            className={`pdf-editor__swatch${hex === c ? " is-active" : ""}`}
-            style={{ background: c }}
-            onClick={() => onChange(c)}
-          />
-        ))}
+        {summary && (
+          <>
+            <dt>{UI.inspector.style}</dt>
+            <dd>{summary}</dd>
+          </>
+        )}
+      </dl>
+      <p className="st-inspector__note">{UI.inspector.note}</p>
+      <div className="st-inspector__actions">
+        <button type="button" className="btn btn--secondary btn--sm" onClick={onEditLine}>
+          <Icon name="textCursor" size={15} />
+          {UI.inspector.editLine}
+        </button>
+        <button type="button" className="btn btn--ghost btn--sm" onClick={onRestore}>
+          <Icon name="undo" size={15} />
+          {UI.inspector.restore}
+        </button>
       </div>
     </div>
   );

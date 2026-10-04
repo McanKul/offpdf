@@ -1,4 +1,32 @@
-import type { EditDocument, EditObject } from "./types";
+import type { EditDocument, EditObject, SourceTextObject } from "./types";
+import type { SourceTextStyle } from "../types";
+
+/** A copy of a text-change style with only the fields that are set. */
+export function compactSourceTextStyle(style: SourceTextStyle): SourceTextStyle {
+  const out: SourceTextStyle = {};
+  if (style.sizePt !== undefined) out.sizePt = style.sizePt;
+  if (style.face !== undefined) out.face = style.face;
+  if (style.fill !== undefined) out.fill = style.fill;
+  if (style.letterSpacingPt !== undefined) out.letterSpacingPt = style.letterSpacingPt;
+  return out;
+}
+
+/** Exactly the fields Rust reads (`EditObjectIn::SourceText`; it ignores `id`/`locked`). */
+function exportSourceText(o: SourceTextObject): SourceTextObject {
+  return {
+    id: o.id,
+    kind: "sourceText",
+    pageIndex: o.pageIndex,
+    rect: { ...o.rect },
+    locked: true,
+    runId: o.runId,
+    sourceFingerprint: o.sourceFingerprint,
+    sourcePageIndex: o.sourcePageIndex,
+    originalText: o.originalText,
+    text: o.text,
+    style: compactSourceTextStyle(o.style),
+  };
+}
 
 /** Deep-clone an object so history snapshots do not share point arrays. */
 export function cloneObject(o: EditObject): EditObject {
@@ -9,13 +37,17 @@ export function cloneObject(o: EditObject): EditObject {
     next.strokes = next.strokes.map((s) => s.map((p) => ({ x: p.x, y: p.y })));
   } else if (next.kind === "highlight" || next.kind === "underline" || next.kind === "strikeout") {
     next.quads = next.quads.slice();
+  } else if (next.kind === "sourceText") {
+    next.style = { ...next.style };
   }
   return next;
 }
 
-/** Shift an object in PDF space (used by paste / nudge-all). */
+/** Shift an object in PDF space (used by paste / nudge-all). A text change is
+ * bound to its line and is never moved or pasted, so it comes back unchanged. */
 export function offsetObject(o: EditObject, dx: number, dy: number): EditObject {
   const next = cloneObject(o);
+  if (next.kind === "sourceText") return next;
   next.rect = { ...next.rect, x: next.rect.x + dx, y: next.rect.y + dy };
   if (next.kind === "line") {
     next.x1 += dx;
@@ -54,6 +86,7 @@ export function toExportDocument(doc: EditDocument): EditDocument {
         const { objectRotate: _rot, ...rest } = cloneObject(o);
         return rest;
       }
+      if (o.kind === "sourceText") return exportSourceText(o);
       return cloneObject(o);
     }),
   };

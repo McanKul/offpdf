@@ -1,0 +1,389 @@
+/* =========================================================================
+   Edit text (change words already in a PDF) — SPEC §D.6.
+   Theme tokens only. The page itself is white paper in both themes (as
+   `.pdf-editor__page-wrap`), so everything drawn on the page is tuned to stay
+   ≥ 3:1 against white; chrome (bar, message row, popover) follows the theme.
+   ========================================================================= */
+
+.pdf-editor {
+  --st-paper: #ffffff; /* the PDF page */
+  --st-ink: #000000; /* a line whose colour can't be read */
+  --st-line: var(--primary);
+  --st-edited: var(--success);
+  --st-warn: var(--warning);
+  --st-problem: var(--danger);
+  --st-refused: var(--text-subtle);
+  --st-wash: color-mix(in srgb, var(--primary) 12%, transparent);
+  --st-fast: 120ms;
+}
+
+/* The dark theme's accents are light; on white paper they are darkened. */
+[data-theme="dark"] .pdf-editor {
+  --st-line: color-mix(in srgb, var(--primary) 60%, var(--st-ink));
+  --st-edited: color-mix(in srgb, var(--success) 55%, var(--st-ink));
+  --st-warn: color-mix(in srgb, var(--warning) 60%, var(--st-ink));
+  --st-problem: color-mix(in srgb, var(--danger) 60%, var(--st-ink));
+  --st-refused: color-mix(in srgb, var(--text-subtle) 80%, var(--st-ink));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-editor { --st-fast: 0ms; }
+}
+
+@keyframes st-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Layout around the page ------------------------------------------------- */
+
+.pdf-editor__main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.pdf-editor__overlay.is-inert { pointer-events: none; }
+/* Zoom and page controls wrap as a unit, never one button alone. */
+.pdf-editor__toolgroup { display: inline-flex; align-items: center; gap: 8px; }
+.st-banners { display: flex; flex-direction: column; gap: 8px; }
+.st-banners:empty { display: none; }
+.st-banners__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.st-banners__mode {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.st-banners__action { margin-left: 4px; }
+.st-chip-status {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 16px);
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  line-height: 1.3;
+  pointer-events: none;
+  animation: st-fade var(--st-fast) ease-out;
+}
+.st-chip-status.is-muted { color: var(--text-muted); }
+
+/* The line layer -------------------------------------------------------- */
+
+.st-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  line-height: normal;
+  cursor: default;
+}
+.st-layer.is-inert { pointer-events: none; }
+.st-layer.is-over-editable { cursor: text; }
+.st-layer.is-over-refused { cursor: help; }
+.st-run {
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 1px dashed color-mix(in srgb, var(--st-line) 40%, transparent);
+  border-radius: 2px;
+  background: transparent;
+  pointer-events: none;
+}
+.st-run.is-hover,
+.st-run:focus-visible { border: 1.5px solid var(--st-line); background: var(--st-wash); }
+.st-run:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.st-run.is-edited { border: 1px solid var(--st-edited); }
+.st-run.is-warning { border: 1px solid var(--st-warn); }
+.st-run.is-problem { border: 1px solid var(--st-problem); }
+.st-run.is-refused { border: 1px dotted var(--st-refused); }
+.st-run.is-refused.is-hover { background: transparent; }
+.st-run.is-edited.is-hover,
+.st-run.is-edited:focus-visible { border-width: 1.5px; background: var(--st-wash); }
+.st-run__dot {
+  position: absolute;
+  top: 50%;
+  right: -4px;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--st-edited);
+}
+.st-run__flag {
+  position: absolute;
+  top: 50%;
+  left: -15px;
+  margin-top: -6px;
+  color: var(--st-warn);
+}
+.st-run.is-problem .st-run__flag { color: var(--st-problem); }
+.st-run__badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--st-line);
+  border-radius: 50%;
+  background: var(--st-paper);
+  color: var(--st-line);
+  font: 600 9px/11px var(--font-sans);
+  text-align: center;
+}
+.st-tooltip {
+  position: absolute;
+  z-index: 6;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--text);
+  color: var(--surface);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: st-fade var(--st-fast) ease-out;
+}
+
+/* Inline editor ---------------------------------------------------------- */
+
+.st-editor {
+  position: absolute;
+  z-index: 5;
+  font-family: var(--font-sans);
+  line-height: normal;
+}
+.st-chip {
+  position: relative;
+  box-sizing: border-box;
+  border: 1px solid var(--st-line);
+  border-radius: 3px;
+  background: var(--st-paper);
+  box-shadow: var(--shadow-md);
+}
+.st-chip__input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0 3px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--st-ink);
+  line-height: 1.2;
+}
+.st-chip__input[readonly] { opacity: 0.65; }
+/* Same font as the input, never shown: its width sizes the chip. */
+.st-chip__mirror { position: absolute; top: 0; left: 0; visibility: hidden; white-space: pre; pointer-events: none; }
+.st-guides {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.st-guide--end { stroke: var(--st-line); stroke-width: 1.5; }
+.st-guide--old { stroke: var(--st-line); stroke-width: 1; stroke-dasharray: 3 2; }
+.st-guide--limit { stroke: color-mix(in srgb, var(--st-problem) 55%, transparent); stroke-width: 1; }
+.st-dock {
+  position: absolute;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.st-dock--above { bottom: calc(100% + 6px); }
+.st-dock--below { top: calc(100% + 4px); }
+.st-dock:empty { display: none; }
+/* The message row never takes the pointer: a click on the line it covers reaches the page,
+   so it tries Done (B11) instead of doing nothing. Only the format bar is interactive. */
+.st-dock { pointer-events: none; }
+.st-dock > .st-bar { pointer-events: auto; }
+.st-msg {
+  width: max-content;
+  max-width: 460px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.st-msg--danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); color: var(--danger); }
+.st-msg--warning {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  color: var(--warning);
+}
+
+/* Format bar ------------------------------------------------------------- */
+
+.st-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  white-space: nowrap;
+  animation: st-fade var(--st-fast) ease-out;
+}
+.st-bar__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.st-bar__btn:hover { background: var(--surface-2); }
+.st-bar__btn:focus-visible,
+.st-bar__ink:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.st-bar__btn[aria-pressed="true"] {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, var(--surface));
+  color: var(--primary);
+}
+.st-bar__btn[aria-disabled="true"] { color: var(--text-subtle); cursor: not-allowed; }
+.st-bar__btn--bold { font-weight: 750; }
+.st-bar__btn--italic { font-family: Georgia, "Times New Roman", serif; font-style: italic; }
+.st-bar__btn--done { background: var(--primary); color: var(--text-on-brand); }
+.st-bar__btn--done:hover { background: var(--primary-hover); }
+.st-bar__sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 3px;
+  background: var(--border);
+}
+.st-bar__size .pdf-editor__num-row { gap: 3px; }
+.st-bar__size .pdf-editor__num-input,
+.st-bar__spacing .pdf-editor__num-input {
+  flex: none;
+  width: 6ch;
+  min-width: 0;
+  padding: 4px 6px;
+}
+.st-bar__size-text {
+  padding: 0 6px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.st-bar__dot {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--st-ink);
+}
+.st-bar__pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 230px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  white-space: normal;
+}
+.st-bar__pop.is-up { top: auto; bottom: calc(100% + 4px); }
+.st-bar__inks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.st-bar__ink {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.st-bar__ink[aria-pressed="true"] { outline: 2px solid var(--primary); outline-offset: 1px; }
+.st-bar__spacing { flex-direction: row; align-items: center; min-width: 0; }
+.st-bar__spacing .pdf-editor__num { gap: 0; }
+.st-bar__letters { max-width: 320px; }
+.st-bar__pop-title { font-weight: 650; font-size: 12.5px; }
+.st-bar__alphabet {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* Reason popover --------------------------------------------------------- */
+
+.st-popover {
+  position: absolute;
+  z-index: 6;
+  box-sizing: border-box;
+  width: 300px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+  font-size: 13px;
+  line-height: 1.45;
+  animation: st-fade var(--st-fast) ease-out;
+}
+.st-popover__title { font-weight: 650; }
+.st-popover__reason { margin-top: 2px; color: var(--text-muted); font-size: 12.5px; }
+.st-popover__body { margin: 8px 0; }
+.st-popover__footer { margin: 0 0 10px; color: var(--text-muted); font-size: 12.5px; }
+.st-popover__actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Inspector branch ------------------------------------------------------- */
+
+.st-inspector__rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 12.5px;
+}
+.st-inspector__rows dt { color: var(--text-muted); }
+.st-inspector__rows dd { margin: 0; overflow-wrap: anywhere; }
+.st-inspector__letters { font-family: var(--font-mono); font-size: 12px; }
+.st-inspector__note { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
+.st-inspector__actions { display: flex; flex-wrap: wrap; gap: 6px; }

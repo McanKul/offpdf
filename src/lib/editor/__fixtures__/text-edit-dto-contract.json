@@ -1,0 +1,340 @@
+{
+  "PageText": {
+    "fingerprint": "0123456789abcdef-4d2",
+    "fonts": [
+      {
+        "alphabet": " 0267I",
+        "displayName": "Calibri Bold",
+        "embedded": true,
+        "familyHint": "sans",
+        "key": "f11-0",
+        "subset": true,
+        "widths": [
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0
+        ],
+        "wordSpace": true
+      },
+      {
+        "alphabet": " 0267DIceinouv",
+        "displayName": "Calibri",
+        "embedded": true,
+        "familyHint": "sans",
+        "key": "f7-0",
+        "subset": true,
+        "widths": [
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0,
+          500.0
+        ],
+        "wordSpace": true
+      },
+      {
+        "alphabet": "ğış",
+        "displayName": "Calibri",
+        "embedded": true,
+        "familyHint": "sans",
+        "key": "f9-0",
+        "subset": true,
+        "widths": [
+          500.0,
+          500.0,
+          500.0
+        ],
+        "wordSpace": false
+      }
+    ],
+    "pageIndex": 0,
+    "pageReason": null,
+    "runs": [
+      {
+        "ascent": 8.75,
+        "caretOffsets": [
+          0.0,
+          2.5,
+          8.0,
+          13.5,
+          19.0,
+          22.0,
+          27.5,
+          33.0,
+          35.75,
+          41.25,
+          46.75,
+          52.25,
+          57.75
+        ],
+        "descent": 2.25,
+        "dir": {
+          "x": 1.0,
+          "y": 0.0
+        },
+        "editable": true,
+        "id": "t1:0123456789abcdef-4d2:0:120-161",
+        "line": 0,
+        "metrics": {
+          "charSpacing": 0.0,
+          "effectiveSize": 11.04,
+          "hScale": 1.0,
+          "kernSpace": -250.0,
+          "letterSpacingPt": 0.0,
+          "nextObstacle": 120.5,
+          "originalWidth": 57.75,
+          "spaceMode": "glyph",
+          "surface": [
+            "f7-0",
+            "f9-0"
+          ],
+          "textToUser": 1.0,
+          "tfSize": 11.04,
+          "visibleExtent": 468.0,
+          "wordSpacing": 0.0
+        },
+        "order": 0,
+        "origin": {
+          "x": 72.0,
+          "y": 700.0
+        },
+        "reason": null,
+        "rect": {
+          "h": 11.5,
+          "w": 61.25,
+          "x": 72.0,
+          "y": 697.5
+        },
+        "style": {
+          "colourChangeable": true,
+          "face": "regular",
+          "faces": {
+            "bold": {
+              "available": true,
+              "surface": [
+                "f11-0"
+              ]
+            },
+            "boldItalic": {
+              "available": false,
+              "surface": []
+            },
+            "italic": {
+              "available": false,
+              "surface": []
+            },
+            "regular": {
+              "available": true,
+              "surface": [
+                "f7-0",
+                "f9-0"
+              ]
+            }
+          },
+          "fill": "#000000",
+          "sizeChangeable": true
+        },
+        "substituted": false,
+        "text": "Invoice 2026"
+      },
+      {
+        "ascent": 8.75,
+        "caretOffsets": [
+          0.0,
+          6.0,
+          8.5,
+          14.0,
+          19.5,
+          25.0,
+          31.0,
+          34.0,
+          36.5,
+          42.0,
+          48.0,
+          53.5,
+          57.0
+        ],
+        "descent": 2.25,
+        "dir": {
+          "x": 1.0,
+          "y": 0.0
+        },
+        "editable": false,
+        "id": "t1:0123456789abcdef-4d2:0:200-230",
+        "line": 1,
+        "metrics": null,
+        "order": 1,
+        "origin": {
+          "x": 72.0,
+          "y": 680.0
+        },
+        "reason": "OPTIONAL_CONTENT",
+        "rect": {
+          "h": 11.5,
+          "w": 60.0,
+          "x": 72.0,
+          "y": 677.5
+        },
+        "style": null,
+        "substituted": false,
+        "text": "hidden layer"
+      }
+    ]
+  },
+  "SourceTextObject": {
+    "id": "obj-7",
+    "kind": "sourceText",
+    "locked": true,
+    "originalText": "Invoice 2026",
+    "pageIndex": 2,
+    "rect": {
+      "h": 11.5,
+      "w": 61.25,
+      "x": 72.0,
+      "y": 697.5
+    },
+    "runId": "t1:0123456789abcdef-4d2:0:120-161",
+    "sourceFingerprint": "0123456789abcdef-4d2",
+    "sourcePageIndex": 0,
+    "style": {
+      "fill": "#c71c1c"
+    },
+    "text": "Invoice 2027"
+  },
+  "TextEditIn": {
+    "originalText": "Invoice 2026",
+    "runId": "t1:0123456789abcdef-4d2:0:120-161",
+    "style": {
+      "face": "boldItalic",
+      "fill": "#c71c1c",
+      "letterSpacingPt": 0.5,
+      "sizePt": 12.5
+    },
+    "text": "Invoice 2027"
+  },
+  "TextPreview": {
+    "pagePdf": "JVBERi0xLjcK",
+    "pageProblem": {
+      "code": "PEN_DRIFT",
+      "detail": "phase=A check=A4 page=1 drift 0.02 pt"
+    },
+    "verdicts": [
+      {
+        "caretOffsets": [
+          0.0,
+          2.5,
+          8.0,
+          13.5,
+          19.0,
+          22.0,
+          27.5,
+          33.0,
+          35.75,
+          41.25,
+          46.75,
+          52.25,
+          57.75
+        ],
+        "chars": [],
+        "code": null,
+        "deltaPt": 0.0,
+        "detail": null,
+        "face": null,
+        "field": null,
+        "newRect": {
+          "h": 11.5,
+          "w": 61.25,
+          "x": 72.0,
+          "y": 697.5
+        },
+        "ok": true,
+        "reason": null,
+        "runId": "t1:0123456789abcdef-4d2:0:120-161"
+      },
+      {
+        "caretOffsets": null,
+        "chars": [
+          "Y"
+        ],
+        "code": "GLYPH_MISSING",
+        "deltaPt": 0.0,
+        "detail": "not in the subset",
+        "face": null,
+        "field": null,
+        "newRect": null,
+        "ok": false,
+        "reason": null,
+        "runId": "t1:0123456789abcdef-4d2:0:300-320"
+      },
+      {
+        "caretOffsets": null,
+        "chars": [],
+        "code": "TEXT_EDIT_REFUSED",
+        "deltaPt": 0.0,
+        "detail": null,
+        "face": null,
+        "field": null,
+        "newRect": null,
+        "ok": false,
+        "reason": "SHARED_CONTENT",
+        "runId": "t1:0123456789abcdef-4d2:0:330-350"
+      },
+      {
+        "caretOffsets": null,
+        "chars": [
+          "ğ"
+        ],
+        "code": "FACE_UNAVAILABLE",
+        "deltaPt": 0.0,
+        "detail": null,
+        "face": "boldItalic",
+        "field": null,
+        "newRect": null,
+        "ok": false,
+        "reason": null,
+        "runId": "t1:0123456789abcdef-4d2:0:360-380"
+      },
+      {
+        "caretOffsets": null,
+        "chars": [],
+        "code": "STYLE_UNAVAILABLE",
+        "deltaPt": 0.0,
+        "detail": null,
+        "face": null,
+        "field": "colour",
+        "newRect": null,
+        "ok": false,
+        "reason": null,
+        "runId": "t1:0123456789abcdef-4d2:0:390-410"
+      }
+    ],
+    "warnings": [
+      {
+        "code": "NEXT_TEXT_OVERLAP",
+        "detail": null,
+        "runId": "t1:0123456789abcdef-4d2:0:120-161"
+      }
+    ]
+  },
+  "TextSourceInfo": {
+    "fingerprint": "0123456789abcdef-4d2",
+    "pageCount": 3,
+    "warnings": [
+      "This PDF is larger than 100 MB, so checking and saving text changes takes longer."
+    ]
+  },
+  "about": "One serialised sample of every Edit text DTO (Rust → TS) and of every input (TS → Rust). Written by src-tauri text_edit::tests_dto (DTO-01, OFFPDF_UPDATE_GOLDEN=1); the TS types in src/lib/types.ts must have exactly these keys.",
+  "version": 1
+}

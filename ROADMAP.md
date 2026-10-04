@@ -5,7 +5,7 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 
 ## Current release
 
-- **v0.3.1** is the latest published release. Its Windows package is unsigned
+- **v0.3.2** is the latest published release. Its Windows package is unsigned
   and remains available through GitHub Releases.
 - The Apple Silicon macOS build is signed and notarized. It bundles qpdf,
   Poppler, and Tesseract; LibreOffice remains optional for Office and PDF/A work.
@@ -22,6 +22,7 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 ## Current focus
 
 - Stabilize the visual editor and make exported edits match the on-screen preview.
+- Harden Edit text across more real-world PDFs.
 - Improve automated coverage for complex PDF geometry, rotation, and page boxes.
 - Make releases easier to trust and install, starting with Windows code signing.
 - Give new contributors smaller, clearly scoped issues with reproducible tests.
@@ -52,8 +53,11 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 - Flatten form fields converts form widgets to page content while preserving
   other annotations. Flatten annotations converts all remaining annotations to
   page content and requires form fields to be flattened when they are present.
-- Edit PDF adds new text, images, and shapes as overlays; it does not rewrite
-  existing text or images inside the source document.
+- Edit text changes one line at a time in the document's own font, only where
+  OffPDF can verify the change; other lines say why they can't be changed. It
+  does not reflow paragraphs, add fonts, change text inside reused blocks,
+  rotated or vertical text, or replace existing images. See
+  [docs/EDIT_TEXT.md](./docs/EDIT_TEXT.md).
 - Auto-update is intentionally not enabled.
 
 ## Later
@@ -61,6 +65,9 @@ reliable local processing, clear packaging, and a contributor-friendly project.
 - Add optional, clearly disclosed update checks behind an offline-first setting.
 - Broaden platform packaging and package-manager distribution.
 - Add more advanced editing workflows where they can remain reliable and local.
+- Edit text: shared content streams, text inside reusable blocks (Form
+  XObjects), and Type3 fonts.
+- Replace existing images, after a dedicated spike.
 
 Priorities can change as real bug reports and contributor feedback arrive. See
 the [open issues](https://github.com/McanKul/offpdf/issues) for work that is

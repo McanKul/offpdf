@@ -5,3 +5,4 @@ pub mod files;
 pub mod pdf;
 pub mod jobs;
 pub mod render;
+pub mod text_edit;

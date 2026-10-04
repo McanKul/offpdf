@@ -6,6 +6,11 @@
  * `fitWidth` must be the *stage* content width (unzoomed fit), NOT the page
  * element’s current CSS width — otherwise zoom compounds and/or paint races
  * leave a blank canvas.
+ *
+ * Painting is double-buffered: each render goes to an offscreen canvas and is
+ * copied to the visible one in a single step when it completes, so swapping
+ * `bytes` (original ⇄ Edit text preview of the same page) or zooming never
+ * flashes a blank page.
  */
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { pdfjsLib, PDF_OPTS } from "@/lib/pdfjs";
@@ -175,7 +180,10 @@ export function PageSurface({
         }
 
         const viewport = page.getViewport({ scale: renderScale });
-        const ctx = canvas.getContext("2d");
+        const buffer = document.createElement("canvas");
+        buffer.width = Math.ceil(viewport.width);
+        buffer.height = Math.ceil(viewport.height);
+        const ctx = buffer.getContext("2d");
         if (!ctx) return;
 
         try {
@@ -184,17 +192,21 @@ export function PageSurface({
           /* ignore */
         }
 
-        // Clear then size — avoids flashing previous zoom level.
-        canvas.width = Math.ceil(viewport.width);
-        canvas.height = Math.ceil(viewport.height);
-        canvas.style.width = `${cssWidth}px`;
-        canvas.style.height = `${cssHeight}px`;
-
         const task = page.render({ canvasContext: ctx, viewport });
         taskRef.current = task;
         await task.promise;
 
         if (cancelled || gen !== paintGen.current) return;
+
+        // Swap in one step: resizing clears the visible canvas, and the copy
+        // lands before the browser can paint the cleared state.
+        const visible = canvas.getContext("2d");
+        if (!visible) return;
+        canvas.width = buffer.width;
+        canvas.height = buffer.height;
+        canvas.style.width = `${cssWidth}px`;
+        canvas.style.height = `${cssHeight}px`;
+        visible.drawImage(buffer, 0, 0);
 
         onLayoutRef.current({
           cssWidth,

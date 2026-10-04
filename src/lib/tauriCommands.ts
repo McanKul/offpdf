@@ -26,7 +26,12 @@ import type {
   RotateGroup,
   RotationAngle,
   SplitMode,
+  PageText,
+  TextEditIn,
+  TextPreview,
+  TextSourceInfo,
 } from "./types";
+import { toAppError } from "./types";
 import type { EditDocument, FormField, FormValue } from "./editor";
 
 /** Generate a unique job id on the frontend (passed into every operation). */
@@ -310,9 +315,43 @@ export function ocrPdf(
   return invoke<JobResult>("ocr_pdf", { jobId, outputPath, picks, lang });
 }
 
-/** Stamp a line of text (typed signature / "APPROVED" / date) on one page. */
 export function listPdfFormFields(inputPath: string): Promise<FormField[]> {
   return invoke<FormField[]>("list_pdf_form_fields", { inputPath });
+}
+
+// ---------------------------------------------------------------------------
+// Edit text (v0.4). Paths in, JSON out; errors are normalised by `toAppError`.
+// ---------------------------------------------------------------------------
+
+function rejectAsAppError(e: unknown): Promise<never> {
+  return Promise.reject(toAppError(e));
+}
+
+/** Open a PDF for Edit text: one bounded read; encrypted, signed and damaged files are refused. Paths in, JSON out. */
+export function openTextSource(inputPath: string): Promise<TextSourceInfo> {
+  return invoke<TextSourceInfo>("open_text_source", { inputPath }).catch(rejectAsAppError);
+}
+
+/** Lines on one page (0-based `pageIndex` in the source file) and whether each can be changed. STALE if the file changed. */
+export function inspectTextPage(inputPath: string, fingerprint: string, pageIndex: number): Promise<PageText> {
+  return invoke<PageText>("inspect_text_page", { inputPath, fingerprint, pageIndex }).catch(rejectAsAppError);
+}
+
+/** Write `edits` into a one-page copy, run the same checks as Save, and return the page (base64) with a verdict per edit. */
+export function previewTextEdits(
+  inputPath: string,
+  fingerprint: string,
+  pageIndex: number,
+  edits: TextEditIn[],
+): Promise<TextPreview> {
+  return invoke<TextPreview>("preview_text_edits", { inputPath, fingerprint, pageIndex, edits }).catch(
+    rejectAsAppError,
+  );
+}
+
+/** Forget the file's snapshot and delete its temporary one-page copies. */
+export function releaseTextSource(inputPath: string): Promise<void> {
+  return invoke<void>("release_text_source", { inputPath }).catch(rejectAsAppError);
 }
 
 export function editPdfOverlays(
@@ -337,6 +376,7 @@ export function editPdfOverlays(
   });
 }
 
+/** Stamp a line of text (typed signature / "APPROVED" / date) on one page. */
 export function stampPdf(
   jobId: string,
   outputPath: string,

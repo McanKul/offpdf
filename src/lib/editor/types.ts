@@ -7,6 +7,8 @@
  * See EDIT_MODEL.md for the full contract.
  */
 
+import type { SourceTextStyle } from "../types";
+
 /** Axis-aligned box in unrotated PDF user space (points). `geometry.box` is the
  * pdf.js visible window and the export mapping window. */
 export interface PageBox {
@@ -62,7 +64,8 @@ export type EditObjectKind =
   | "underline"
   | "strikeout"
   | "markupInk"
-  | "redact";
+  | "redact"
+  | "sourceText";
 
 export type ClosedShapeKind =
   | "rect"
@@ -255,6 +258,24 @@ export interface RedactObject extends EditObjectBase {
   label?: string;
 }
 
+/**
+ * A change to a line of text already in the PDF (Edit text, v0.4). Not an
+ * overlay: Save rewrites the page's own content stream. One object per
+ * `(pageIndex, runId)`; only `text` and `style` change after creation.
+ */
+export interface SourceTextObject extends EditObjectBase {
+  kind: "sourceText";
+  locked: true;
+  runId: string;
+  sourceFingerprint: string;
+  /** 0-based page in the source file. */
+  sourcePageIndex: number;
+  originalText: string;
+  text: string;
+  /** Only fields that differ from the original. */
+  style: SourceTextStyle;
+}
+
 export type EditObject =
   | RectObject
   | RoundRectObject
@@ -274,7 +295,8 @@ export type EditObject =
   | UnderlineObject
   | StrikeoutObject
   | MarkupInkObject
-  | RedactObject;
+  | RedactObject
+  | SourceTextObject;
 
 /** Bounds of a line segment. */
 export function lineBounds(x1: number, y1: number, x2: number, y2: number): PdfRect {

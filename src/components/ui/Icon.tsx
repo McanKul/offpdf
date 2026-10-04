@@ -61,6 +61,7 @@ export type IconName =
   | "mousePointer"
   | "hand"
   | "type"
+  | "textCursor"
   | "square"
   | "rectangle"
   | "squareFill"
@@ -335,6 +336,15 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M4 7V5h16v2" />
       <path d="M12 5v14" />
       <path d="M9 19h6" />
+    </>
+  ),
+  /** I-beam with a small pencil: Edit text (change words already on the page). */
+  textCursor: (
+    <>
+      <path d="M4 4c1.9 0 3.5 1 3.5 2.4v11.2C7.5 19 5.9 20 4 20" />
+      <path d="M11 4c-1.9 0-3.5 1-3.5 2.4M11 20c-1.9 0-3.5-1-3.5-2.4" />
+      <path d="M5 12h5" />
+      <path d="M18.6 8.4a1.6 1.6 0 0 1 2.3 2.3L15 16.6l-3 .8.8-3z" />
     </>
   ),
   square: <rect x="5" y="5" width="14" height="14" rx="1.5" />,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { makeRectObject } from "./editReducer";
+import { makeRectObject, makeSourceTextObject } from "./editReducer";
 import { createEmptyDocument } from "./types";
 import { planKeyRebind, remapEditDocument, resolveViewPageIndex } from "./remapPages";
 
@@ -115,5 +115,42 @@ describe("resolveViewPageIndex", () => {
     // After removing an earlier file, pageIndex may still be in range but now
     // names a different page. Follow the previous key, not the stale index.
     expect(resolveViewPageIndex(["f2#1", "f2#2"], 0, "f2#2")).toBe(1);
+  });
+});
+
+describe("remapEditDocument with text changes", () => {
+  function change(id: string, pageIndex: number, sourcePageIndex: number) {
+    return makeSourceTextObject(id, pageIndex, { x: 72, y: 697, w: 40, h: 12 }, {
+      runId: `t1:fp:${sourcePageIndex}:1-2`,
+      sourceFingerprint: "fp",
+      sourcePageIndex,
+      originalText: "Hello",
+      text: "Hallo",
+      style: { fill: "#c71c1c" },
+    });
+  }
+
+  it("drops changes on removed pages", () => {
+    const r = remapEditDocument(
+      { version: 1, objects: [change("gone", 0, 0), change("keep", 1, 0)], selectedIds: [] },
+      ["f1#1", "f2#1"],
+      ["f2#1"],
+    );
+    expect(r.droppedIds).toEqual(["gone"]);
+    expect(r.document.objects.map((o) => o.id)).toEqual(["keep"]);
+  });
+
+  it("remaps pageIndex on reorder and keeps the source page and fingerprint", () => {
+    const r = remapEditDocument(
+      { version: 1, objects: [change("a", 0, 2)], selectedIds: [] },
+      ["f1#3", "f2#1"],
+      ["f2#1", "f1#3"],
+    );
+    const [o] = r.document.objects;
+    expect(o.pageIndex).toBe(1);
+    if (o.kind !== "sourceText") throw new Error("expected sourceText");
+    expect(o.sourcePageIndex).toBe(2);
+    expect(o.sourceFingerprint).toBe("fp");
+    expect(o.style).toEqual({ fill: "#c71c1c" });
   });
 });

@@ -31,6 +31,9 @@ lopdf = "0.34"
 # Glyph metrics for the bundled editor font (Noto Sans).
 ttf-parser = "0.25"
 
+# Bounded (capped while inflating) Flate decoding for Edit text. Already compiled in through lopdf.
+flate2 = "1"
+
 # Decode common image formats so uploaded images can be wrapped into a PDF.
 image = { version = "0.25", default-features = false, features = [
     "jpeg",
@@ -43,9 +46,6 @@ image = { version = "0.25", default-features = false, features = [
 # Decode iPhone/iPad HEIC and HEIF photos. libheif is built and linked into the
 # app so users do not need to install a system codec or upload their photos.
 heif-rs = { path = "vendor/heif-rs" }
-
-[dev-dependencies]
-flate2 = "1"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"

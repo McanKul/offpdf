@@ -42,6 +42,7 @@ mod source_edit_fixtures;
 #[cfg(test)]
 mod source_content_integ;
 pub mod stamp;
+pub mod text_edit;
 pub mod textexport;
 pub mod validate_output;
 

@@ -4,6 +4,21 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+### Added
+
+- Edit PDF can change existing text in place, in the document's own font. OffPDF only offers lines it can verify: every other glyph on the page is checked to stay within 0.01 pt, each edited page is re-read, re-rendered and compared before the new file replaces the destination, and lines that can't be changed safely, including text inside reusable blocks, say why. A longer line that runs into the next text on the line (a table cell, for example) saves with a warning. The original file is never overwritten. See [docs/EDIT_TEXT.md](docs/EDIT_TEXT.md).
+
+### Changed
+
+- The source-content classifier reads each PDF once with bounded decompression and per-page limits, decodes text, and reports text rise, rendering mode, mirrored text, clipping extent, shared content and font coverage with explicit reason codes.
+- Edit PDF opens on the Select tool, and the old Text tool is now called Add text.
+
+### Fixed
+
+- Edit PDF page previews refresh when a source file changes on disk, even when its size and modification time stay the same, and older cached page files are removed.
+- Edit PDF no longer rejects a save that adds stamps, shapes, images, drawings or markup to a page whose content is stored in several parts that don't end with a line break, as long as the parts join cleanly. This applies to every Edit PDF save, not only saves with text changes. A page whose parts would join inside a word, a string or a comment, or just after an inline image, is still refused, so a save can never make text that the original hid (for example, a line commented out across two parts) visible.
+- Job commands accept only plain job ids, so a job's temporary work folder always stays inside the app's temp area.
+
 ## 0.3.2 - 2026-09-11
 
 ### Added

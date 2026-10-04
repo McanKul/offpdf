@@ -15,8 +15,11 @@ import {
   type EditObject,
   type PdfRect,
   type Point,
+  type SourceTextObject,
 } from "./types";
 import { cloneDocument, cloneObject } from "./serialize";
+import { isNoOpEdit, normaliseStyle, normaliseTyped } from "./sourceText";
+import type { SourceTextStyle, TextRect, TextRun } from "../types";
 
 export const MAX_HISTORY = 100;
 
@@ -46,7 +49,13 @@ export type EditAction =
   | { type: "REPLACE"; document: EditDocument }
   | { type: "REBIND"; present: EditDocument; past: EditDocument[]; future: EditDocument[] }
   | { type: "HYDRATE"; objects: EditObject[] }
-  | { type: "RESET" };
+  | { type: "RESET" }
+  /** Add, or replace text/style/rect of, the sourceText object for (pageIndex, runId). One step. */
+  | { type: "UPSERT_SOURCE_TEXT"; object: SourceTextObject }
+  /** Delete the sourceText object for (pageIndex, runId), if any. One step. */
+  | { type: "REMOVE_SOURCE_TEXT"; pageIndex: number; runId: string }
+  /** Delete every sourceText object of one source snapshot (STALE recovery). One step. */
+  | { type: "REMOVE_SOURCE_TEXT_FOR_FINGERPRINT"; fingerprint: string };
 
 /** Later objects on the same page paint in front. `null` if the move is a no-op. */
 export function reorderOnPage(objects: EditObject[], id: string, dir: LayerDir): EditObject[] | null {
@@ -99,6 +108,17 @@ export function createHistoryState(doc?: EditDocument): HistoryState {
   };
 }
 
+/** sourceText objects only take `text` and `style` from a patch (redact-guard pattern):
+ * geometry, identity, lock and source binding are fixed at creation. */
+function sourceTextPatch(o: SourceTextObject, patch: Partial<EditObject>): SourceTextObject {
+  const p = patch as Partial<SourceTextObject>;
+  return {
+    ...o,
+    ...(typeof p.text === "string" ? { text: p.text } : {}),
+    ...(p.style ? { style: { ...p.style } } : {}),
+  };
+}
+
 function applyUpdate(
   doc: EditDocument,
   id: string,
@@ -108,6 +128,7 @@ function applyUpdate(
     ...doc,
     objects: doc.objects.map((o) => {
       if (o.id !== id) return o;
+      if (o.kind === "sourceText") return sourceTextPatch(o, patch);
       const nextPatch = { ...patch };
       if (o.kind === "redact") {
         delete nextPatch.objectRotate;
@@ -144,8 +165,10 @@ export function editReducer(state: HistoryState, action: EditAction): HistorySta
     }
 
     case "ADD_MANY": {
-      if (action.objects.length === 0) return state;
-      const added = action.objects.map((o) => {
+      // Paste / duplicate never copies a text change: one object per (pageIndex, runId).
+      const pasted = action.objects.filter((o) => o.kind !== "sourceText");
+      if (pasted.length === 0) return state;
+      const added = pasted.map((o) => {
         const next = { ...o, rect: normalizePdfRect(o.rect) } as EditObject;
         return next;
       });
@@ -280,9 +303,60 @@ export function editReducer(state: HistoryState, action: EditAction): HistorySta
     case "RESET":
       return createHistoryState();
 
+    case "UPSERT_SOURCE_TEXT":
+      return upsertSourceText(state, action.object);
+
+    case "REMOVE_SOURCE_TEXT": {
+      const ids = state.present.objects
+        .filter((o) => o.kind === "sourceText" && o.pageIndex === action.pageIndex && o.runId === action.runId)
+        .map((o) => o.id);
+      return ids.length === 0 ? state : editReducer(state, { type: "DELETE", ids });
+    }
+
+    case "REMOVE_SOURCE_TEXT_FOR_FINGERPRINT": {
+      const ids = state.present.objects
+        .filter((o) => o.kind === "sourceText" && o.sourceFingerprint === action.fingerprint)
+        .map((o) => o.id);
+      return ids.length === 0 ? state : editReducer(state, { type: "DELETE", ids });
+    }
+
     default:
       return state;
   }
+}
+
+function sameStyle(a: SourceTextStyle, b: SourceTextStyle): boolean {
+  return (
+    a.sizePt === b.sizePt && a.face === b.face && a.fill === b.fill && a.letterSpacingPt === b.letterSpacingPt
+  );
+}
+
+function sameRect(a: PdfRect, b: PdfRect): boolean {
+  return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+}
+
+function upsertSourceText(state: HistoryState, object: SourceTextObject): HistoryState {
+  const incoming = { ...object, rect: normalizePdfRect(object.rect), style: { ...object.style } };
+  const index = state.present.objects.findIndex(
+    (o) => o.kind === "sourceText" && o.pageIndex === incoming.pageIndex && o.runId === incoming.runId,
+  );
+  if (index < 0) {
+    return pushPast(
+      { ...state, gestureActive: false },
+      { ...state.present, objects: [...state.present.objects, incoming] },
+    );
+  }
+  const existing = state.present.objects[index] as SourceTextObject;
+  if (
+    existing.text === incoming.text &&
+    sameStyle(existing.style, incoming.style) &&
+    sameRect(existing.rect, incoming.rect)
+  ) {
+    return state;
+  }
+  const replaced: SourceTextObject = { ...existing, text: incoming.text, style: incoming.style, rect: incoming.rect };
+  const objects = state.present.objects.map((o, i) => (i === index ? replaced : o));
+  return pushPast({ ...state, gestureActive: false }, { ...state.present, objects });
 }
 
 export function canUndo(state: HistoryState): boolean {
@@ -291,6 +365,74 @@ export function canUndo(state: HistoryState): boolean {
 
 export function canRedo(state: HistoryState): boolean {
   return state.future.length > 0;
+}
+
+export interface SourceTextFields {
+  runId: string;
+  sourceFingerprint: string;
+  sourcePageIndex: number;
+  originalText: string;
+  text: string;
+  style: SourceTextStyle;
+}
+
+/** A text change object (locked; only `text` and `style` change later). */
+export function makeSourceTextObject(
+  id: string,
+  pageIndex: number,
+  rect: PdfRect,
+  fields: SourceTextFields,
+): SourceTextObject {
+  return {
+    id,
+    kind: "sourceText",
+    pageIndex,
+    rect: normalizePdfRect(rect),
+    locked: true,
+    runId: fields.runId,
+    sourceFingerprint: fields.sourceFingerprint,
+    sourcePageIndex: fields.sourcePageIndex,
+    originalText: fields.originalText,
+    text: fields.text,
+    style: { ...fields.style },
+  };
+}
+
+export interface SetSourceTextInput {
+  /** Combined (editor) page index. */
+  pageIndex: number;
+  run: TextRun;
+  sourceFingerprint: string;
+  /** 0-based page in the source file. */
+  sourcePageIndex: number;
+  text: string;
+  style: SourceTextStyle;
+  /** The committed verdict's `newRect`; the run's own box when absent. */
+  rect?: TextRect | null;
+}
+
+/**
+ * The single reducer action for a commit on a run: NFC text and a style
+ * reduced to real changes; a no-op removes any existing change (B7), anything
+ * else upserts by (pageIndex, runId). `id` is used only when a new object is added.
+ */
+export function setSourceTextAction(input: SetSourceTextInput, id: string): EditAction {
+  const text = normaliseTyped(input.text);
+  const style = normaliseStyle(input.run, input.style);
+  if (isNoOpEdit(input.run, text, style)) {
+    return { type: "REMOVE_SOURCE_TEXT", pageIndex: input.pageIndex, runId: input.run.id };
+  }
+  return {
+    type: "UPSERT_SOURCE_TEXT",
+    object: makeSourceTextObject(id, input.pageIndex, input.rect ?? input.run.rect, {
+      runId: input.run.id,
+      sourceFingerprint: input.sourceFingerprint,
+      sourcePageIndex: input.sourcePageIndex,
+      originalText: input.run.text,
+      text,
+      style,
+    }),
+  };
 }
 
 /** Helper to build a draft redaction object (black fill, no label). */

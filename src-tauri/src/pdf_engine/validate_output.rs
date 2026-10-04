@@ -232,6 +232,20 @@ pub fn validate_staged_pdf(
     staged: &Path,
     snapshot: &OutputSnapshot,
     cancel: Option<&AtomicBool>,
+    run_check: impl FnMut(&[String]) -> Result<(i32, String), AppError>,
+) -> Result<ValidationResult, AppError> {
+    validate_staged_pdf_with_alternatives(staged, snapshot, &[], cancel, run_check)
+}
+
+/// [`validate_staged_pdf`] where page `i` may also match `alternatives[i]`: the digest of its
+/// content parts as qpdf joins them into an overlay Form (a `\n` after a part that lacks one),
+/// which differs from lopdf's separator-less `get_page_content` digest (SPEC §B.1, V1).
+/// `None` (or a missing entry) keeps the single expected digest.
+pub fn validate_staged_pdf_with_alternatives(
+    staged: &Path,
+    snapshot: &OutputSnapshot,
+    alternatives: &[Option<ContentDigest>],
+    cancel: Option<&AtomicBool>,
     mut run_check: impl FnMut(&[String]) -> Result<(i32, String), AppError>,
 ) -> Result<ValidationResult, AppError> {
     abort_if_cancelled(staged, cancel)?;
@@ -326,7 +340,11 @@ pub fn validate_staged_pdf(
             ));
         }
         let candidates = dest_page_digests(&doc, id);
-        if !candidates.iter().any(|d| *d == expected.content_digest) {
+        let alternative = alternatives.get(i).copied().flatten();
+        if !candidates
+            .iter()
+            .any(|d| *d == expected.content_digest || Some(*d) == alternative)
+        {
             return Err(fatal_staged(
                 staged,
                 format!("Page {page_no} content does not match the source."),
@@ -940,5 +958,117 @@ mod tests {
             b"OLD-DEST",
             "R1b: gate must not publish; dest bytes must stay OLD"
         );
+    }
+
+    /// A one-page PDF whose content is `parts` (separate streams, no trailing newlines).
+    fn write_parts_page(path: &Path, parts: &[&[u8]]) {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let ids: Vec<Object> = parts
+            .iter()
+            .map(|p| {
+                doc.add_object(Object::Stream(Stream::new(Dictionary::new(), p.to_vec())))
+                    .into()
+            })
+            .collect();
+        let mut page = Dictionary::new();
+        page.set("Type", "Page");
+        page.set("Parent", pages_id);
+        page.set("MediaBox", box_obj([0, 0, 612, 792]));
+        page.set("Contents", Object::Array(ids));
+        let page_id = doc.add_object(Object::Dictionary(page));
+        let mut pages = Dictionary::new();
+        pages.set("Type", "Pages");
+        pages.set("Kids", vec![page_id.into()]);
+        pages.set("Count", 1);
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", "Catalog");
+        catalog.set("Pages", pages_id);
+        let catalog_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", catalog_id);
+        doc.save(path).expect("write parts fixture");
+    }
+
+    /// VO-01: qpdf's overlay wraps a two-part page into one Form whose data is the parts joined
+    /// with a "\n" after the first (it lacks one). #34's plain digest misses it; the alternative
+    /// digest (`qpdf_join`) accepts it; one changed byte still fails; no alternative = old result.
+    #[test]
+    fn vo_01_overlay_wrapper_of_a_split_page_matches_the_alternative_digest() {
+        use crate::pdf_engine::text_edit::content::qpdf_join;
+        let Some(engines) = crate::pdf_engine::text_edit::testkit::engines_or_skip("vo_01") else {
+            return;
+        };
+        let scratch = Scratch::new("vo01");
+        let run_check = |args: &[String]| -> Result<(i32, String), AppError> {
+            let out = std::process::Command::new(&engines.qpdf)
+                .args(args)
+                .output()
+                .map_err(|e| AppError::io("qpdf --check", e))?;
+            Ok((
+                out.status.code().unwrap_or(2),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            ))
+        };
+        let overlay = |parts: &[&[u8]], name: &str| -> PathBuf {
+            let src = scratch.path().join(format!("{name}-src.pdf"));
+            let blank = scratch.path().join(format!("{name}-blank.pdf"));
+            let staged = scratch.path().join(format!("{name}-staged.pdf"));
+            write_parts_page(&src, parts);
+            write_parts_page(&blank, &[b""]);
+            let out = std::process::Command::new(&engines.qpdf)
+                .arg(&src)
+                .arg("--overlay")
+                .arg(&blank)
+                .arg("--")
+                .arg(&staged)
+                .output()
+                .expect("qpdf --overlay");
+            assert!(matches!(out.status.code(), Some(0 | 3)), "{out:?}");
+            staged
+        };
+        let parts: [&[u8]; 2] = [
+            b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET",
+            b"BT /F1 12 Tf 72 700 Td (World) Tj ET",
+        ];
+        let plain = parts.concat();
+        let joined = qpdf_join(&parts);
+        assert_ne!(
+            plain, joined,
+            "VO-01: the first part lacks a trailing newline"
+        );
+        let snapshot = OutputSnapshot {
+            pages: vec![PageSnapshot {
+                content_digest: content_digest(&plain),
+                ..letter_page()
+            }],
+            catalog: empty_catalog(),
+        };
+        let alt = [Some(content_digest(&joined))];
+
+        let staged = overlay(&parts, "honest");
+        let without = validate_staged_pdf(&staged, &snapshot, None, run_check);
+        assert!(
+            without.is_err(),
+            "VO-01: #34 alone refuses the honest wrapper"
+        );
+        let staged = overlay(&parts, "honest2");
+        let with = validate_staged_pdf_with_alternatives(&staged, &snapshot, &alt, None, run_check);
+        assert!(
+            with.is_ok(),
+            "VO-01: the alternative digest accepts it: {with:?}"
+        );
+        let staged = overlay(&parts, "none");
+        let none =
+            validate_staged_pdf_with_alternatives(&staged, &snapshot, &[None], None, run_check);
+        assert!(none.is_err(), "VO-01: alt None keeps the old behaviour");
+
+        let changed: [&[u8]; 2] = [
+            b"BT /F1 12 Tf 72 720 Td (Hellp) Tj ET",
+            b"BT /F1 12 Tf 72 700 Td (World) Tj ET",
+        ];
+        let staged = overlay(&changed, "changed");
+        let r = validate_staged_pdf_with_alternatives(&staged, &snapshot, &alt, None, run_check);
+        assert!(r.is_err(), "VO-01: one changed byte still fails");
     }
 }

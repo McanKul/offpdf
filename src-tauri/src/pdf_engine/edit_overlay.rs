@@ -18,10 +18,10 @@ use crate::pdf_engine::edit_redact::{
     verify_redaction, RedactRegion,
 };
 use crate::pdf_engine::validate_output::{
-    catalog_flags_from_doc, content_digest, validate_staged_pdf, ContentDigest, OutputSnapshot,
-    PageSnapshot,
+    catalog_flags_from_doc, content_digest, validate_staged_pdf,
+    validate_staged_pdf_with_alternatives, ContentDigest, OutputSnapshot, PageSnapshot,
 };
-use crate::pdf_engine::{crop, edit_image, qpdf};
+use crate::pdf_engine::{crop, edit_image, qpdf, text_edit};
 use crate::utils::process::{run_qpdf, run_tracked};
 use crate::utils::safe_output;
 use crate::utils::temp;
@@ -286,6 +286,23 @@ pub enum EditObjectIn {
         fill: Option<String>,
         label: Option<String>,
     },
+    /// A change of existing text (Edit text): applied to the source before assembly, never painted.
+    SourceText {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        #[serde(rename = "sourcePageIndex")]
+        source_page_index: u32,
+        #[serde(rename = "runId")]
+        run_id: String,
+        #[serde(rename = "sourceFingerprint")]
+        source_fingerprint: String,
+        #[serde(rename = "originalText")]
+        original_text: String,
+        text: String,
+        #[serde(default)]
+        style: text_edit::rewrite::SourceTextStyleIn,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -332,7 +349,8 @@ impl EditObjectIn {
             | Self::Underline { page_index, .. }
             | Self::Strikeout { page_index, .. }
             | Self::MarkupInk { page_index, .. }
-            | Self::Redact { page_index, .. } => *page_index,
+            | Self::Redact { page_index, .. }
+            | Self::SourceText { page_index, .. } => *page_index,
         }
     }
     fn opacity(&self) -> f64 {
@@ -340,7 +358,7 @@ impl EditObjectIn {
             return 1.0;
         }
         let o = match self {
-            Self::Link { .. } | Self::Redact { .. } => return 1.0,
+            Self::Link { .. } | Self::Redact { .. } | Self::SourceText { .. } => return 1.0,
             Self::Rect { opacity, .. }
             | Self::Ellipse { opacity, .. }
             | Self::Triangle { opacity, .. }
@@ -364,7 +382,7 @@ impl EditObjectIn {
 
     fn object_rotate(&self) -> f64 {
         match self {
-            Self::Link { .. } | Self::Redact { .. } => 0.0,
+            Self::Link { .. } | Self::Redact { .. } | Self::SourceText { .. } => 0.0,
             Self::Rect { object_rotate, .. }
             | Self::Ellipse { object_rotate, .. }
             | Self::Triangle { object_rotate, .. }
@@ -386,7 +404,10 @@ impl EditObjectIn {
     }
 
     fn triggers_overlay(&self) -> bool {
-        !matches!(self, Self::Link { .. } | Self::Redact { .. })
+        !matches!(
+            self,
+            Self::Link { .. } | Self::Redact { .. } | Self::SourceText { .. }
+        )
     }
 
     fn overlay_aabb(&self, vis: [f64; 4], page_rot: i64) -> (f64, f64, f64, f64) {
@@ -433,7 +454,8 @@ impl EditObjectIn {
             | Self::Underline { rect, .. }
             | Self::Strikeout { rect, .. }
             | Self::MarkupInk { rect, .. }
-            | Self::Redact { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
+            | Self::Redact { rect, .. }
+            | Self::SourceText { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
         }
     }
 }
@@ -1040,10 +1062,15 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
     for o in &doc.objects {
         if matches!(o, EditObjectIn::Link { .. }) {
             links += 1;
-        } else {
+        } else if !matches!(o, EditObjectIn::SourceText { .. }) {
             paint += 1;
         }
     }
+    let redact_pages: Vec<u32> = redact_regions_from_doc(doc)
+        .iter()
+        .map(|r| r.page_index)
+        .collect();
+    text_edit::export::validate_specs(&text_edit::export::specs_of(doc), &redact_pages)?;
     if paint > MAX_OBJECTS {
         return Err(AppError::new(
             "TOO_MANY_OBJECTS",
@@ -1101,6 +1128,8 @@ struct OverlayPageGeom {
     rotate: i64,
     user_unit: f64,
     content_digest: ContentDigest,
+    /// Digest of the parts as qpdf joins them into its overlay Form, when that differs.
+    alt_content_digest: Option<ContentDigest>,
 }
 
 fn boxes_near(a: [f64; 4], b: [f64; 4]) -> bool {
@@ -1255,7 +1284,7 @@ fn overlay_page_box(vis: [f64; 4], rotate: i64) -> [f64; 4] {
 
 /// Expand a qpdf-style page spec into 1-based numbers, preserving order.
 /// Unlike `parse_pages`, this does not sort or dedupe.
-fn expand_page_spec(spec: &str, n: u32) -> Result<Vec<u32>, AppError> {
+pub(crate) fn expand_page_spec(spec: &str, n: u32) -> Result<Vec<u32>, AppError> {
     let trimmed = spec.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("all") || trimmed == "1-z" {
         return Ok((1..=n).collect());
@@ -1313,8 +1342,10 @@ fn expand_page_spec(spec: &str, n: u32) -> Result<Vec<u32>, AppError> {
     Ok(out)
 }
 
+/// `with_alts`: an overlay will wrap the pages, so qpdf's join digest may be expected (#34).
 fn collect_source_pages(
     groups: &[PageGroup],
+    with_alts: bool,
 ) -> Result<(Vec<OverlayPageGeom>, Vec<u32>), AppError> {
     let mut docs: HashMap<String, Document> = HashMap::new();
     let mut geoms = Vec::new();
@@ -1340,7 +1371,12 @@ fn collect_source_pages(
             let content = doc.get_page_content(id).map_err(|e| {
                 AppError::engine_failed(format!("Could not read page content: {e}"))
             })?;
+            let alt_content_digest = (with_alts && doc.get_page_contents(id).len() > 1)
+                .then(|| text_edit::export::qpdf_joined_digest(doc, id))
+                .flatten()
+                .filter(|d| *d != content_digest(&content));
             geoms.push(OverlayPageGeom {
+                alt_content_digest,
                 visible: crop::visible_box(doc, id),
                 media: crop::media_box(doc, id),
                 crop: crop::crop_box(doc, id),
@@ -1683,7 +1719,7 @@ where
 }
 
 /// Same as [`export_edit_pdf_with_runner`], with an explicit `qpdf --check` binary.
-fn export_edit_pdf_with_check_exe<F>(
+pub(crate) fn export_edit_pdf_with_check_exe<F>(
     groups: &[PageGroup],
     output: &str,
     document: &EditDocumentIn,
@@ -1723,21 +1759,31 @@ where
     let overlay_str = overlay.to_string_lossy().to_string();
     let mut gate_passed = false;
     let result = (|| -> Result<(Vec<String>, Vec<String>), AppError> {
+        // Text changes: proven edited copies of their sources replace them before assembly.
+        let opts = text_edit::engines::RunOpts {
+            handle,
+            cancel,
+            ..Default::default()
+        };
+        let text = text_edit::export::prepare_save(
+            document, groups, work, qpdf_check, app, unique, &opts,
+        )?;
+        let content_groups = text.as_ref().map_or(groups, |(_, p)| &p.content_groups[..]);
         let extra: Vec<&str> = extra_group_paths(groups);
         extra_files_have_fields(&extra)?;
-        let (geoms, counts) = collect_source_pages(groups)?;
+        let has_paint = document.objects.iter().any(|o| o.triggers_overlay());
+        let (geoms, counts) = collect_source_pages(content_groups, has_paint)?;
         if geoms.is_empty() {
             return Err(AppError::new("NO_PAGES", "No pages", "Add a PDF first."));
         }
         let links = session_links_from_doc(document);
         let redacts = redact_regions_from_doc(document);
         let has_redact = !redacts.is_empty();
-        let has_paint = document.objects.iter().any(|o| o.triggers_overlay());
         let mut redact_probes: Vec<Vec<u8>> = Vec::new();
         let mut flatten_form_done = false;
         let mut flatten_annots_done = false;
         if has_redact {
-            assemble_to_tmp(groups, &counts, &tmp, &tmp_str, &mut run)?;
+            assemble_to_tmp(content_groups, &counts, &tmp, &tmp_str, &mut run)?;
             // Burn flattened /AP into page content *before* rasterize. A
             // flatten after apply_redactions would paint leftover field text
             // on top of /ImR.
@@ -1776,7 +1822,7 @@ where
                 .map_err(|e| AppError::io("Could not read the editor font.", e))?;
             let font = FontInfo::parse(font_bytes)?;
             write_overlay_pdf(&overlay_str, &geoms, document, &font, cancel)?;
-            let (mapped, restore_boxes) = remap_groups_to_visible_box(groups, work)?;
+            let (mapped, restore_boxes) = remap_groups_to_visible_box(content_groups, work)?;
             let args = build_edit_overlay_args(&mapped, &counts, &overlay_str, &tmp_str)?;
             run(&args)?;
             if restore_boxes {
@@ -1788,7 +1834,7 @@ where
                 safe_output::replace_file(&cleaned, &tmp)?;
             }
         } else {
-            assemble_to_tmp(groups, &counts, &tmp, &tmp_str, &mut run)?;
+            assemble_to_tmp(content_groups, &counts, &tmp, &tmp_str, &mut run)?;
         }
         let expected_annots = expected_dest_has_annots(&tmp, &links)?;
         if !incomplete_source_paths.is_empty() && !links.is_empty() {
@@ -1806,13 +1852,17 @@ where
             .flatten()
             .collect();
         // Skip dest_has load when no complete source remains (e.g. 400 MiB
-        // unlistable file). L7: a complete empty edit still deletes supported
-        // links. Stamp/markup/form-only saves preserve leftover links, while an
-        // annotation-flatten-only save leaves them for qpdf to copy through.
+        // unlistable file). L7: a complete empty edit (text changes alone count as
+        // empty) still deletes supported links. Stamp/markup/form-only saves preserve
+        // leftover links, while an annotation-flatten-only save leaves them for qpdf to
+        // copy through.
         let rewrite_links = !dest_pages.is_empty()
             && (!links.is_empty()
                 || (!flatten_annotations
-                    && document.objects.is_empty()
+                    && document
+                        .objects
+                        .iter()
+                        .all(|o| matches!(o, EditObjectIn::SourceText { .. }))
                     && form_values.is_empty()
                     && !flatten_form
                     && dest_has_supported_links(&tmp)?));
@@ -1854,9 +1904,25 @@ where
             warnings.extend(verify_redaction(&tmp, &probe_refs, &redacts)?);
             update_redacted_digests(&tmp, &mut snapshot, &redacts)?;
         }
-        let vr = validate_staged_pdf(&tmp, &snapshot, cancel, |args| {
-            run_qpdf_check_argv(qpdf_check, args, handle)
-        })?;
+        if let Some((engines, prepared)) = &text {
+            let digests: Vec<ContentDigest> =
+                snapshot.pages.iter().map(|p| p.content_digest).collect();
+            if !prepared.proofs.is_empty() {
+                text_edit::export::verify_final(&tmp, prepared, &digests, engines, &opts)?;
+            }
+            warnings.extend(prepared.warnings.iter().cloned());
+        }
+        // A redacted page's content is new: only its re-read digest is expected.
+        let redacted: HashSet<u32> = redacts.iter().map(|r| r.page_index).collect();
+        let alts: Vec<Option<ContentDigest>> = (0u32..)
+            .zip(&geoms)
+            .map(|(i, g)| g.alt_content_digest.filter(|_| !redacted.contains(&i)))
+            .collect();
+        let check = |args: &[String]| run_qpdf_check_argv(qpdf_check, args, handle);
+        let vr = match alts.iter().any(Option::is_some) {
+            true => validate_staged_pdf_with_alternatives(&tmp, &snapshot, &alts, cancel, check)?,
+            false => validate_staged_pdf(&tmp, &snapshot, cancel, check)?,
+        };
         warnings.extend(vr.warnings);
         gate_passed = true;
         safe_output::replace_file(&tmp, dest)?;
@@ -2190,9 +2256,7 @@ fn write_overlay_pdf(
             if obj.page_index() as usize != pi {
                 continue;
             }
-            if matches!(obj, EditObjectIn::Link { .. } | EditObjectIn::Redact { .. })
-                || obj.is_markup()
-            {
+            if !obj.triggers_overlay() || obj.is_markup() {
                 continue;
             }
             let op100 = (obj.opacity() * 100.0).round() as i32;
@@ -2430,7 +2494,8 @@ fn write_overlay_pdf(
                 | EditObjectIn::Underline { .. }
                 | EditObjectIn::Strikeout { .. }
                 | EditObjectIn::MarkupInk { .. }
-                | EditObjectIn::Redact { .. } => {}
+                | EditObjectIn::Redact { .. }
+                | EditObjectIn::SourceText { .. } => {}
             }
             if rotated {
                 content.push_str("Q\n");
@@ -2851,6 +2916,7 @@ mod tests {
             rotate: 0,
             user_unit: 1.0,
             content_digest: content_digest(b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET"),
+            alt_content_digest: None,
         }
     }
 
@@ -3299,6 +3365,25 @@ mod tests {
         .expect_err("hard-linked dest must be rejected");
         assert_eq!(err.code, "OVERWRITE");
         assert_eq!(std::fs::read(&src).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// review-T5 L3: qpdf's join digest (#34's alternative) is computed only when an overlay will
+    /// wrap the pages; other saves expect the plain digest alone.
+    #[test]
+    fn alternative_digests_only_for_overlay_saves() {
+        use crate::pdf_engine::text_edit::testkit::producers::{DocBuilder, PageSpec};
+        let mut d = DocBuilder::new();
+        d.page(PageSpec::parts(&[b"q Q", b"q Q"], ""));
+        let root = std::env::temp_dir().join(format!("offpdf-alt-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let src = root.join("split.pdf");
+        std::fs::write(&src, d.build()).unwrap();
+        let groups = [g(src.to_str().unwrap(), "1")];
+        let (overlay, _) = collect_source_pages(&groups, true).unwrap();
+        let (plain, _) = collect_source_pages(&groups, false).unwrap();
+        assert!(overlay[0].alt_content_digest.is_some(), "overlay");
+        assert!(plain[0].alt_content_digest.is_none(), "no overlay");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
