@@ -5,10 +5,11 @@
 //! real backend is added later, keep the Fake injectable so tests still do
 //! not need weights.
 //!
-//! No Tauri commands. Generate is UTF-8 prompt in, UTF-8 text out — not a
-//! document path and not file bytes.
+//! Generate is UTF-8 prompt in, UTF-8 text out — not a document path and not
+//! file bytes. Settings IPC lives in `commands/ai.rs`, not here.
 
 mod fake;
+pub(crate) mod lifecycle;
 pub mod store;
 
 use crate::error::AppError;

@@ -1,8 +1,12 @@
 //! Content-addressed on-disk model store. Injected root; no HTTP.
 //!
 //! Layout: `<root>/{blobs,manifests,staging}/`. Identity is SHA-256.
-//! Ready means a manifest and blob are both present and the blob re-hashes
-//! to the checksum. Leftover `staging/` is never ready.
+//! `get` / `loadable_path` treat an entry as ready when the blob re-hashes to
+//! the checksum. `list_ready` trusts recorded size (file exists,
+//! `metadata.len() == size`) and does not SHA-256 every blob. Leftover
+//! `staging/` is never ready. `open` sweeps leftover `staging/install-*`
+//! except this process's `install-{pid}-*` (mid-import `open` must not
+//! unlink live staging).
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -58,6 +62,7 @@ impl ModelStore {
         fs::create_dir_all(store.blobs_dir())?;
         fs::create_dir_all(store.manifests_dir())?;
         fs::create_dir_all(store.staging_dir())?;
+        store.sweep_install_staging();
         Ok(store)
     }
 
@@ -97,6 +102,9 @@ impl ModelStore {
             AppError::ai_model_invalid()
                 .with_details(format!("could not read {}: {err}", path.display()))
         })?;
+        if let Ok(meta) = file.metadata() {
+            ensure_disk_space(&self.staging_dir(), meta.len())?;
+        }
         self.install_from_reader(&mut file, expected_sha256)
     }
 
@@ -110,7 +118,9 @@ impl ModelStore {
             Err(err) => return Err(err.into()),
         };
         for entry in dir {
-            let entry = entry?;
+            let Ok(entry) = entry else {
+                continue;
+            };
             let path = entry.path();
             if !path.is_file() {
                 continue;
@@ -124,7 +134,7 @@ impl ModelStore {
             if validate_checksum(stem).is_err() {
                 continue;
             }
-            if let Some(manifest) = self.ready_manifest(stem)? {
+            if let Some(manifest) = self.listed_ready_manifest(stem) {
                 ready.push(manifest);
             }
         }
@@ -220,12 +230,21 @@ impl ModelStore {
         }
         let json = serde_json::to_string(manifest)
             .map_err(|err| AppError::ai_model_invalid().with_details(err.to_string()))?;
-        let staged_manifest = staged_blob
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("manifest.json");
-        fs::write(&staged_manifest, json.as_bytes())?;
-        fs::rename(&staged_manifest, &dest_manifest)?;
+        // Sibling temp + replace: Windows cannot rename over an existing dest.
+        let tmp_manifest = self
+            .manifests_dir()
+            .join(format!("{}.json.tmp", manifest.checksum));
+        fs::write(&tmp_manifest, json.as_bytes())?;
+        if dest_manifest.exists() {
+            if let Err(err) = fs::remove_file(&dest_manifest) {
+                let _ = fs::remove_file(&tmp_manifest);
+                return Err(err.into());
+            }
+        }
+        if let Err(err) = fs::rename(&tmp_manifest, &dest_manifest) {
+            let _ = fs::remove_file(&tmp_manifest);
+            return Err(err.into());
+        }
         Ok(())
     }
 
@@ -250,6 +269,38 @@ impl ModelStore {
             return Ok(None);
         }
         Ok(Some(manifest))
+    }
+
+    /// Size-only ready check for listing. Unreadable blobs are skipped.
+    fn listed_ready_manifest(&self, checksum: &str) -> Option<ModelManifest> {
+        let man_path = self.manifest_path(checksum);
+        if !man_path.is_file() {
+            return None;
+        }
+        let json = fs::read_to_string(&man_path).ok()?;
+        let manifest = ModelManifest::parse(&json).ok()?;
+        if manifest.checksum != checksum {
+            return None;
+        }
+        if !blob_size_matches(&self.blob_path(checksum), manifest.size) {
+            return None;
+        }
+        Some(manifest)
+    }
+
+    fn sweep_install_staging(&self) {
+        let Ok(entries) = fs::read_dir(self.staging_dir()) else {
+            return;
+        };
+        let live_prefix = format!("install-{}-", std::process::id());
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() && name.starts_with("install-") && !name.starts_with(&live_prefix) {
+                let _ = fs::remove_dir_all(&path);
+            }
+        }
     }
 
     fn blob_matches(&self, path: &Path, manifest: &ModelManifest) -> Result<bool, AppError> {
@@ -284,6 +335,24 @@ fn validate_checksum(value: &str) -> Result<String, AppError> {
         Err(AppError::ai_model_invalid()
             .with_details("checksum must be 64 lowercase hex characters"))
     }
+}
+
+fn blob_size_matches(path: &Path, size: u64) -> bool {
+    match fs::metadata(path) {
+        Ok(meta) => meta.is_file() && meta.len() == size,
+        Err(_) => false,
+    }
+}
+
+fn ensure_disk_space(dest: &Path, required: u64) -> Result<(), AppError> {
+    if required == 0 {
+        return Ok(());
+    }
+    let info = crate::utils::disk::check(&dest.to_string_lossy(), required)?;
+    if !info.sufficient {
+        return Err(AppError::no_disk_space());
+    }
+    Ok(())
 }
 
 fn write_hashed(src: &mut impl Read, dest: &Path) -> Result<(u64, String), AppError> {

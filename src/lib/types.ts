@@ -192,6 +192,46 @@ export interface RecentJob {
   error?: string;
 }
 
+/** Ready local-model manifest (Rust `ModelManifest`, camelCase on the wire). */
+export interface ModelManifest {
+  schemaVersion: number;
+  size: number;
+  license: string;
+  runtimeCompat: string;
+  checksum: string;
+}
+
+/** Preview facts for a chosen file before import (Rust `ModelPreviewDto`). */
+export interface ModelPreview {
+  size: number;
+  sha256: string;
+  license: string;
+  runtimeCompat: string;
+  location: string;
+  compatibility: string;
+}
+
+/** Backend health from `ai_list_models` (Rust `ModelHealthDto`). */
+export interface ModelHealth {
+  ok: boolean;
+  backendId: string;
+}
+
+/** Store + Fake status. Restart lists ready blobs and Unloaded Fake. */
+export interface ModelSetupSnapshot {
+  ready: ModelManifest[];
+  backendStatus: "Unloaded" | "Ready" | string;
+  health: ModelHealth;
+  selectedChecksum: string | null;
+  storeRoot: string;
+}
+
+/** Result of `ai_remove_model` (Rust `ModelRemoveResultDto`). */
+export interface ModelRemoveResult {
+  checksum: string;
+  recoveredBytes: number;
+}
+
 /** Type guard: is this value an AppError coming back from `invoke`? */
 export function isAppError(value: unknown): value is AppError {
   if (typeof value !== "object" || value === null) {

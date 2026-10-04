@@ -39,6 +39,9 @@ computer only**. This **never includes PDF content**:
   local output paths, so you can see and reopen recent results.
 - **Last output folder** — so the next save defaults to a sensible location.
 - **Theme** — your light/dark preference.
+- **Imported model files** — optional local model blobs you import from a
+  file on this computer, stored under the app data folder. They never
+  leave the machine.
 
 None of this is transmitted anywhere.
 

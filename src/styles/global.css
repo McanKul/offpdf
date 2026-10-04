@@ -991,6 +991,35 @@ button {
 .setting-row__label { font-weight: 600; }
 .setting-row__desc { color: var(--text-muted); font-size: 12.5px; margin-top: 2px; }
 
+.model-facts {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+.model-facts__row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 12px;
+  font-size: 13px;
+}
+.model-facts__row dt { color: var(--text-muted); }
+.model-facts__row dd { margin: 0; word-break: break-all; }
+.model-ready-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+.model-ready {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.model-ready__size { color: var(--text-muted); font-weight: 400; }
+.model-actions { padding-top: 4px; }
+
 /* =========================================================================
    Page thumbnails / visual picker
    ========================================================================= */
