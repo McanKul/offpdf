@@ -63,8 +63,15 @@ jobs:
             librsvg2-dev \
             libwebkit2gtk-4.1-dev \
             patchelf \
+            poppler-utils \
             qpdf \
             wget
+
+      - name: Show PDF engine versions
+        run: |
+          qpdf --version | head -n 1
+          pdftotext -v 2>&1 | head -n 1
+          pdftoppm -v 2>&1 | head -n 1
 
       - name: Use stable Rust
         run: rustup default stable
@@ -79,4 +86,18 @@ jobs:
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
       - name: Test Rust backend
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+        shell: bash
+        env:
+          # Edit text tests fail instead of skipping when qpdf or Poppler is missing;
+          # the grep below also catches the older tests' `skip:` lines.
+          OFFPDF_REQUIRE_ENGINES: "1"
+        run: |
+          set -o pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture 2>&1 | tee rust-test.log
+          skips=$(grep -c 'skip:' rust-test.log || true)
+          echo "skip lines: $skips"
+          if [ "$skips" -ne 0 ]; then
+            grep 'skip:' rust-test.log
+            echo "::error::Rust tests skipped because a PDF engine was missing"
+            exit 1
+          fi
