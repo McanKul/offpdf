@@ -80,6 +80,9 @@ be filled when several files are combined; and Edit PDF does not rewrite text
 or images already embedded in a source page. New text and images are added as
 overlays instead.
 
+The investigation behind that boundary is recorded in the
+[source-content editing decision](./docs/source-editing-decision.md).
+
 ## Downloads
 
 | Platform | Package | Status |
