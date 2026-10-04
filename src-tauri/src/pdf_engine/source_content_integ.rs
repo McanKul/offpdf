@@ -723,6 +723,38 @@ fn classify_oversize_sparse_file_is_file_too_large() {
     );
 }
 
+#[test]
+fn classify_rejects_graphics_state_stack_overflow() {
+    let scratch = Scratch::new("q-overflow");
+    let path = scratch.file("q-overflow.pdf");
+    let mut content = b"q\n".repeat(65);
+    content.extend_from_slice(b"BT /F1 12 Tf 72 720 Td (Hidden state) Tj ET\n");
+    write_helvetica_page(&path, &content);
+    expect_err_code(
+        classify_source_content(&path),
+        "MALFORMED_CONTENT",
+        "CLASSIFY-BOUNDS: graphics state stack overflow",
+    );
+}
+
+#[test]
+fn classify_rejects_filtered_stream_when_decompression_fails() {
+    let scratch = Scratch::new("bad-filter");
+    let path = scratch.file("bad-filter.pdf");
+    let mut dict = Dictionary::new();
+    dict.set("Filter", "FlateDecode");
+    write_helvetica_page_with_stream_dict(
+        &path,
+        b"BT /F1 12 Tf 72 720 Td (Raw fallback must not run) Tj ET\n",
+        dict,
+    );
+    expect_err_code(
+        classify_source_content(&path),
+        "MALFORMED_CONTENT",
+        "CLASSIFY-BOUNDS: invalid filtered stream",
+    );
+}
+
 // --- PR 97 review fold (R1–R5) ---------------------------------------------
 // Extra PDFs are generated in temp with lopdf. Do not grow fixtures/source-edit/.
 
@@ -787,12 +819,13 @@ fn helvetica_resources() -> Dictionary {
 }
 
 fn write_helvetica_page(path: &Path, content: &[u8]) {
+    write_helvetica_page_with_stream_dict(path, content, Dictionary::new());
+}
+
+fn write_helvetica_page_with_stream_dict(path: &Path, content: &[u8], stream_dict: Dictionary) {
     let mut doc = Document::with_version("1.7");
     let pages_id = doc.new_object_id();
-    let content_id = doc.add_object(Object::Stream(Stream::new(
-        Dictionary::new(),
-        content.to_vec(),
-    )));
+    let content_id = doc.add_object(Object::Stream(Stream::new(stream_dict, content.to_vec())));
     let mut page = Dictionary::new();
     page.set("Type", "Page");
     page.set("Parent", pages_id);

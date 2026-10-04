@@ -5,13 +5,14 @@
 //!
 //! Research prototype only; no Tauri command or UI invokes this module. The
 //! source is read once through a hard cap, then both fingerprinted and parsed
-//! from that same snapshot. Decoded-size checks still run after allocation,
-//! and font/geometry support is incomplete. Complete #33's remaining resource
-//! bounds and compatibility evaluation before exposing this API to user files
-//! or enabling editing.
+//! from that same snapshot. Content streams are decoded through a hard output
+//! cap. Bounded object loading/operator parsing and font/geometry support are
+//! still incomplete. Complete #33's remaining resource bounds and compatibility
+//! evaluation before exposing this API to user files or enabling editing.
 
 use crate::error::AppError;
 use crate::pdf_engine::crop;
+use crate::pdf_engine::source_content_decode::{self, DecodeError};
 use lopdf::{content::Content, Dictionary, Document, Object, ObjectId, Stream};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -334,9 +335,12 @@ impl Walker<'_> {
         for (op_index, op) in ops.iter().enumerate() {
             match op.operator.as_str() {
                 "q" => {
-                    if stack.len() < MAX_GSTATE_STACK {
-                        stack.push(gs.clone());
+                    if stack.len() >= MAX_GSTATE_STACK {
+                        return Err(malformed_content(
+                            "Graphics state nesting is deeper than 64 levels.",
+                        ));
                     }
+                    stack.push(gs.clone());
                 }
                 "Q" => {
                     if let Some(prev) = stack.pop() {
@@ -984,16 +988,15 @@ fn matrix_from_dict(dict: &Dictionary) -> [f64; 6] {
 }
 
 fn decompress_stream(stream: &Stream) -> Result<Vec<u8>, AppError> {
-    let data = match stream.decompressed_content() {
-        Ok(d) => d,
-        Err(_) => stream.content.clone(),
-    };
-    if data.len() > MAX_STREAM_BYTES {
-        return Err(malformed_content(
-            "A content stream is larger than 32 MB decompressed.",
-        ));
-    }
-    Ok(data)
+    source_content_decode::decode_stream(stream, MAX_STREAM_BYTES).map_err(|error| match error {
+        DecodeError::UnsupportedFilter(name) => unsupported_filter(&name),
+        DecodeError::Corrupt => {
+            malformed_content("A filtered content stream could not be decompressed.")
+        }
+        DecodeError::TooLarge => {
+            malformed_content("A content stream is larger than 32 MB decompressed.")
+        }
+    })
 }
 
 fn inspect_text(
@@ -1726,6 +1729,15 @@ fn malformed_content(message: impl Into<String>) -> AppError {
         message,
     )
     .with_suggestion("Open the file in a PDF editor that can repair it, or use a different PDF.")
+}
+
+fn unsupported_filter(name: &str) -> AppError {
+    AppError::new(
+        "UNSUPPORTED_FILTER",
+        "This PDF uses an unsupported content filter",
+        format!("The source classifier cannot safely decode {name}."),
+    )
+    .with_suggestion("Use a PDF editor to rewrite the file, then try again.")
 }
 
 fn encrypted() -> AppError {
