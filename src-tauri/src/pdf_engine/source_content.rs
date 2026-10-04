@@ -3,15 +3,19 @@
 //! Walks page streams and Form XObjects on the original source path. Does not
 //! write a dest, call `Document::replace_text`, or apply page `/Rotate`.
 //!
-//! Research prototype only; no Tauri command or UI invokes this module.
-//! Decoded-size checks currently run after allocation, and font/geometry
-//! support is incomplete. Complete #33's resource bounds and compatibility
-//! evaluation before exposing this API to user files or enabling editing.
+//! Research prototype only; no Tauri command or UI invokes this module. The
+//! source is read once through a hard cap, then both fingerprinted and parsed
+//! from that same snapshot. Decoded-size checks still run after allocation,
+//! and font/geometry support is incomplete. Complete #33's remaining resource
+//! bounds and compatibility evaluation before exposing this API to user files
+//! or enabling editing.
 
 use crate::error::AppError;
 use crate::pdf_engine::crop;
 use lopdf::{content::Content, Dictionary, Document, Object, ObjectId, Stream};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 
 const FILE_CAP_BYTES: u64 = 400 * 1024 * 1024;
@@ -23,8 +27,18 @@ const MAX_OCCURRENCES: usize = 5_000;
 const MAX_GSTATE_STACK: usize = 64;
 
 const IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-const FNV_PRIME: u64 = 0x100000001b3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceFingerprint([u8; 32]);
+
+impl std::fmt::Display for SourceFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceKind {
@@ -65,36 +79,41 @@ pub fn resolve_source_locator(
     path: &Path,
     locator: &str,
 ) -> Result<SourceOccurrence, AppError> {
-    if !path.is_file() {
-        return Err(AppError::invalid_pdf(&path_str(path)));
-    }
-    let meta = std::fs::metadata(path).map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
-    if meta.len() > FILE_CAP_BYTES {
-        return Err(file_too_large());
-    }
-    let bytes = std::fs::read(path).map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
-    let fp = fnv1a_u64(&bytes);
+    let (doc, fp) = open_source(path)?;
     let loc_fp = parse_locator_fp(locator).ok_or_else(stale)?;
     if loc_fp != fp {
         return Err(stale());
     }
-    classify_source_content(path)?
+    classify_doc(&doc, fp)?
         .into_iter()
         .find(|o| o.locator == locator)
         .ok_or_else(stale)
 }
 
-fn open_source(path: &Path) -> Result<(Document, u64), AppError> {
-    if !path.is_file() {
+fn open_source(path: &Path) -> Result<(Document, SourceFingerprint), AppError> {
+    let file = std::fs::File::open(path).map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
+    let meta = file
+        .metadata()
+        .map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
+    if !meta.is_file() {
         return Err(AppError::invalid_pdf(&path_str(path)));
     }
-    let meta = std::fs::metadata(path).map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
     if meta.len() > FILE_CAP_BYTES {
         return Err(file_too_large());
     }
-    let bytes = std::fs::read(path).map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
-    let fp = fnv1a_u64(&bytes);
-    let doc = Document::load(path).map_err(|e| {
+    let mut bytes = Vec::new();
+    let reserve = usize::try_from(meta.len()).map_err(|_| file_too_large())?;
+    bytes
+        .try_reserve_exact(reserve)
+        .map_err(|_| file_too_large())?;
+    file.take(FILE_CAP_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
+    if bytes.len() as u64 > FILE_CAP_BYTES {
+        return Err(file_too_large());
+    }
+    let fp = SourceFingerprint(Sha256::digest(&bytes).into());
+    let doc = Document::load_mem(&bytes).map_err(|e| {
         AppError::invalid_pdf(&path_str(path)).with_details(format!("lopdf: {e}"))
     })?;
     if doc.is_encrypted() {
@@ -109,7 +128,7 @@ fn open_source(path: &Path) -> Result<(Document, u64), AppError> {
     Ok((doc, fp))
 }
 
-fn classify_doc(doc: &Document, fp: u64) -> Result<Vec<SourceOccurrence>, AppError> {
+fn classify_doc(doc: &Document, fp: SourceFingerprint) -> Result<Vec<SourceOccurrence>, AppError> {
     let mut walker = Walker {
         doc,
         fp,
@@ -132,7 +151,7 @@ fn classify_doc(doc: &Document, fp: u64) -> Result<Vec<SourceOccurrence>, AppErr
 
 struct Walker<'a> {
     doc: &'a Document,
-    fp: u64,
+    fp: SourceFingerprint,
     decoded_total: usize,
     op_count: usize,
     pending: Vec<Pending>,
@@ -1651,17 +1670,8 @@ fn name_is(dict: &Dictionary, key: &[u8], expect: &[u8]) -> bool {
     dict.get(key).ok().and_then(|o| o.as_name().ok()) == Some(expect)
 }
 
-fn fnv1a_u64(bytes: &[u8]) -> u64 {
-    let mut hash = FNV_OFFSET;
-    for byte in bytes {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
 fn encode_locator(
-    fp: u64,
+    fp: SourceFingerprint,
     page_index: u32,
     kind: SourceKind,
     contents_id: ObjectId,
@@ -1673,15 +1683,27 @@ fn encode_locator(
         SourceKind::Image => 1u8,
     };
     format!(
-        "v1:{fp:016x}:{page_index}:{k}:{}:{}:{op_index}:{}:{}",
+        "v2:{fp}:{page_index}:{k}:{}:{}:{op_index}:{}:{}",
         contents_id.0, contents_id.1, object_id.0, object_id.1
     )
 }
 
-fn parse_locator_fp(locator: &str) -> Option<u64> {
-    let rest = locator.strip_prefix("v1:")?;
+fn parse_locator_fp(locator: &str) -> Option<SourceFingerprint> {
+    let rest = locator.strip_prefix("v2:")?;
     let hex = rest.split(':').next()?;
-    u64::from_str_radix(hex, 16).ok()
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return None;
+    }
+    let mut digest = [0u8; 32];
+    for (slot, pair) in digest.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+        let pair = std::str::from_utf8(pair).ok()?;
+        *slot = u8::from_str_radix(pair, 16).ok()?;
+    }
+    Some(SourceFingerprint(digest))
 }
 
 fn path_str(path: &Path) -> String {

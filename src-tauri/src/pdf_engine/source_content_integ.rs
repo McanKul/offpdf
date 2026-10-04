@@ -593,6 +593,36 @@ fn classify_try_edit_is_not_auto_supported() {
 // --- CLASSIFY-STALE ---------------------------------------------------------
 
 #[test]
+fn classify_locators_use_full_sha256_fingerprints() {
+    let hits = classify(&fixture("text-tj.pdf"), "CLASSIFY-FINGERPRINT");
+    let locator = &first_of_kind(&hits, "text", "CLASSIFY-FINGERPRINT").locator;
+    let mut parts = locator.split(':');
+    assert_eq!(parts.next(), Some("v2"));
+    let digest = parts.next().expect("v2 locator has a fingerprint");
+    assert_eq!(digest.len(), 64, "fingerprint must contain all 256 bits");
+    assert!(
+        digest
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')),
+        "fingerprint must be canonical lowercase hex"
+    );
+}
+
+#[test]
+fn legacy_or_malformed_locators_fail_closed_as_stale() {
+    let src = fixture("text-tj.pdf");
+    for locator in [
+        "v1:0000000000000000:0:0:1:0:0:1:0",
+        "v2:abc:0:0:1:0:0:1:0",
+        "v2:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:0:0:1:0:0:1:0",
+    ] {
+        let err = resolve_source_locator(&src, locator)
+            .expect_err("non-v2 or non-canonical fingerprints must fail closed");
+        assert_eq!(err.code, "STALE");
+    }
+}
+
+#[test]
 fn classify_mutated_copy_locator_is_stale() {
     let src = fixture("text-tj.pdf");
     let hits = classify(&src, "CLASSIFY-STALE");
