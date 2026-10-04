@@ -1,9 +1,10 @@
 //! Resource bounds applied before lopdf parses source content.
 //!
-//! This is deliberately limited to object values and object streams. Raw xref
-//! validation and bounded content-operator parsing are separate follow-up work.
+//! This bounds raw cross-reference data, object values, and object streams.
+//! Bounded content-operator parsing remains separate follow-up work.
 
 mod headers;
+mod xref;
 
 use self::headers::Headers;
 use crate::error::AppError;
@@ -13,7 +14,7 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-const MAX_OBJECTS: usize = 2_000_000;
+pub(super) const MAX_OBJECTS: usize = 2_000_000;
 const MAX_OBJECT_NESTING: usize = 100;
 const OBJECT_SCAN_FACTOR: usize = 2;
 const OBJECT_SCAN_SLACK_BYTES: usize = 1 << 20;
@@ -31,6 +32,7 @@ static OBJSTM_REJECTED: AtomicBool = AtomicBool::new(false);
 const REJECTED_OBJSTM: &[u8] = b"OffPdfRejectedObjStm";
 
 pub(super) fn load_document(bytes: &[u8], path: &str) -> Result<Document, AppError> {
+    xref::check(bytes)?;
     check_objects(bytes)?;
 
     // lopdf's object-stream filter is a function pointer. Serialize loads so

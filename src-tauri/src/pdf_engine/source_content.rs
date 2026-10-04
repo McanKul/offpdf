@@ -6,10 +6,9 @@
 //! Research prototype only; no Tauri command or UI invokes this module. The
 //! source is read once through a hard cap, then both fingerprinted and parsed
 //! from that same snapshot. Object values, object streams, and content stream
-//! decoding are bounded. Raw xref validation, bounded operator parsing, and
-//! font/geometry support are still incomplete. Complete #33's remaining resource
-//! bounds and compatibility evaluation before exposing this API to user files or
-//! enabling editing.
+//! decoding are bounded. Bounded operator parsing and font/geometry support are
+//! still incomplete. Complete #33's remaining resource bounds and compatibility
+//! evaluation before exposing this API to user files or enabling editing.
 
 use crate::error::AppError;
 use crate::pdf_engine::crop;
