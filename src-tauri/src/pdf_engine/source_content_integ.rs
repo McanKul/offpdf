@@ -37,6 +37,8 @@ const FROZEN_REASONS: &[&str] = &[
     "MISSING_FONT",
     "SUBSET_FONT",
     "CUSTOM_ENCODING",
+    "TEXT_RISE",
+    "TEXT_RENDER_MODE",
     "NO_TOUNICODE",
     "AMBIGUOUS_UNICODE",
     "TYPE3",
@@ -851,6 +853,76 @@ fn classify_named_standard_encoding_remains_supported() {
         "text",
         "REVIEW-STANDARD-ENCODING",
     );
+}
+
+#[test]
+fn classify_text_rise_moves_bounds_and_resets_to_supported() {
+    let scratch = Scratch::new("review-text-rise");
+    let path = scratch.file("text-rise.pdf");
+    write_helvetica_page(
+        &path,
+        b"BT /F1 12 Tf 72 700 Td 20 Ts (Hi) Tj 0 Ts (Lo) Tj ET",
+    );
+    let hits = classify(&path, "REVIEW-TEXT-RISE");
+    let texts: Vec<&SourceOccurrence> = hits.iter().filter(|hit| kind_token(hit) == "text").collect();
+    assert_eq!(texts.len(), 2);
+    assert_unsupported(texts[0], "text", "TEXT_RISE", "REVIEW-TEXT-RISE");
+    assert!((texts[0].rect.y - 720.0).abs() <= 1.0);
+    assert_supported_text_or_image(texts[1], "text", "REVIEW-TEXT-RISE-RESET");
+    assert!((texts[1].rect.y - 700.0).abs() <= 1.0);
+}
+
+#[test]
+fn classify_text_render_mode_applies_clip_only_after_text_object() {
+    let scratch = Scratch::new("review-text-render-mode");
+    let path = scratch.file("text-render-mode.pdf");
+    write_helvetica_page(
+        &path,
+        concat!(
+            "BT /F1 12 Tf 72 700 Td 7 Tr (A) Tj 0 Tr (B) Tj ET ",
+            "BT /F1 12 Tf 72 650 Td (C) Tj ET"
+        )
+        .as_bytes(),
+    );
+    let hits = classify(&path, "REVIEW-TEXT-RENDER-MODE");
+    let texts: Vec<&SourceOccurrence> = hits.iter().filter(|hit| kind_token(hit) == "text").collect();
+    assert_eq!(texts.len(), 3);
+    assert_unsupported(
+        texts[0],
+        "text",
+        "TEXT_RENDER_MODE",
+        "REVIEW-TEXT-RENDER-MODE",
+    );
+    assert_supported_text_or_image(texts[1], "text", "REVIEW-TEXT-RENDER-MODE-RESET");
+    assert_unsupported(
+        texts[2],
+        "text",
+        "CLIPPED",
+        "REVIEW-TEXT-RENDER-MODE-CLIP",
+    );
+}
+
+#[test]
+fn classify_malformed_text_state_operators_fail_closed() {
+    let scratch = Scratch::new("review-malformed-text-state");
+    for (name, content) in [
+        ("missing-rise.pdf", &b"BT /F1 12 Tf Ts (Hi) Tj ET"[..]),
+        (
+            "invalid-render-mode.pdf",
+            &b"BT /F1 12 Tf 1.5 Tr (Hi) Tj ET"[..],
+        ),
+        (
+            "out-of-range-render-mode.pdf",
+            &b"BT /F1 12 Tf 8 Tr (Hi) Tj ET"[..],
+        ),
+    ] {
+        let path = scratch.file(name);
+        write_helvetica_page(&path, content);
+        assert_eq!(
+            classify_source_content(&path).unwrap_err().code,
+            "MALFORMED_CONTENT"
+        );
+    }
 }
 
 #[test]

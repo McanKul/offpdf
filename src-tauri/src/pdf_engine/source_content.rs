@@ -173,6 +173,8 @@ struct Flags {
     ambiguous: bool,
     subset_font: bool,
     custom_encoding: bool,
+    text_rise: bool,
+    text_render_mode: bool,
     masked: bool,
     shared: bool,
     geometry: bool,
@@ -201,6 +203,8 @@ struct GState {
     hscale: f64,
     tc: f64,
     tw: f64,
+    text_rise: f64,
+    text_render_mode: u8,
 }
 
 impl Default for GState {
@@ -218,6 +222,8 @@ impl Default for GState {
             hscale: 100.0,
             tc: 0.0,
             tw: 0.0,
+            text_rise: 0.0,
+            text_render_mode: 0,
         }
     }
 }
@@ -235,6 +241,7 @@ impl GState {
 struct TextState {
     tm: [f64; 6],
     tlm: [f64; 6],
+    clip_pending: bool,
 }
 
 impl Default for TextState {
@@ -242,6 +249,7 @@ impl Default for TextState {
         Self {
             tm: IDENTITY,
             tlm: IDENTITY,
+            clip_pending: false,
         }
     }
 }
@@ -396,8 +404,14 @@ impl Walker<'_> {
                 "BT" => {
                     ts.tm = IDENTITY;
                     ts.tlm = IDENTITY;
+                    ts.clip_pending = false;
                 }
-                "ET" => {}
+                "ET" => {
+                    if ts.clip_pending {
+                        gs.clip_active = true;
+                        ts.clip_pending = false;
+                    }
+                }
                 "Tf" => {
                     if let Some(name) = op.operands.first().and_then(|o| o.as_name().ok()) {
                         gs.font_name = Some(name.to_vec());
@@ -420,6 +434,28 @@ impl Walker<'_> {
                     if let Some(z) = op.operands.first().and_then(obj_f64) {
                         gs.hscale = z;
                     }
+                }
+                "Ts" => {
+                    gs.text_rise = match op.operands.as_slice() {
+                        [value] => obj_f64(value).ok_or_else(|| {
+                            malformed_content("A text-rise operator has an invalid operand.")
+                        })?,
+                        _ => {
+                            return Err(malformed_content(
+                                "A text-rise operator must have one operand.",
+                            ))
+                        }
+                    };
+                }
+                "Tr" => {
+                    gs.text_render_mode = match op.operands.as_slice() {
+                        [Object::Integer(mode)] if (0..=7).contains(mode) => *mode as u8,
+                        _ => {
+                            return Err(malformed_content(
+                                "A text-rendering-mode operator must contain an integer from 0 to 7.",
+                            ))
+                        }
+                    };
                 }
                 "TL" => {
                     if let Some(l) = op.operands.first().and_then(obj_f64) {
@@ -480,6 +516,9 @@ impl Walker<'_> {
                         nested,
                         geom_unsafe,
                     )?;
+                    if gs.text_render_mode >= 4 && pieces.iter().any(|piece| !piece.is_empty()) {
+                        ts.clip_pending = true;
+                    }
                 }
                 "Do" => {
                     let Some(name) = op.operands.first().and_then(|o| o.as_name().ok()) else {
@@ -611,6 +650,7 @@ impl Walker<'_> {
         let shown = inspect.width * th;
         let width = (shown * sx).abs().max(0.01);
         let tx = (inspect.width + spacing_advance(pieces, gs.tc, gs.tw)) * th;
+        let origin = apply_point(effective, 0.0, gs.text_rise);
         let flags = Flags {
             nested_form: nested,
             type3: inspect.type3,
@@ -624,6 +664,8 @@ impl Walker<'_> {
             ambiguous: inspect.ambiguous,
             subset_font: inspect.subset_font,
             custom_encoding: inspect.custom_encoding,
+            text_rise: gs.text_rise != 0.0,
+            text_render_mode: gs.text_render_mode != 0,
             masked: gs.masked,
             geometry: geom_unsafe,
             ..Flags::default()
@@ -632,8 +674,8 @@ impl Walker<'_> {
             page_index,
             kind: SourceKind::Text,
             rect: SourceRect {
-                x: effective[4],
-                y: effective[5],
+                x: origin.0,
+                y: origin.1,
                 w: width,
                 h: height,
             },
@@ -808,6 +850,10 @@ fn pick_reason(flags: &Flags) -> (SourceCapability, Option<String>) {
         Some("SUBSET_FONT")
     } else if flags.custom_encoding {
         Some("CUSTOM_ENCODING")
+    } else if flags.text_rise {
+        Some("TEXT_RISE")
+    } else if flags.text_render_mode {
+        Some("TEXT_RENDER_MODE")
     } else if flags.masked {
         Some("MASKED_IMAGE")
     } else if flags.shared {
