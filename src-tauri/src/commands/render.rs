@@ -82,6 +82,7 @@ pub async fn pdf_to_images(
     format: String,
     dpi: u32,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -211,6 +212,7 @@ pub async fn ocr_pdf(
     picks: Vec<PagePick>,
     lang: String,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -258,6 +260,7 @@ pub async fn office_to_pdf_batch(
     output_dir: String,
     input_paths: Vec<String>,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -335,6 +338,7 @@ pub async fn pdfa_pdf(
     output_path: String,
     groups: Vec<PageGroup>,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -394,6 +398,7 @@ pub async fn detect_blank_pages(
     input_path: String,
     sensitivity: String,
 ) -> Result<Vec<u32>, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let jid = job_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
@@ -431,6 +436,7 @@ pub async fn write_pdf_meta(
     fields: crate::pdf_engine::metadata::PdfMeta,
     clear_all: bool,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -468,6 +474,7 @@ pub async fn export_pdf_text(
     first_page: Option<u32>,
     last_page: Option<u32>,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
@@ -504,6 +511,7 @@ pub async fn pdf_to_office(
     groups: Vec<PageGroup>,
     format: String,
 ) -> Result<JobResult, AppError> {
+    super::jobs::check_job_id(&job_id)?;
     let handle = registry.register(&job_id);
     let app2 = app.clone();
     let jid = job_id.clone();
