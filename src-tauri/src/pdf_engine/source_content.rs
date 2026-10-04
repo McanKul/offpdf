@@ -6,9 +6,9 @@
 //! Research prototype only; no Tauri command or UI invokes this module. The
 //! source is read once through a hard cap, then both fingerprinted and parsed
 //! from that same snapshot. Object values, object streams, and content stream
-//! decoding are bounded. Bounded operator parsing and font/geometry support are
-//! still incomplete. Complete #33's remaining resource bounds and compatibility
-//! evaluation before exposing this API to user files or enabling editing.
+//! decoding and content parsing are bounded. Font/geometry support is still
+//! incomplete. Complete #33's remaining compatibility evaluation before exposing
+//! this API to user files or enabling editing.
 
 use crate::error::AppError;
 use crate::pdf_engine::crop;
@@ -308,15 +308,9 @@ impl Walker<'_> {
         visiting: &mut Vec<ObjectId>,
         geom_unsafe: bool,
     ) -> Result<(), AppError> {
-        let inline_total = count_inline_images(bytes)?;
-        // BI…EI: do not trust a prefix Content::decode Ok; strip payloads first.
-        let stripped = if inline_total > 0 {
-            Some(strip_inline_image_payloads(bytes)?)
-        } else {
-            None
-        };
-        let decode_src = stripped.as_deref().unwrap_or(bytes);
-        let ops = match Content::decode(decode_src) {
+        let prepared = source_content_preflight::prepare_content(bytes)?;
+        let inline_total = prepared.inline_images;
+        let ops = match Content::decode(prepared.bytes()) {
             Ok(c) => c.operations,
             Err(_) => {
                 return Err(malformed_content(
@@ -1477,171 +1471,6 @@ fn spacing_advance(pieces: &[Vec<u8>], tc: f64, tw: f64) -> f64 {
         extra += piece.iter().filter(|&&b| b == b' ').count() as f64 * tw;
     }
     extra
-}
-
-fn strip_inline_image_payloads(data: &[u8]) -> Result<Vec<u8>, AppError> {
-    let mut out = Vec::with_capacity(data.len());
-    let mut i = 0;
-    // Normal → Keys (after BI) → Payload (after ID). Copy BI/keys/ID/EI;
-    // drop only the raw bytes between ID and EI so Content::decode still
-    // yields BI at the CTM in force there.
-    let mut after_bi = false;
-    let mut after_id = false;
-    while i < data.len() {
-        if after_id {
-            if is_op_token(data, i, b"EI") {
-                out.extend_from_slice(b"EI");
-                i += 2;
-                after_id = false;
-                after_bi = false;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        if data[i].is_ascii_whitespace() {
-            out.push(data[i]);
-            i += 1;
-            continue;
-        }
-        if data[i] == b'%' {
-            let start = i;
-            while i < data.len() && data[i] != b'\n' && data[i] != b'\r' {
-                i += 1;
-            }
-            out.extend_from_slice(&data[start..i]);
-            continue;
-        }
-        if data[i] == b'(' {
-            let start = i;
-            i = skip_literal(data, i)?;
-            out.extend_from_slice(&data[start..i]);
-            continue;
-        }
-        if data[i] == b'<' && data.get(i + 1) != Some(&b'<') {
-            let start = i;
-            i = skip_hex(data, i);
-            out.extend_from_slice(&data[start..i]);
-            continue;
-        }
-        if !after_bi && is_op_token(data, i, b"BI") {
-            out.extend_from_slice(b"BI");
-            i += 2;
-            after_bi = true;
-            continue;
-        }
-        if after_bi && is_op_token(data, i, b"ID") {
-            out.extend_from_slice(b"ID");
-            i += 2;
-            out.push(b' ');
-            after_id = true;
-            continue;
-        }
-        if after_bi && is_op_token(data, i, b"EI") {
-            out.extend_from_slice(b"EI");
-            i += 2;
-            after_bi = false;
-            continue;
-        }
-        out.push(data[i]);
-        i += 1;
-    }
-    if after_bi || after_id {
-        return Err(malformed_content("An inline image is unterminated."));
-    }
-    Ok(out)
-}
-
-fn count_inline_images(data: &[u8]) -> Result<usize, AppError> {
-    let mut count = 0;
-    let mut i = 0;
-    let mut in_inline = false;
-    while i < data.len() {
-        if data[i].is_ascii_whitespace() {
-            i += 1;
-            continue;
-        }
-        if !in_inline && data[i] == b'%' {
-            while i < data.len() && data[i] != b'\n' && data[i] != b'\r' {
-                i += 1;
-            }
-            continue;
-        }
-        if !in_inline && data[i] == b'(' {
-            i = skip_literal(data, i)?;
-            continue;
-        }
-        if !in_inline && data[i] == b'<' && data.get(i + 1) != Some(&b'<') {
-            i = skip_hex(data, i);
-            continue;
-        }
-        if !in_inline && is_op_token(data, i, b"BI") {
-            in_inline = true;
-            i += 2;
-            continue;
-        }
-        if in_inline && is_op_token(data, i, b"EI") {
-            count += 1;
-            in_inline = false;
-            i += 2;
-            continue;
-        }
-        i += 1;
-    }
-    if in_inline {
-        return Err(malformed_content("An inline image is unterminated."));
-    }
-    Ok(count)
-}
-
-fn is_delim(b: u8) -> bool {
-    b.is_ascii_whitespace()
-        || matches!(
-            b,
-            b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
-        )
-}
-
-fn is_op_token(data: &[u8], i: usize, token: &[u8]) -> bool {
-    if i + token.len() > data.len() || &data[i..i + token.len()] != token {
-        return false;
-    }
-    let before = i == 0 || is_delim(data[i - 1]);
-    let after = i + token.len() == data.len() || is_delim(data[i + token.len()]);
-    before && after
-}
-
-fn skip_literal(data: &[u8], start: usize) -> Result<usize, AppError> {
-    let mut i = start + 1;
-    let mut depth = 1;
-    while i < data.len() && depth > 0 {
-        match data[i] {
-            b'\\' => {
-                i = i.saturating_add(2).min(data.len());
-                continue;
-            }
-            b'(' => depth += 1,
-            b')' => depth -= 1,
-            _ => {}
-        }
-        i += 1;
-    }
-    if depth != 0 {
-        return Err(malformed_content("A literal string is unterminated."));
-    }
-    Ok(i)
-}
-
-fn skip_hex(data: &[u8], start: usize) -> usize {
-    let mut i = start + 1;
-    while i < data.len() && data[i] != b'>' {
-        i += 1;
-    }
-    if i < data.len() {
-        i + 1
-    } else {
-        i
-    }
 }
 
 fn document_is_signed(doc: &Document) -> bool {
