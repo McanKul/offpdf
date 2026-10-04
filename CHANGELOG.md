@@ -4,6 +4,32 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-05
+
+### Added
+
+- Completed the v0.4 direct-editing foundation with a documented compatibility matrix and an explicit boundary between safe overlays and narrowly proven source-content edits.
+- Added deterministic, read-only source locators for supported whole-string text and uniquely referenced image structures without exposing a general save capability.
+
+### Fixed
+
+- Source-content inspection now reads from one bounded snapshot and fails closed on oversized, malformed, compressed, or ambiguous PDF structures.
+- Cross-reference tables, indirect objects, decoded content streams, font encodings, and unsafe text-state operators are bounded or rejected with explicit reasons.
+- Desktop job identifiers are validated before they can reach temporary filesystem paths.
+- Files opened through the operating system retain their original intake order.
+
+### CI
+
+- Rust CI now installs and requires the PDF engines used by production paths instead of silently skipping their tests.
+
+### Contributors
+
+- Thank you to @Aaqibhafeezkhan for contributing to this release.
+
+### Known issues
+
+- Some real-device HEIC/HEIF files may still crash on Windows; investigation continues in issue #14.
+
 ## 0.3.2 - 2026-09-11
 
 ### Added
