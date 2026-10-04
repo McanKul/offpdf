@@ -35,6 +35,10 @@ const FILE_CAP_BYTES: u64 = 400 * 1024 * 1024;
 
 const FROZEN_REASONS: &[&str] = &[
     "MISSING_FONT",
+    "SUBSET_FONT",
+    "CUSTOM_ENCODING",
+    "TEXT_RISE",
+    "TEXT_RENDER_MODE",
     "NO_TOUNICODE",
     "AMBIGUOUS_UNICODE",
     "TYPE3",
@@ -593,6 +597,36 @@ fn classify_try_edit_is_not_auto_supported() {
 // --- CLASSIFY-STALE ---------------------------------------------------------
 
 #[test]
+fn classify_locators_use_full_sha256_fingerprints() {
+    let hits = classify(&fixture("text-tj.pdf"), "CLASSIFY-FINGERPRINT");
+    let locator = &first_of_kind(&hits, "text", "CLASSIFY-FINGERPRINT").locator;
+    let mut parts = locator.split(':');
+    assert_eq!(parts.next(), Some("v2"));
+    let digest = parts.next().expect("v2 locator has a fingerprint");
+    assert_eq!(digest.len(), 64, "fingerprint must contain all 256 bits");
+    assert!(
+        digest
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')),
+        "fingerprint must be canonical lowercase hex"
+    );
+}
+
+#[test]
+fn legacy_or_malformed_locators_fail_closed_as_stale() {
+    let src = fixture("text-tj.pdf");
+    for locator in [
+        "v1:0000000000000000:0:0:1:0:0:1:0",
+        "v2:abc:0:0:1:0:0:1:0",
+        "v2:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:0:0:1:0:0:1:0",
+    ] {
+        let err = resolve_source_locator(&src, locator)
+            .expect_err("non-v2 or non-canonical fingerprints must fail closed");
+        assert_eq!(err.code, "STALE");
+    }
+}
+
+#[test]
 fn classify_mutated_copy_locator_is_stale() {
     let src = fixture("text-tj.pdf");
     let hits = classify(&src, "CLASSIFY-STALE");
@@ -693,6 +727,38 @@ fn classify_oversize_sparse_file_is_file_too_large() {
     );
 }
 
+#[test]
+fn classify_rejects_graphics_state_stack_overflow() {
+    let scratch = Scratch::new("q-overflow");
+    let path = scratch.file("q-overflow.pdf");
+    let mut content = b"q\n".repeat(65);
+    content.extend_from_slice(b"BT /F1 12 Tf 72 720 Td (Hidden state) Tj ET\n");
+    write_helvetica_page(&path, &content);
+    expect_err_code(
+        classify_source_content(&path),
+        "MALFORMED_CONTENT",
+        "CLASSIFY-BOUNDS: graphics state stack overflow",
+    );
+}
+
+#[test]
+fn classify_rejects_filtered_stream_when_decompression_fails() {
+    let scratch = Scratch::new("bad-filter");
+    let path = scratch.file("bad-filter.pdf");
+    let mut dict = Dictionary::new();
+    dict.set("Filter", "FlateDecode");
+    write_helvetica_page_with_stream_dict(
+        &path,
+        b"BT /F1 12 Tf 72 720 Td (Raw fallback must not run) Tj ET\n",
+        dict,
+    );
+    expect_err_code(
+        classify_source_content(&path),
+        "MALFORMED_CONTENT",
+        "CLASSIFY-BOUNDS: invalid filtered stream",
+    );
+}
+
 // --- PR 97 review fold (R1–R5) ---------------------------------------------
 // Extra PDFs are generated in temp with lopdf. Do not grow fixtures/source-edit/.
 
@@ -720,6 +786,143 @@ fn classify_missing_font_is_not_supported() {
     let hits = classify(&path, "REVIEW-MISSING-FONT");
     assert_eq!(capability_token(&hits[0]), "unsupported");
     assert_eq!(reason_code(&hits[0]).as_deref(), Some("MISSING_FONT"));
+}
+
+#[test]
+fn classify_subset_and_custom_encoded_fonts_are_not_supported() {
+    let scratch = Scratch::new("review-font-compatibility");
+
+    let mut subset = Dictionary::new();
+    subset.set("Type", "Font");
+    subset.set("Subtype", "Type1");
+    subset.set("BaseFont", "ABCDEF+Helvetica");
+    let subset_path = scratch.file("subset.pdf");
+    write_text_page_with_font(
+        &subset_path,
+        b"BT /F1 12 Tf 72 400 Td (Hi) Tj ET",
+        subset,
+    );
+    let subset_hits = classify(&subset_path, "REVIEW-SUBSET-FONT");
+    assert_unsupported(
+        first_of_kind(&subset_hits, "text", "REVIEW-SUBSET-FONT"),
+        "text",
+        "SUBSET_FONT",
+        "REVIEW-SUBSET-FONT",
+    );
+
+    let mut differences = Dictionary::new();
+    differences.set("Type", "Encoding");
+    differences.set("BaseEncoding", "WinAnsiEncoding");
+    differences.set(
+        "Differences",
+        vec![Object::Integer(72), Object::Name(b"customH".to_vec())],
+    );
+    let mut custom = Dictionary::new();
+    custom.set("Type", "Font");
+    custom.set("Subtype", "Type1");
+    custom.set("BaseFont", "Helvetica");
+    custom.set("Encoding", differences);
+    let custom_path = scratch.file("custom-encoding.pdf");
+    write_text_page_with_font(
+        &custom_path,
+        b"BT /F1 12 Tf 72 400 Td (Hi) Tj ET",
+        custom,
+    );
+    let custom_hits = classify(&custom_path, "REVIEW-CUSTOM-ENCODING");
+    assert_unsupported(
+        first_of_kind(&custom_hits, "text", "REVIEW-CUSTOM-ENCODING"),
+        "text",
+        "CUSTOM_ENCODING",
+        "REVIEW-CUSTOM-ENCODING",
+    );
+}
+
+#[test]
+fn classify_named_standard_encoding_remains_supported() {
+    let scratch = Scratch::new("review-standard-encoding");
+    let path = scratch.file("win-ansi.pdf");
+    let mut font = Dictionary::new();
+    font.set("Type", "Font");
+    font.set("Subtype", "Type1");
+    font.set("BaseFont", "Helvetica");
+    font.set("Encoding", "WinAnsiEncoding");
+    write_text_page_with_font(&path, b"BT /F1 12 Tf 72 400 Td (Hi) Tj ET", font);
+    let hits = classify(&path, "REVIEW-STANDARD-ENCODING");
+    assert_supported_text_or_image(
+        first_of_kind(&hits, "text", "REVIEW-STANDARD-ENCODING"),
+        "text",
+        "REVIEW-STANDARD-ENCODING",
+    );
+}
+
+#[test]
+fn classify_text_rise_moves_bounds_and_resets_to_supported() {
+    let scratch = Scratch::new("review-text-rise");
+    let path = scratch.file("text-rise.pdf");
+    write_helvetica_page(
+        &path,
+        b"BT /F1 12 Tf 72 700 Td 20 Ts (Hi) Tj 0 Ts (Lo) Tj ET",
+    );
+    let hits = classify(&path, "REVIEW-TEXT-RISE");
+    let texts: Vec<&SourceOccurrence> = hits.iter().filter(|hit| kind_token(hit) == "text").collect();
+    assert_eq!(texts.len(), 2);
+    assert_unsupported(texts[0], "text", "TEXT_RISE", "REVIEW-TEXT-RISE");
+    assert!((texts[0].rect.y - 720.0).abs() <= 1.0);
+    assert_supported_text_or_image(texts[1], "text", "REVIEW-TEXT-RISE-RESET");
+    assert!((texts[1].rect.y - 700.0).abs() <= 1.0);
+}
+
+#[test]
+fn classify_text_render_mode_applies_clip_only_after_text_object() {
+    let scratch = Scratch::new("review-text-render-mode");
+    let path = scratch.file("text-render-mode.pdf");
+    write_helvetica_page(
+        &path,
+        concat!(
+            "BT /F1 12 Tf 72 700 Td 7 Tr (A) Tj 0 Tr (B) Tj ET ",
+            "BT /F1 12 Tf 72 650 Td (C) Tj ET"
+        )
+        .as_bytes(),
+    );
+    let hits = classify(&path, "REVIEW-TEXT-RENDER-MODE");
+    let texts: Vec<&SourceOccurrence> = hits.iter().filter(|hit| kind_token(hit) == "text").collect();
+    assert_eq!(texts.len(), 3);
+    assert_unsupported(
+        texts[0],
+        "text",
+        "TEXT_RENDER_MODE",
+        "REVIEW-TEXT-RENDER-MODE",
+    );
+    assert_supported_text_or_image(texts[1], "text", "REVIEW-TEXT-RENDER-MODE-RESET");
+    assert_unsupported(
+        texts[2],
+        "text",
+        "CLIPPED",
+        "REVIEW-TEXT-RENDER-MODE-CLIP",
+    );
+}
+
+#[test]
+fn classify_malformed_text_state_operators_fail_closed() {
+    let scratch = Scratch::new("review-malformed-text-state");
+    for (name, content) in [
+        ("missing-rise.pdf", &b"BT /F1 12 Tf Ts (Hi) Tj ET"[..]),
+        (
+            "invalid-render-mode.pdf",
+            &b"BT /F1 12 Tf 1.5 Tr (Hi) Tj ET"[..],
+        ),
+        (
+            "out-of-range-render-mode.pdf",
+            &b"BT /F1 12 Tf 8 Tr (Hi) Tj ET"[..],
+        ),
+    ] {
+        let path = scratch.file(name);
+        write_helvetica_page(&path, content);
+        assert_eq!(
+            classify_source_content(&path).unwrap_err().code,
+            "MALFORMED_CONTENT"
+        );
+    }
 }
 
 #[test]
@@ -757,18 +960,40 @@ fn helvetica_resources() -> Dictionary {
 }
 
 fn write_helvetica_page(path: &Path, content: &[u8]) {
+    write_helvetica_page_with_stream_dict(path, content, Dictionary::new());
+}
+
+fn write_helvetica_page_with_stream_dict(path: &Path, content: &[u8], stream_dict: Dictionary) {
+    let mut font = Dictionary::new();
+    font.set("Type", "Font");
+    font.set("Subtype", "Type1");
+    font.set("BaseFont", "Helvetica");
+    write_text_page_with_font_and_stream_dict(path, content, font, stream_dict);
+}
+
+fn write_text_page_with_font(path: &Path, content: &[u8], font: Dictionary) {
+    write_text_page_with_font_and_stream_dict(path, content, font, Dictionary::new());
+}
+
+fn write_text_page_with_font_and_stream_dict(
+    path: &Path,
+    content: &[u8],
+    font: Dictionary,
+    stream_dict: Dictionary,
+) {
     let mut doc = Document::with_version("1.7");
     let pages_id = doc.new_object_id();
-    let content_id = doc.add_object(Object::Stream(Stream::new(
-        Dictionary::new(),
-        content.to_vec(),
-    )));
+    let content_id = doc.add_object(Object::Stream(Stream::new(stream_dict, content.to_vec())));
+    let mut fonts = Dictionary::new();
+    fonts.set("F1", Object::Dictionary(font));
+    let mut resources = Dictionary::new();
+    resources.set("Font", Object::Dictionary(fonts));
     let mut page = Dictionary::new();
     page.set("Type", "Page");
     page.set("Parent", pages_id);
     page.set("MediaBox", box_obj([0, 0, 612, 792]));
     page.set("Contents", content_id);
-    page.set("Resources", Object::Dictionary(helvetica_resources()));
+    page.set("Resources", Object::Dictionary(resources));
     let page_id = doc.add_object(Object::Dictionary(page));
 
     let mut pages = Dictionary::new();

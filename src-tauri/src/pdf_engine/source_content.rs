@@ -3,15 +3,21 @@
 //! Walks page streams and Form XObjects on the original source path. Does not
 //! write a dest, call `Document::replace_text`, or apply page `/Rotate`.
 //!
-//! Research prototype only; no Tauri command or UI invokes this module.
-//! Decoded-size checks currently run after allocation, and font/geometry
-//! support is incomplete. Complete #33's resource bounds and compatibility
-//! evaluation before exposing this API to user files or enabling editing.
+//! Research prototype only; no Tauri command or UI invokes this module. The
+//! source is read once through a hard cap, then both fingerprinted and parsed
+//! from that same snapshot. Object values, object streams, and content stream
+//! decoding and content parsing are bounded. Font/geometry support is still
+//! incomplete. Complete #33's remaining compatibility evaluation before exposing
+//! this API to user files or enabling editing.
 
 use crate::error::AppError;
 use crate::pdf_engine::crop;
+use crate::pdf_engine::source_content_decode::{self, DecodeError};
+use crate::pdf_engine::source_content_preflight;
 use lopdf::{content::Content, Dictionary, Document, Object, ObjectId, Stream};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 
 const FILE_CAP_BYTES: u64 = 400 * 1024 * 1024;
@@ -23,8 +29,18 @@ const MAX_OCCURRENCES: usize = 5_000;
 const MAX_GSTATE_STACK: usize = 64;
 
 const IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-const FNV_PRIME: u64 = 0x100000001b3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceFingerprint([u8; 32]);
+
+impl std::fmt::Display for SourceFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceKind {
@@ -65,38 +81,41 @@ pub fn resolve_source_locator(
     path: &Path,
     locator: &str,
 ) -> Result<SourceOccurrence, AppError> {
-    if !path.is_file() {
-        return Err(AppError::invalid_pdf(&path_str(path)));
-    }
-    let meta = std::fs::metadata(path).map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
-    if meta.len() > FILE_CAP_BYTES {
-        return Err(file_too_large());
-    }
-    let bytes = std::fs::read(path).map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
-    let fp = fnv1a_u64(&bytes);
+    let (doc, fp) = open_source(path)?;
     let loc_fp = parse_locator_fp(locator).ok_or_else(stale)?;
     if loc_fp != fp {
         return Err(stale());
     }
-    classify_source_content(path)?
+    classify_doc(&doc, fp)?
         .into_iter()
         .find(|o| o.locator == locator)
         .ok_or_else(stale)
 }
 
-fn open_source(path: &Path) -> Result<(Document, u64), AppError> {
-    if !path.is_file() {
+fn open_source(path: &Path) -> Result<(Document, SourceFingerprint), AppError> {
+    let file = std::fs::File::open(path).map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
+    let meta = file
+        .metadata()
+        .map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
+    if !meta.is_file() {
         return Err(AppError::invalid_pdf(&path_str(path)));
     }
-    let meta = std::fs::metadata(path).map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
     if meta.len() > FILE_CAP_BYTES {
         return Err(file_too_large());
     }
-    let bytes = std::fs::read(path).map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
-    let fp = fnv1a_u64(&bytes);
-    let doc = Document::load(path).map_err(|e| {
-        AppError::invalid_pdf(&path_str(path)).with_details(format!("lopdf: {e}"))
-    })?;
+    let mut bytes = Vec::new();
+    let reserve = usize::try_from(meta.len()).map_err(|_| file_too_large())?;
+    bytes
+        .try_reserve_exact(reserve)
+        .map_err(|_| file_too_large())?;
+    file.take(FILE_CAP_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| AppError::invalid_pdf(&path_str(path)))?;
+    if bytes.len() as u64 > FILE_CAP_BYTES {
+        return Err(file_too_large());
+    }
+    let fp = SourceFingerprint(Sha256::digest(&bytes).into());
+    let doc = source_content_preflight::load_document(&bytes, &path_str(path))?;
     if doc.is_encrypted() {
         return Err(encrypted());
     }
@@ -109,7 +128,7 @@ fn open_source(path: &Path) -> Result<(Document, u64), AppError> {
     Ok((doc, fp))
 }
 
-fn classify_doc(doc: &Document, fp: u64) -> Result<Vec<SourceOccurrence>, AppError> {
+fn classify_doc(doc: &Document, fp: SourceFingerprint) -> Result<Vec<SourceOccurrence>, AppError> {
     let mut walker = Walker {
         doc,
         fp,
@@ -132,7 +151,7 @@ fn classify_doc(doc: &Document, fp: u64) -> Result<Vec<SourceOccurrence>, AppErr
 
 struct Walker<'a> {
     doc: &'a Document,
-    fp: u64,
+    fp: SourceFingerprint,
     decoded_total: usize,
     op_count: usize,
     pending: Vec<Pending>,
@@ -152,6 +171,10 @@ struct Flags {
     no_tounicode: bool,
     missing_font: bool,
     ambiguous: bool,
+    subset_font: bool,
+    custom_encoding: bool,
+    text_rise: bool,
+    text_render_mode: bool,
     masked: bool,
     shared: bool,
     geometry: bool,
@@ -180,6 +203,8 @@ struct GState {
     hscale: f64,
     tc: f64,
     tw: f64,
+    text_rise: f64,
+    text_render_mode: u8,
 }
 
 impl Default for GState {
@@ -197,6 +222,8 @@ impl Default for GState {
             hscale: 100.0,
             tc: 0.0,
             tw: 0.0,
+            text_rise: 0.0,
+            text_render_mode: 0,
         }
     }
 }
@@ -214,6 +241,7 @@ impl GState {
 struct TextState {
     tm: [f64; 6],
     tlm: [f64; 6],
+    clip_pending: bool,
 }
 
 impl Default for TextState {
@@ -221,6 +249,7 @@ impl Default for TextState {
         Self {
             tm: IDENTITY,
             tlm: IDENTITY,
+            clip_pending: false,
         }
     }
 }
@@ -237,6 +266,8 @@ struct TextInspect {
     vertical: bool,
     no_tounicode: bool,
     ambiguous: bool,
+    subset_font: bool,
+    custom_encoding: bool,
     width: f64,
     font_id: ObjectId,
 }
@@ -289,15 +320,9 @@ impl Walker<'_> {
         visiting: &mut Vec<ObjectId>,
         geom_unsafe: bool,
     ) -> Result<(), AppError> {
-        let inline_total = count_inline_images(bytes)?;
-        // BI…EI: do not trust a prefix Content::decode Ok; strip payloads first.
-        let stripped = if inline_total > 0 {
-            Some(strip_inline_image_payloads(bytes)?)
-        } else {
-            None
-        };
-        let decode_src = stripped.as_deref().unwrap_or(bytes);
-        let ops = match Content::decode(decode_src) {
+        let prepared = source_content_preflight::prepare_content(bytes)?;
+        let inline_total = prepared.inline_images;
+        let ops = match Content::decode(prepared.bytes()) {
             Ok(c) => c.operations,
             Err(_) => {
                 return Err(malformed_content(
@@ -315,9 +340,12 @@ impl Walker<'_> {
         for (op_index, op) in ops.iter().enumerate() {
             match op.operator.as_str() {
                 "q" => {
-                    if stack.len() < MAX_GSTATE_STACK {
-                        stack.push(gs.clone());
+                    if stack.len() >= MAX_GSTATE_STACK {
+                        return Err(malformed_content(
+                            "Graphics state nesting is deeper than 64 levels.",
+                        ));
                     }
+                    stack.push(gs.clone());
                 }
                 "Q" => {
                     if let Some(prev) = stack.pop() {
@@ -376,8 +404,14 @@ impl Walker<'_> {
                 "BT" => {
                     ts.tm = IDENTITY;
                     ts.tlm = IDENTITY;
+                    ts.clip_pending = false;
                 }
-                "ET" => {}
+                "ET" => {
+                    if ts.clip_pending {
+                        gs.clip_active = true;
+                        ts.clip_pending = false;
+                    }
+                }
                 "Tf" => {
                     if let Some(name) = op.operands.first().and_then(|o| o.as_name().ok()) {
                         gs.font_name = Some(name.to_vec());
@@ -400,6 +434,28 @@ impl Walker<'_> {
                     if let Some(z) = op.operands.first().and_then(obj_f64) {
                         gs.hscale = z;
                     }
+                }
+                "Ts" => {
+                    gs.text_rise = match op.operands.as_slice() {
+                        [value] => obj_f64(value).ok_or_else(|| {
+                            malformed_content("A text-rise operator has an invalid operand.")
+                        })?,
+                        _ => {
+                            return Err(malformed_content(
+                                "A text-rise operator must have one operand.",
+                            ))
+                        }
+                    };
+                }
+                "Tr" => {
+                    gs.text_render_mode = match op.operands.as_slice() {
+                        [Object::Integer(mode)] if (0..=7).contains(mode) => *mode as u8,
+                        _ => {
+                            return Err(malformed_content(
+                                "A text-rendering-mode operator must contain an integer from 0 to 7.",
+                            ))
+                        }
+                    };
                 }
                 "TL" => {
                     if let Some(l) = op.operands.first().and_then(obj_f64) {
@@ -460,6 +516,9 @@ impl Walker<'_> {
                         nested,
                         geom_unsafe,
                     )?;
+                    if gs.text_render_mode >= 4 && pieces.iter().any(|piece| !piece.is_empty()) {
+                        ts.clip_pending = true;
+                    }
                 }
                 "Do" => {
                     let Some(name) = op.operands.first().and_then(|o| o.as_name().ok()) else {
@@ -591,6 +650,7 @@ impl Walker<'_> {
         let shown = inspect.width * th;
         let width = (shown * sx).abs().max(0.01);
         let tx = (inspect.width + spacing_advance(pieces, gs.tc, gs.tw)) * th;
+        let origin = apply_point(effective, 0.0, gs.text_rise);
         let flags = Flags {
             nested_form: nested,
             type3: inspect.type3,
@@ -602,6 +662,10 @@ impl Walker<'_> {
             no_tounicode: inspect.no_tounicode,
             missing_font: inspect.missing_font,
             ambiguous: inspect.ambiguous,
+            subset_font: inspect.subset_font,
+            custom_encoding: inspect.custom_encoding,
+            text_rise: gs.text_rise != 0.0,
+            text_render_mode: gs.text_render_mode != 0,
             masked: gs.masked,
             geometry: geom_unsafe,
             ..Flags::default()
@@ -610,8 +674,8 @@ impl Walker<'_> {
             page_index,
             kind: SourceKind::Text,
             rect: SourceRect {
-                x: effective[4],
-                y: effective[5],
+                x: origin.0,
+                y: origin.1,
                 w: width,
                 h: height,
             },
@@ -782,6 +846,14 @@ fn pick_reason(flags: &Flags) -> (SourceCapability, Option<String>) {
         Some("NO_TOUNICODE")
     } else if flags.ambiguous {
         Some("AMBIGUOUS_UNICODE")
+    } else if flags.subset_font {
+        Some("SUBSET_FONT")
+    } else if flags.custom_encoding {
+        Some("CUSTOM_ENCODING")
+    } else if flags.text_rise {
+        Some("TEXT_RISE")
+    } else if flags.text_render_mode {
+        Some("TEXT_RENDER_MODE")
     } else if flags.masked {
         Some("MASKED_IMAGE")
     } else if flags.shared {
@@ -965,16 +1037,15 @@ fn matrix_from_dict(dict: &Dictionary) -> [f64; 6] {
 }
 
 fn decompress_stream(stream: &Stream) -> Result<Vec<u8>, AppError> {
-    let data = match stream.decompressed_content() {
-        Ok(d) => d,
-        Err(_) => stream.content.clone(),
-    };
-    if data.len() > MAX_STREAM_BYTES {
-        return Err(malformed_content(
-            "A content stream is larger than 32 MB decompressed.",
-        ));
-    }
-    Ok(data)
+    source_content_decode::decode_stream(stream, MAX_STREAM_BYTES).map_err(|error| match error {
+        DecodeError::UnsupportedFilter(name) => unsupported_filter(&name),
+        DecodeError::Corrupt => {
+            malformed_content("A filtered content stream could not be decompressed.")
+        }
+        DecodeError::TooLarge => {
+            malformed_content("A content stream is larger than 32 MB decompressed.")
+        }
+    })
 }
 
 fn inspect_text(
@@ -995,10 +1066,14 @@ fn inspect_text(
     let mut vertical = false;
     let mut no_tounicode = false;
     let mut ambiguous = false;
+    let mut subset_font = false;
+    let mut custom_encoding = false;
     let mut width_sum = 0.0;
     if let Some(font) = dict {
         type3 = is_type3(font);
         vertical = is_vertical(doc, font);
+        subset_font = is_subset_font(doc, font);
+        custom_encoding = !is_cid_or_type0(font) && has_custom_encoding(doc, font);
         if is_cid_or_type0(font) {
             if tounicode_usable(doc, font) {
                 ambiguous = true;
@@ -1021,6 +1096,8 @@ fn inspect_text(
         vertical,
         no_tounicode,
         ambiguous,
+        subset_font,
+        custom_encoding,
         width: (width_sum + tj_adj) / 1000.0 * size,
         font_id,
     }
@@ -1029,6 +1106,32 @@ fn inspect_text(
 fn is_type3(font: &Dictionary) -> bool {
     font.get(b"Subtype").ok().and_then(|o| o.as_name().ok()) == Some(b"Type3")
         || font.get(b"CharProcs").is_ok()
+}
+
+fn is_subset_font(doc: &Document, font: &Dictionary) -> bool {
+    let Ok(Object::Name(name)) = font.get_deref(b"BaseFont", doc) else {
+        return false;
+    };
+    name.len() > 7
+        && name.get(6) == Some(&b'+')
+        && name[..6].iter().all(u8::is_ascii_uppercase)
+}
+
+fn has_custom_encoding(doc: &Document, font: &Dictionary) -> bool {
+    if font.get(b"Encoding").is_err() {
+        return false;
+    }
+    let Ok(encoding) = font.get_deref(b"Encoding", doc) else {
+        return true;
+    };
+    !matches!(
+        encoding,
+        Object::Name(name)
+            if matches!(
+                name.as_slice(),
+                b"StandardEncoding" | b"WinAnsiEncoding" | b"MacRomanEncoding"
+            )
+    )
 }
 
 fn is_cid_or_type0(font: &Dictionary) -> bool {
@@ -1458,171 +1561,6 @@ fn spacing_advance(pieces: &[Vec<u8>], tc: f64, tw: f64) -> f64 {
     extra
 }
 
-fn strip_inline_image_payloads(data: &[u8]) -> Result<Vec<u8>, AppError> {
-    let mut out = Vec::with_capacity(data.len());
-    let mut i = 0;
-    // Normal → Keys (after BI) → Payload (after ID). Copy BI/keys/ID/EI;
-    // drop only the raw bytes between ID and EI so Content::decode still
-    // yields BI at the CTM in force there.
-    let mut after_bi = false;
-    let mut after_id = false;
-    while i < data.len() {
-        if after_id {
-            if is_op_token(data, i, b"EI") {
-                out.extend_from_slice(b"EI");
-                i += 2;
-                after_id = false;
-                after_bi = false;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        if data[i].is_ascii_whitespace() {
-            out.push(data[i]);
-            i += 1;
-            continue;
-        }
-        if data[i] == b'%' {
-            let start = i;
-            while i < data.len() && data[i] != b'\n' && data[i] != b'\r' {
-                i += 1;
-            }
-            out.extend_from_slice(&data[start..i]);
-            continue;
-        }
-        if data[i] == b'(' {
-            let start = i;
-            i = skip_literal(data, i)?;
-            out.extend_from_slice(&data[start..i]);
-            continue;
-        }
-        if data[i] == b'<' && data.get(i + 1) != Some(&b'<') {
-            let start = i;
-            i = skip_hex(data, i);
-            out.extend_from_slice(&data[start..i]);
-            continue;
-        }
-        if !after_bi && is_op_token(data, i, b"BI") {
-            out.extend_from_slice(b"BI");
-            i += 2;
-            after_bi = true;
-            continue;
-        }
-        if after_bi && is_op_token(data, i, b"ID") {
-            out.extend_from_slice(b"ID");
-            i += 2;
-            out.push(b' ');
-            after_id = true;
-            continue;
-        }
-        if after_bi && is_op_token(data, i, b"EI") {
-            out.extend_from_slice(b"EI");
-            i += 2;
-            after_bi = false;
-            continue;
-        }
-        out.push(data[i]);
-        i += 1;
-    }
-    if after_bi || after_id {
-        return Err(malformed_content("An inline image is unterminated."));
-    }
-    Ok(out)
-}
-
-fn count_inline_images(data: &[u8]) -> Result<usize, AppError> {
-    let mut count = 0;
-    let mut i = 0;
-    let mut in_inline = false;
-    while i < data.len() {
-        if data[i].is_ascii_whitespace() {
-            i += 1;
-            continue;
-        }
-        if !in_inline && data[i] == b'%' {
-            while i < data.len() && data[i] != b'\n' && data[i] != b'\r' {
-                i += 1;
-            }
-            continue;
-        }
-        if !in_inline && data[i] == b'(' {
-            i = skip_literal(data, i)?;
-            continue;
-        }
-        if !in_inline && data[i] == b'<' && data.get(i + 1) != Some(&b'<') {
-            i = skip_hex(data, i);
-            continue;
-        }
-        if !in_inline && is_op_token(data, i, b"BI") {
-            in_inline = true;
-            i += 2;
-            continue;
-        }
-        if in_inline && is_op_token(data, i, b"EI") {
-            count += 1;
-            in_inline = false;
-            i += 2;
-            continue;
-        }
-        i += 1;
-    }
-    if in_inline {
-        return Err(malformed_content("An inline image is unterminated."));
-    }
-    Ok(count)
-}
-
-fn is_delim(b: u8) -> bool {
-    b.is_ascii_whitespace()
-        || matches!(
-            b,
-            b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
-        )
-}
-
-fn is_op_token(data: &[u8], i: usize, token: &[u8]) -> bool {
-    if i + token.len() > data.len() || &data[i..i + token.len()] != token {
-        return false;
-    }
-    let before = i == 0 || is_delim(data[i - 1]);
-    let after = i + token.len() == data.len() || is_delim(data[i + token.len()]);
-    before && after
-}
-
-fn skip_literal(data: &[u8], start: usize) -> Result<usize, AppError> {
-    let mut i = start + 1;
-    let mut depth = 1;
-    while i < data.len() && depth > 0 {
-        match data[i] {
-            b'\\' => {
-                i = i.saturating_add(2).min(data.len());
-                continue;
-            }
-            b'(' => depth += 1,
-            b')' => depth -= 1,
-            _ => {}
-        }
-        i += 1;
-    }
-    if depth != 0 {
-        return Err(malformed_content("A literal string is unterminated."));
-    }
-    Ok(i)
-}
-
-fn skip_hex(data: &[u8], start: usize) -> usize {
-    let mut i = start + 1;
-    while i < data.len() && data[i] != b'>' {
-        i += 1;
-    }
-    if i < data.len() {
-        i + 1
-    } else {
-        i
-    }
-}
-
 fn document_is_signed(doc: &Document) -> bool {
     if let Ok(cat) = doc.catalog() {
         if cat.get(b"Perms").is_ok() {
@@ -1651,17 +1589,8 @@ fn name_is(dict: &Dictionary, key: &[u8], expect: &[u8]) -> bool {
     dict.get(key).ok().and_then(|o| o.as_name().ok()) == Some(expect)
 }
 
-fn fnv1a_u64(bytes: &[u8]) -> u64 {
-    let mut hash = FNV_OFFSET;
-    for byte in bytes {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
 fn encode_locator(
-    fp: u64,
+    fp: SourceFingerprint,
     page_index: u32,
     kind: SourceKind,
     contents_id: ObjectId,
@@ -1673,15 +1602,27 @@ fn encode_locator(
         SourceKind::Image => 1u8,
     };
     format!(
-        "v1:{fp:016x}:{page_index}:{k}:{}:{}:{op_index}:{}:{}",
+        "v2:{fp}:{page_index}:{k}:{}:{}:{op_index}:{}:{}",
         contents_id.0, contents_id.1, object_id.0, object_id.1
     )
 }
 
-fn parse_locator_fp(locator: &str) -> Option<u64> {
-    let rest = locator.strip_prefix("v1:")?;
+fn parse_locator_fp(locator: &str) -> Option<SourceFingerprint> {
+    let rest = locator.strip_prefix("v2:")?;
     let hex = rest.split(':').next()?;
-    u64::from_str_radix(hex, 16).ok()
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return None;
+    }
+    let mut digest = [0u8; 32];
+    for (slot, pair) in digest.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+        let pair = std::str::from_utf8(pair).ok()?;
+        *slot = u8::from_str_radix(pair, 16).ok()?;
+    }
+    Some(SourceFingerprint(digest))
 }
 
 fn path_str(path: &Path) -> String {
@@ -1704,6 +1645,15 @@ fn malformed_content(message: impl Into<String>) -> AppError {
         message,
     )
     .with_suggestion("Open the file in a PDF editor that can repair it, or use a different PDF.")
+}
+
+fn unsupported_filter(name: &str) -> AppError {
+    AppError::new(
+        "UNSUPPORTED_FILTER",
+        "This PDF uses an unsupported content filter",
+        format!("The source classifier cannot safely decode {name}."),
+    )
+    .with_suggestion("Use a PDF editor to rewrite the file, then try again.")
 }
 
 fn encrypted() -> AppError {

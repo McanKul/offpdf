@@ -1,6 +1,6 @@
 [package]
 name = "offpdf"
-version = "0.3.2"
+version = "0.4.0"
 description = "Free, open-source, offline-first desktop PDF utility."
 authors = ["OffPDF contributors"]
 edition = "2021"
@@ -27,6 +27,8 @@ fs2 = "0.4"
 
 # Read/write PDF page boxes (used for cropping).
 lopdf = "0.34"
+flate2 = "1"
+sha2 = "0.10"
 
 # Glyph metrics for the bundled editor font (Noto Sans).
 ttf-parser = "0.25"
@@ -43,9 +45,6 @@ image = { version = "0.25", default-features = false, features = [
 # Decode iPhone/iPad HEIC and HEIF photos. libheif is built and linked into the
 # app so users do not need to install a system codec or upload their photos.
 heif-rs = { path = "vendor/heif-rs" }
-
-[dev-dependencies]
-flate2 = "1"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"

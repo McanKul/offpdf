@@ -121,6 +121,29 @@ describe("workspace image imports", () => {
 });
 
 describe("OS-open workspace intake", () => {
+  it("deduplicates repeated OS-open paths while preserving first-seen order", async () => {
+    const result = await useWorkspace
+      .getState()
+      .addPaths(
+        [
+          "/tmp/second file.pdf",
+          "/tmp/first.pdf",
+          "/tmp/second file.pdf",
+          "/tmp/第三.pdf",
+          "/tmp/first.pdf",
+        ],
+        { dedupe: true },
+      );
+
+    expect(result.added).toBe(3);
+    expect(useWorkspace.getState().files.map((file) => file.path)).toEqual([
+      "/tmp/second file.pdf",
+      "/tmp/first.pdf",
+      "/tmp/第三.pdf",
+    ]);
+    expect(commands.getFileInfo).toHaveBeenCalledTimes(3);
+  });
+
   it("rejects OS-open of report.pdf.exe and .zip without adding them", async () => {
     const result = await useWorkspace
       .getState()
