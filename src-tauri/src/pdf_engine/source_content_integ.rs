@@ -35,6 +35,8 @@ const FILE_CAP_BYTES: u64 = 400 * 1024 * 1024;
 
 const FROZEN_REASONS: &[&str] = &[
     "MISSING_FONT",
+    "SUBSET_FONT",
+    "CUSTOM_ENCODING",
     "NO_TOUNICODE",
     "AMBIGUOUS_UNICODE",
     "TYPE3",
@@ -785,6 +787,73 @@ fn classify_missing_font_is_not_supported() {
 }
 
 #[test]
+fn classify_subset_and_custom_encoded_fonts_are_not_supported() {
+    let scratch = Scratch::new("review-font-compatibility");
+
+    let mut subset = Dictionary::new();
+    subset.set("Type", "Font");
+    subset.set("Subtype", "Type1");
+    subset.set("BaseFont", "ABCDEF+Helvetica");
+    let subset_path = scratch.file("subset.pdf");
+    write_text_page_with_font(
+        &subset_path,
+        b"BT /F1 12 Tf 72 400 Td (Hi) Tj ET",
+        subset,
+    );
+    let subset_hits = classify(&subset_path, "REVIEW-SUBSET-FONT");
+    assert_unsupported(
+        first_of_kind(&subset_hits, "text", "REVIEW-SUBSET-FONT"),
+        "text",
+        "SUBSET_FONT",
+        "REVIEW-SUBSET-FONT",
+    );
+
+    let mut differences = Dictionary::new();
+    differences.set("Type", "Encoding");
+    differences.set("BaseEncoding", "WinAnsiEncoding");
+    differences.set(
+        "Differences",
+        vec![Object::Integer(72), Object::Name(b"customH".to_vec())],
+    );
+    let mut custom = Dictionary::new();
+    custom.set("Type", "Font");
+    custom.set("Subtype", "Type1");
+    custom.set("BaseFont", "Helvetica");
+    custom.set("Encoding", differences);
+    let custom_path = scratch.file("custom-encoding.pdf");
+    write_text_page_with_font(
+        &custom_path,
+        b"BT /F1 12 Tf 72 400 Td (Hi) Tj ET",
+        custom,
+    );
+    let custom_hits = classify(&custom_path, "REVIEW-CUSTOM-ENCODING");
+    assert_unsupported(
+        first_of_kind(&custom_hits, "text", "REVIEW-CUSTOM-ENCODING"),
+        "text",
+        "CUSTOM_ENCODING",
+        "REVIEW-CUSTOM-ENCODING",
+    );
+}
+
+#[test]
+fn classify_named_standard_encoding_remains_supported() {
+    let scratch = Scratch::new("review-standard-encoding");
+    let path = scratch.file("win-ansi.pdf");
+    let mut font = Dictionary::new();
+    font.set("Type", "Font");
+    font.set("Subtype", "Type1");
+    font.set("BaseFont", "Helvetica");
+    font.set("Encoding", "WinAnsiEncoding");
+    write_text_page_with_font(&path, b"BT /F1 12 Tf 72 400 Td (Hi) Tj ET", font);
+    let hits = classify(&path, "REVIEW-STANDARD-ENCODING");
+    assert_supported_text_or_image(
+        first_of_kind(&hits, "text", "REVIEW-STANDARD-ENCODING"),
+        "text",
+        "REVIEW-STANDARD-ENCODING",
+    );
+}
+
+#[test]
 fn classify_repeated_form_occurrences_have_unique_locators() {
     let scratch = Scratch::new("review-repeated-form");
     let path = scratch.file("repeated-form.pdf");
@@ -823,15 +892,36 @@ fn write_helvetica_page(path: &Path, content: &[u8]) {
 }
 
 fn write_helvetica_page_with_stream_dict(path: &Path, content: &[u8], stream_dict: Dictionary) {
+    let mut font = Dictionary::new();
+    font.set("Type", "Font");
+    font.set("Subtype", "Type1");
+    font.set("BaseFont", "Helvetica");
+    write_text_page_with_font_and_stream_dict(path, content, font, stream_dict);
+}
+
+fn write_text_page_with_font(path: &Path, content: &[u8], font: Dictionary) {
+    write_text_page_with_font_and_stream_dict(path, content, font, Dictionary::new());
+}
+
+fn write_text_page_with_font_and_stream_dict(
+    path: &Path,
+    content: &[u8],
+    font: Dictionary,
+    stream_dict: Dictionary,
+) {
     let mut doc = Document::with_version("1.7");
     let pages_id = doc.new_object_id();
     let content_id = doc.add_object(Object::Stream(Stream::new(stream_dict, content.to_vec())));
+    let mut fonts = Dictionary::new();
+    fonts.set("F1", Object::Dictionary(font));
+    let mut resources = Dictionary::new();
+    resources.set("Font", Object::Dictionary(fonts));
     let mut page = Dictionary::new();
     page.set("Type", "Page");
     page.set("Parent", pages_id);
     page.set("MediaBox", box_obj([0, 0, 612, 792]));
     page.set("Contents", content_id);
-    page.set("Resources", Object::Dictionary(helvetica_resources()));
+    page.set("Resources", Object::Dictionary(resources));
     let page_id = doc.add_object(Object::Dictionary(page));
 
     let mut pages = Dictionary::new();

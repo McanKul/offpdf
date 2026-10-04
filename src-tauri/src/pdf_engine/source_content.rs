@@ -171,6 +171,8 @@ struct Flags {
     no_tounicode: bool,
     missing_font: bool,
     ambiguous: bool,
+    subset_font: bool,
+    custom_encoding: bool,
     masked: bool,
     shared: bool,
     geometry: bool,
@@ -256,6 +258,8 @@ struct TextInspect {
     vertical: bool,
     no_tounicode: bool,
     ambiguous: bool,
+    subset_font: bool,
+    custom_encoding: bool,
     width: f64,
     font_id: ObjectId,
 }
@@ -618,6 +622,8 @@ impl Walker<'_> {
             no_tounicode: inspect.no_tounicode,
             missing_font: inspect.missing_font,
             ambiguous: inspect.ambiguous,
+            subset_font: inspect.subset_font,
+            custom_encoding: inspect.custom_encoding,
             masked: gs.masked,
             geometry: geom_unsafe,
             ..Flags::default()
@@ -798,6 +804,10 @@ fn pick_reason(flags: &Flags) -> (SourceCapability, Option<String>) {
         Some("NO_TOUNICODE")
     } else if flags.ambiguous {
         Some("AMBIGUOUS_UNICODE")
+    } else if flags.subset_font {
+        Some("SUBSET_FONT")
+    } else if flags.custom_encoding {
+        Some("CUSTOM_ENCODING")
     } else if flags.masked {
         Some("MASKED_IMAGE")
     } else if flags.shared {
@@ -1010,10 +1020,14 @@ fn inspect_text(
     let mut vertical = false;
     let mut no_tounicode = false;
     let mut ambiguous = false;
+    let mut subset_font = false;
+    let mut custom_encoding = false;
     let mut width_sum = 0.0;
     if let Some(font) = dict {
         type3 = is_type3(font);
         vertical = is_vertical(doc, font);
+        subset_font = is_subset_font(doc, font);
+        custom_encoding = !is_cid_or_type0(font) && has_custom_encoding(doc, font);
         if is_cid_or_type0(font) {
             if tounicode_usable(doc, font) {
                 ambiguous = true;
@@ -1036,6 +1050,8 @@ fn inspect_text(
         vertical,
         no_tounicode,
         ambiguous,
+        subset_font,
+        custom_encoding,
         width: (width_sum + tj_adj) / 1000.0 * size,
         font_id,
     }
@@ -1044,6 +1060,32 @@ fn inspect_text(
 fn is_type3(font: &Dictionary) -> bool {
     font.get(b"Subtype").ok().and_then(|o| o.as_name().ok()) == Some(b"Type3")
         || font.get(b"CharProcs").is_ok()
+}
+
+fn is_subset_font(doc: &Document, font: &Dictionary) -> bool {
+    let Ok(Object::Name(name)) = font.get_deref(b"BaseFont", doc) else {
+        return false;
+    };
+    name.len() > 7
+        && name.get(6) == Some(&b'+')
+        && name[..6].iter().all(u8::is_ascii_uppercase)
+}
+
+fn has_custom_encoding(doc: &Document, font: &Dictionary) -> bool {
+    if font.get(b"Encoding").is_err() {
+        return false;
+    }
+    let Ok(encoding) = font.get_deref(b"Encoding", doc) else {
+        return true;
+    };
+    !matches!(
+        encoding,
+        Object::Name(name)
+            if matches!(
+                name.as_slice(),
+                b"StandardEncoding" | b"WinAnsiEncoding" | b"MacRomanEncoding"
+            )
+    )
 }
 
 fn is_cid_or_type0(font: &Dictionary) -> bool {
