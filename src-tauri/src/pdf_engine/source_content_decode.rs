@@ -99,7 +99,7 @@ fn check_decode_parms(parms: Option<&Object>) -> Result<(), DecodeError> {
     }
 }
 
-fn inflate_capped(data: &[u8], cap: usize) -> Result<Vec<u8>, DecodeError> {
+pub(super) fn inflate_capped(data: &[u8], cap: usize) -> Result<Vec<u8>, DecodeError> {
     let mut decoder = Decompress::new(true);
     let mut output = Vec::new();
     let mut step = vec![0u8; 64 * 1024];
@@ -145,7 +145,7 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn ascii_hex_decode(data: &[u8], cap: usize) -> Result<Vec<u8>, DecodeError> {
+pub(super) fn ascii_hex_decode(data: &[u8], cap: usize) -> Result<Vec<u8>, DecodeError> {
     let mut output = Vec::new();
     let mut high = None;
     for &byte in data {
@@ -167,7 +167,7 @@ fn ascii_hex_decode(data: &[u8], cap: usize) -> Result<Vec<u8>, DecodeError> {
     Ok(output)
 }
 
-fn ascii85_decode(data: &[u8], cap: usize) -> Result<Vec<u8>, DecodeError> {
+pub(super) fn ascii85_decode(data: &[u8], cap: usize) -> Result<Vec<u8>, DecodeError> {
     let body = data.strip_prefix(b"<~").unwrap_or(data);
     let mut output = Vec::new();
     let mut group = [0u8; 5];
