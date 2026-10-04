@@ -132,6 +132,38 @@ pub(super) fn inflate_capped(data: &[u8], cap: usize) -> Result<Vec<u8>, DecodeE
     }
 }
 
+/// Returns the encoded byte length of one complete zlib stream while bounding
+/// its decoded output. Trailing bytes are intentionally left for the caller.
+pub(super) fn inflate_end(data: &[u8], cap: usize) -> Result<usize, DecodeError> {
+    let mut decoder = Decompress::new(true);
+    let mut step = vec![0u8; 64 * 1024];
+    loop {
+        let input_before =
+            usize::try_from(decoder.total_in()).map_err(|_| DecodeError::TooLarge)?;
+        let output_before =
+            usize::try_from(decoder.total_out()).map_err(|_| DecodeError::TooLarge)?;
+        let input = data.get(input_before..).ok_or(DecodeError::Corrupt)?;
+        let status = decoder
+            .decompress(input, &mut step, FlushDecompress::None)
+            .map_err(|_| DecodeError::Corrupt)?;
+        let input_after = usize::try_from(decoder.total_in()).map_err(|_| DecodeError::TooLarge)?;
+        let output_after =
+            usize::try_from(decoder.total_out()).map_err(|_| DecodeError::TooLarge)?;
+        if output_after > cap {
+            return Err(DecodeError::TooLarge);
+        }
+        match status {
+            Status::StreamEnd => return Ok(input_after),
+            Status::Ok | Status::BufError
+                if input_after == input_before && output_after == output_before =>
+            {
+                return Err(DecodeError::Corrupt)
+            }
+            Status::Ok | Status::BufError => {}
+        }
+    }
+}
+
 fn is_pdf_whitespace(byte: u8) -> bool {
     matches!(byte, 0 | 9 | 10 | 12 | 13 | 32)
 }
@@ -249,9 +281,18 @@ mod tests {
 
     #[test]
     fn flate_is_strict_and_capped() {
-        let valid = stream(Object::Name(b"FlateDecode".to_vec()), flate(b"hello"));
+        let encoded = flate(b"hello");
+        let valid = stream(Object::Name(b"FlateDecode".to_vec()), encoded.clone());
         assert_eq!(decode_stream(&valid, 5).unwrap(), b"hello");
         assert_eq!(decode_stream(&valid, 4), Err(DecodeError::TooLarge));
+        let mut with_trailing = encoded.clone();
+        with_trailing.extend_from_slice(b" trailing");
+        assert_eq!(inflate_end(&with_trailing, 5).unwrap(), encoded.len());
+        assert_eq!(inflate_end(&with_trailing, 4), Err(DecodeError::TooLarge));
+        assert_eq!(
+            inflate_end(&encoded[..encoded.len() - 1], 5),
+            Err(DecodeError::Corrupt)
+        );
 
         let corrupt = stream(
             Object::Name(b"FlateDecode".to_vec()),

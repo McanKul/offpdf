@@ -1,8 +1,9 @@
 //! Resource bounds applied before lopdf parses source content.
 //!
-//! This bounds raw cross-reference data, object values, and object streams.
-//! Bounded content-operator parsing remains separate follow-up work.
+//! This bounds raw cross-reference data, object values, object streams, and
+//! page/Form content before lopdf parses them.
 
+mod content;
 mod headers;
 mod xref;
 
@@ -63,6 +64,10 @@ pub(super) fn load_document(bytes: &[u8], path: &str) -> Result<Document, AppErr
         return Err(file_too_complex("too many objects"));
     }
     Ok(document)
+}
+
+pub(super) fn prepare_content(bytes: &[u8]) -> Result<content::PreparedContent<'_>, AppError> {
+    content::prepare(bytes)
 }
 
 fn object_stream_guard(id: (u32, u16), object: &mut Object) -> Option<((u32, u16), Object)> {
