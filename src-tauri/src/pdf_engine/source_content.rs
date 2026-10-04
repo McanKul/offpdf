@@ -5,14 +5,16 @@
 //!
 //! Research prototype only; no Tauri command or UI invokes this module. The
 //! source is read once through a hard cap, then both fingerprinted and parsed
-//! from that same snapshot. Content streams are decoded through a hard output
-//! cap. Bounded object loading/operator parsing and font/geometry support are
-//! still incomplete. Complete #33's remaining resource bounds and compatibility
-//! evaluation before exposing this API to user files or enabling editing.
+//! from that same snapshot. Object values, object streams, and content stream
+//! decoding are bounded. Raw xref validation, bounded operator parsing, and
+//! font/geometry support are still incomplete. Complete #33's remaining resource
+//! bounds and compatibility evaluation before exposing this API to user files or
+//! enabling editing.
 
 use crate::error::AppError;
 use crate::pdf_engine::crop;
 use crate::pdf_engine::source_content_decode::{self, DecodeError};
+use crate::pdf_engine::source_content_preflight;
 use lopdf::{content::Content, Dictionary, Document, Object, ObjectId, Stream};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -114,9 +116,7 @@ fn open_source(path: &Path) -> Result<(Document, SourceFingerprint), AppError> {
         return Err(file_too_large());
     }
     let fp = SourceFingerprint(Sha256::digest(&bytes).into());
-    let doc = Document::load_mem(&bytes).map_err(|e| {
-        AppError::invalid_pdf(&path_str(path)).with_details(format!("lopdf: {e}"))
-    })?;
+    let doc = source_content_preflight::load_document(&bytes, &path_str(path))?;
     if doc.is_encrypted() {
         return Err(encrypted());
     }

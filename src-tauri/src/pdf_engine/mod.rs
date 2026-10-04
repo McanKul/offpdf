@@ -38,6 +38,7 @@ pub mod qpdf;
 pub mod render;
 pub mod source_content;
 mod source_content_decode;
+mod source_content_preflight;
 #[cfg(test)]
 mod source_edit_fixtures;
 #[cfg(test)]
