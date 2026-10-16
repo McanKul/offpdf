@@ -28,9 +28,12 @@ source-disclosure obligation for OffPDF.
 
 ## Baseline-model candidates
 
-If OffPDF only downloads weights after an explicit user action and never
-bundles or mirrors them, the redistribution obligations below do not apply to
-OffPDF (the runtime obligations still do). The table covers both cases.
+Whether the redistribution obligations below apply depends on the exact flow
+and on the model's terms. When a flow downloads weights directly from the
+original provider at the user's request, OffPDF may not be redistributing them,
+but that should be confirmed for each flow instead of assumed. The runtime
+obligations above still apply regardless. The table covers both bundled and
+download-on-first-run cases.
 
 | Model (size class) | License | Redistribution | Modification | Commercial use | Notices and restrictions | Primary source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -38,8 +41,8 @@ OffPDF (the runtime obligations still do). The table covers both cases.
 | Phi-4-mini-instruct (3.8B) | MIT | Permitted | Permitted | Permitted | Include the copyright notice and license text | [Model card](https://huggingface.co/microsoft/Phi-4-mini-instruct) |
 | SmolLM2-1.7B-Instruct (1.7B) | Apache-2.0 | Permitted | Permitted | Permitted | Include the license text and NOTICE | [Model card](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct) |
 | Mistral-7B-Instruct-v0.3 (7B) | Apache-2.0 | Permitted | Permitted | Permitted | Include the license text and NOTICE | [Model card](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3) |
-| Llama 3.2 1B / 3B (text-only) | Llama 3.2 Community License (custom; not OSI-approved) | Permitted with pass-through | Permitted; derivative model names must begin with "Llama" | Permitted below 700M monthly active users | Ship the license and the Acceptable Use Policy; include the "Built with Meta Llama 3.2" attribution | [Model card](https://huggingface.co/meta-llama/Llama-3.2-1B) · [License text](https://github.com/meta-llama/llama-models/blob/main/models/llama3_2/LICENSE) · [Use policy](https://github.com/meta-llama/llama-models/blob/main/models/llama3_2/USE_POLICY.md) |
-| Gemma 3 4B | Gemma Terms of Use (custom; not OSI-approved) | Permitted with pass-through | Permitted | Permitted | Pass the terms and the Prohibited Use Policy on to recipients; Google may update the terms | [Model card](https://huggingface.co/google/gemma-3-4b-it) · [Terms](https://ai.google.dev/gemma/terms) · [Prohibited use](https://ai.google.dev/gemma/prohibited_use_policy) |
+| Llama 3.2 1B / 3B (text-only) | Llama 3.2 Community License (custom; not OSI-approved) | Permitted with pass-through | Permitted; derivative model names must begin with "Llama" | Permitted below 700M monthly active users | If redistributing: provide a copy of the license; prominently display "Built with Llama"; include the license's "Notice" file attribution; pass on the Acceptable Use Policy | [Model card](https://huggingface.co/meta-llama/Llama-3.2-1B) · [License text](https://github.com/meta-llama/llama-models/blob/main/models/llama3_2/LICENSE) · [Use policy](https://github.com/meta-llama/llama-models/blob/main/models/llama3_2/USE_POLICY.md) |
+| Gemma 3 4B | Gemma Terms of Use (custom; not OSI-approved) | Permitted with pass-through | Permitted | Permitted | Pass the terms and the Prohibited Use Policy on to recipients | [Model card](https://huggingface.co/google/gemma-3-4b-it) · [Terms](https://ai.google.dev/gemma/terms) · [Prohibited use](https://ai.google.dev/gemma/prohibited_use_policy) |
 
 ## Items marked for review (not guessed)
 
@@ -49,9 +52,10 @@ OffPDF (the runtime obligations still do). The table covers both cases.
   the text models are not covered by that sentence, but the current license
   text should be read before any bundled distribution. This note deliberately
   does not conclude.
-- **Gemma 3 obligations depend on the flow.** A download-on-first-run flow
-  avoids passing the terms to end users; bundling or mirroring them in the
-  installer does not. Confirm which flow OffPDF would use before bundling.
+- **Gemma 3 obligations depend on the flow.** Whether recipients must be given
+  the terms depends on whether OffPDF distributes the weights itself (bundling
+  or mirroring) or has the app download them directly from Google; confirm the
+  exact flow before bundling.
 - **Qwen3 family scope.** The license is set per model; verify the model card
   of the exact revision added before treating this row as final for other
   sizes.
