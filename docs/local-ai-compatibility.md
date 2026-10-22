@@ -1,8 +1,9 @@
 # Local AI compatibility checks
 
-OffPDF checks the local device before a user installs or loads an optional
-model. The check is on-device only: it does not make a request, collect
-telemetry, inspect a PDF, or read the model file.
+OffPDF has a local backend compatibility check for optional models. The current
+import/load UI does not call it yet; #82 remains open for that user-visible
+preflight. The check itself does not make a request, collect telemetry, inspect
+a PDF, or read the model file.
 
 The Rust/Tauri backend exposes:
 
