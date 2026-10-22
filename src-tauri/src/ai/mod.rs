@@ -8,6 +8,7 @@
 //! Generate is UTF-8 prompt in, UTF-8 text out — not a document path and not
 //! file bytes. Settings IPC lives in `commands/ai.rs`, not here.
 
+pub(crate) mod compatibility;
 mod fake;
 pub(crate) mod lifecycle;
 pub mod store;

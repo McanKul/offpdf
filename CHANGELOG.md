@@ -4,6 +4,10 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+### Added
+
+- Added an on-device compatibility check for optional local AI models. It reports supported, limited, and unsupported states with a reason and recommendation before a model is installed, without affecting the PDF tools.
+
 ## 0.4.0 - 2026-10-05
 
 ### Added

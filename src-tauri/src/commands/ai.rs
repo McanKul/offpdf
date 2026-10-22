@@ -7,6 +7,7 @@ use serde::Serialize;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
+use crate::ai::compatibility::{evaluate, probe, CompatibilityReport, ModelRequirements};
 use crate::ai::lifecycle::{
     cancel, generate, import, load, preview, remove, snapshot, unload, ModelPreview,
     ModelRemoveResult,
@@ -205,6 +206,24 @@ pub async fn ai_list_models(
             selected_checksum: session.selected(),
             store_root: root.to_string_lossy().into_owned(),
         })
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Check local hardware and resources against caller-supplied model
+/// requirements. Unavailable system information is reported in the result;
+/// the check itself does not fail and never touches the PDF tools.
+#[tauri::command]
+pub async fn ai_check_compatibility(
+    app: tauri::AppHandle,
+    requirements: ModelRequirements,
+) -> Result<CompatibilityReport, AppError> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<CompatibilityReport, AppError> {
+        // The store root only selects the volume to inspect. If app data is
+        // unavailable, the report still explains that free space is unknown.
+        let root = store_root(&app).ok();
+        Ok(evaluate(&requirements, &probe(root.as_deref())))
     })
     .await
     .map_err(join_err)?

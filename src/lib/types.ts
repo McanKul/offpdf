@@ -232,6 +232,33 @@ export interface ModelRemoveResult {
   recoveredBytes: number;
 }
 
+/** Compatibility verdict from `ai_check_compatibility` (Rust `CompatibilityStatus`). */
+export type CompatibilityStatus = "supported" | "supportedWithLimits" | "unsupported";
+
+/** Model requirements supplied to `ai_check_compatibility` (Rust `ModelRequirements`). */
+export interface ModelRequirements {
+  minMemoryBytes: number;
+  minDiskBytes: number;
+  architectures?: string[];
+  runtime?: string | null;
+}
+
+/** Local hardware/resource report (Rust `CompatibilityReport`). */
+export interface CompatibilityReport {
+  status: CompatibilityStatus;
+  reason: string;
+  recommendation: string;
+  operatingSystem: string | null;
+  architecture: string | null;
+  runtimeId: string | null;
+  runtimeAvailable: boolean;
+  requiredMemoryBytes: number;
+  totalMemoryBytes: number | null;
+  availableMemoryBytes: number | null;
+  requiredDiskBytes: number;
+  availableDiskBytes: number | null;
+}
+
 /** Type guard: is this value an AppError coming back from `invoke`? */
 export function isAppError(value: unknown): value is AppError {
   if (typeof value !== "object" || value === null) {

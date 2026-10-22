@@ -24,6 +24,8 @@ serde_json = "1"
 
 # Cross-platform available-disk-space query.
 fs2 = "0.4"
+# Cross-platform memory availability for local-model compatibility checks.
+sysinfo = { version = "0.36", default-features = false, features = ["system"] }
 
 # Read/write PDF page boxes (used for cropping).
 lopdf = "0.34"
