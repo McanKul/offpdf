@@ -12,8 +12,11 @@ This layer is intentionally narrow:
   formats citations. It never reads files, calls the network, or loads a model.
 - The session UI (#88) maps a citation target to the existing page viewer.
 
-The implementation lives in `src/lib/assistant/retrieval.ts` and
-`src/lib/assistant/citations.ts`.
+The implementation lives in `src/lib/assistant/retrieval.ts`,
+`src/lib/assistant/citations.ts`, and `src/lib/assistant/ingestion.ts` (with a
+Tauri adapter in `ingestionTauri.ts`). See
+[assistant-ingestion.md](assistant-ingestion.md) for extraction, OCR, bounds and
+cancellation behavior.
 
 ## Pipeline
 
@@ -152,8 +155,9 @@ context before generating the summary.
 ## Opening a cited page
 
 `Citation` contains `sourceId` and `page`, but no filesystem path. The session UI
-resolves `sourceId` against its in-memory workspace, then passes the resulting
-`PageRef` to the existing viewer.
+resolves `sourceId` against its in-memory workspace, then opens the existing
+`PageLightbox` at that page. See [assistant-sessions.md](assistant-sessions.md)
+for the optional model gate, clear/cancel lifecycle and keyboard behavior.
 
 ```ts
 import { citationTarget } from "@/lib/assistant/citations";

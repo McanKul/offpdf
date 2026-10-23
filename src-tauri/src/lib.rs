@@ -31,6 +31,12 @@
 //!
 //! Jobs (`commands::jobs`):
 //!   - `cancel_job(registry, job_id: String) -> Result<(), AppError>`
+//!
+//! Private assistant (`commands::assistant`) — bounded text only, never bytes:
+//!   - `assistant_pdf_text(input_path: String) -> Result<AssistantText, AppError>`
+//!   - `assistant_ocr_text(registry, job_id, input_path, pages, lang) -> Result<AssistantText, AppError>`
+//!     (explicit OCR of selected pages; deletes its temporary PDF, cancellable
+//!     with `cancel_job`)
 
 mod commands;
 mod error;
@@ -103,6 +109,9 @@ pub fn run() {
             commands::pdf::nup_pdf,
             // jobs
             commands::jobs::cancel_job,
+            // private assistant ingestion
+            commands::assistant::assistant_pdf_text,
+            commands::assistant::assistant_ocr_text,
             // page preview / review
             commands::render::renderer_available,
             commands::render::render_thumbnails,

@@ -131,6 +131,16 @@ pub struct PagePick {
     pub page: u32,
 }
 
+/// Bounded per-page text returned to the private assistant. `truncated` means
+/// the native extractor hit its byte cap, so later pages (or the tail of the
+/// last page) may be missing. The assistant never indexes more than this.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistantText {
+    pub pages: Vec<String>,
+    pub truncated: bool,
+}
+
 /// A rendered page preview: page number + a base64 PNG data URL. Only tiny
 /// thumbnails cross IPC this way — never the source PDF bytes.
 #[derive(Debug, Clone, Serialize)]

@@ -175,6 +175,17 @@ const MAX_TEXT_BYTES: u64 = 64 * 1024 * 1024;
 /// page. Only text crosses IPC — never the PDF bytes. Output is capped at
 /// `MAX_TEXT_BYTES`; beyond that the document is searchable up to the cap only.
 pub fn page_texts(app: &tauri::AppHandle, input: &str) -> Result<Vec<String>, AppError> {
+    page_texts_bounded(app, input, MAX_TEXT_BYTES).map(|(pages, _)| pages)
+}
+
+/// Bounded variant used by private-assistant ingestion. Returns the page texts
+/// plus whether `max_bytes` cut the native output short. The assistant uses a
+/// much smaller cap than search because it only needs a bounded context.
+pub(crate) fn page_texts_bounded(
+    app: &tauri::AppHandle,
+    input: &str,
+    max_bytes: u64,
+) -> Result<(Vec<String>, bool), AppError> {
     use std::io::Read;
     if !Path::new(input).is_file() {
         return Err(AppError::invalid_pdf(input));
@@ -197,19 +208,31 @@ pub fn page_texts(app: &tauri::AppHandle, input: &str) -> Result<Vec<String>, Ap
 
     // Stream stdout but never buffer more than the cap, so a pathologically
     // large (e.g. 100 GB) text PDF can't blow up memory; then stop the process.
+    let cap = max_bytes.max(1);
     let mut buf: Vec<u8> = Vec::new();
+    let mut truncated = false;
     if let Some(stdout) = child.stdout.take() {
-        let _ = stdout.take(MAX_TEXT_BYTES).read_to_end(&mut buf);
+        let _ = stdout.take(cap.saturating_add(1)).read_to_end(&mut buf);
+        if buf.len() as u64 > cap {
+            buf.truncate(usize::try_from(cap).unwrap_or(usize::MAX));
+            truncated = true;
+        }
     }
     let _ = child.kill();
     let _ = child.wait();
 
     let text = String::from_utf8_lossy(&buf);
+    Ok((split_pages(&text), truncated))
+}
+
+/// Split `pdftotext` output on the form-feed page separator. A trailing empty
+/// page (the separator after the last page) is not a real page.
+fn split_pages(text: &str) -> Vec<String> {
     let mut pages: Vec<String> = text.split('\u{000C}').map(|s| s.to_string()).collect();
     if pages.last().map(|s| s.trim().is_empty()).unwrap_or(false) {
         pages.pop();
     }
-    Ok(pages)
+    pages
 }
 
 /// A single page extracted to its own small PDF is capped here; bigger (e.g. a
@@ -589,4 +612,28 @@ pub(crate) fn fnv1a_hex(s: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::split_pages;
+
+    #[test]
+    fn splits_pages_on_form_feed() {
+        assert_eq!(
+            split_pages("first page\u{000C}second page\u{000C}"),
+            vec!["first page", "second page"]
+        );
+    }
+
+    #[test]
+    fn keeps_intermediate_empty_pages() {
+        assert_eq!(split_pages("a\u{000C}\u{000C}b"), vec!["a", "", "b"]);
+    }
+
+    #[test]
+    fn empty_output_has_no_pages_but_one_empty_page_is_kept() {
+        assert!(split_pages("").is_empty());
+        assert_eq!(split_pages("\u{000C}"), vec![""]);
+    }
 }

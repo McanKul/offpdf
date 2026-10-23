@@ -30,6 +30,7 @@ import { BlankPage } from "@/features/blank/BlankPage";
 import { MetadataPage } from "@/features/metadata/MetadataPage";
 import { TextExportPage } from "@/features/text-export/TextExportPage";
 import { EditPdfPage } from "@/features/edit-pdf/EditPdfPage";
+import { AssistantPage } from "@/features/assistant/AssistantPage";
 
 export function App() {
   return (
@@ -63,6 +64,7 @@ export function App() {
               <Route path="/tools/text-export" element={<TextExportPage />} />
               <Route path="/tools/edit-pdf" element={<EditPdfPage />} />
               <Route path="/dev/editor-canvas" element={<Navigate to="/tools/edit-pdf" replace />} />
+              <Route path="/assistant" element={<AssistantPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/about" element={<AboutPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
