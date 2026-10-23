@@ -11,6 +11,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AssistantText,
   DiskSpaceInfo,
   FileInfo,
   DiffResult,
@@ -257,6 +258,30 @@ export function officeAvailable(): Promise<boolean> {
 /** Per-page text of a PDF, for in-app search (only text crosses IPC). */
 export function pdfText(inputPath: string): Promise<string[]> {
   return invoke<string[]>("pdf_text", { inputPath });
+}
+
+/** Bounded native per-page text for the private assistant Ingestion (#86). */
+export function assistantPdfText(inputPath: string): Promise<AssistantText> {
+  return invoke<AssistantText>("assistant_pdf_text", { inputPath });
+}
+
+/**
+ * Explicitly OCR selected pages for the private assistant. The backend builds
+ * one temporary searchable PDF, returns its per-page text, then deletes the
+ * temporary file. Cancellable with `cancelJob(jobId)`.
+ */
+export function assistantOcrText(
+  jobId: string,
+  inputPath: string,
+  pages: number[],
+  lang: string,
+): Promise<AssistantText> {
+  return invoke<AssistantText>("assistant_ocr_text", {
+    jobId,
+    inputPath,
+    pages,
+    lang,
+  });
 }
 
 /** One page as a standalone PDF (base64) for true-vector zoom; null if too big. */

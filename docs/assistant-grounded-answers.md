@@ -12,8 +12,11 @@ This layer is intentionally narrow:
   formats citations. It never reads files, calls the network, or loads a model.
 - The session UI (#88) maps a citation target to the existing page viewer.
 
-The implementation lives in `src/lib/assistant/retrieval.ts` and
-`src/lib/assistant/citations.ts`.
+The implementation lives in `src/lib/assistant/retrieval.ts`,
+`src/lib/assistant/citations.ts`, and `src/lib/assistant/ingestion.ts` (with a
+Tauri adapter in `ingestionTauri.ts`). See
+[assistant-ingestion.md](assistant-ingestion.md) for extraction, OCR, bounds and
+cancellation behavior.
 
 ## Pipeline
 

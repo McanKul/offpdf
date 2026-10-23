@@ -120,6 +120,16 @@ export interface PagePick {
   page: number;
 }
 
+/**
+ * Bounded per-page text returned to the private assistant (Rust
+ * `AssistantText`). `truncated` means the native extractor hit its byte cap,
+ * so later pages or the tail of the last page may be missing.
+ */
+export interface AssistantText {
+  pages: string[];
+  truncated: boolean;
+}
+
 /** A rotation for specific output pages (Rust `RotateGroup`). */
 export interface RotateGroup {
   angle: number;

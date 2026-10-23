@@ -1,0 +1,35 @@
+{
+  "native": {
+    "name": "Annual Report 2025.pdf",
+    "pages": [
+      "Annual Report 2025\n\nRevenue grew by 12% in the fiscal year. Operating costs stayed flat, and the board approved a new research budget for the next twelve months.",
+      "Operating costs\n\nFacilities and travel were the largest categories. The finance team expects a modest increase in the coming year, driven by the new office.",
+      "Outlook\n\nThe company plans to invest in local-first software and offline tools. No cloud migration is planned for the current fiscal year."
+    ]
+  },
+  "scanned": {
+    "name": "Scanned Invoice.pdf",
+    "pages": ["", " \n\t\n ", "12"]
+  },
+  "mixed": {
+    "name": "Mixed Records.pdf",
+    "pages": [
+      "Cover note\n\nThis native page describes the archive and its retention schedule in enough detail to be useful.",
+      "",
+      "Minutes\n\nThe committee reviewed the local-first proposal and approved a small pilot project for the next quarter.",
+      "   \n\t "
+    ]
+  },
+  "ocr": {
+    "scanned": [
+      "Scanned invoice number 0042 from Northwind Traders for office supplies.",
+      "Payment is due within thirty days. Please reference the invoice number on the transfer.",
+      "Total amount due: 148.50. Thank you for your business."
+    ],
+    "mixed": [
+      "OCR page two recovered a handwritten note about the archive retention schedule.",
+      "OCR page four recovered the signature block and the date of approval."
+    ]
+  },
+  "longPage": "Local-first software keeps documents on the user's machine. It works without a network connection and gives the user control over private files. This paragraph is deliberately long so ingestion must split it into multiple page-aligned chunks at word boundaries rather than emitting one oversized chunk. The assistant still needs a bounded context, so chunking is part of the safety contract."
+}
