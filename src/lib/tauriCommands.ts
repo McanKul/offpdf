@@ -652,7 +652,7 @@ export function aiUnloadModel(): Promise<void> {
   return invoke<void>("ai_unload_model");
 }
 
-/** Cooperative cancel of an in-flight generate. */
+/** Cooperative cancel of an in-flight load or generate. */
 export function aiCancel(): Promise<void> {
   return invoke<void>("ai_cancel");
 }

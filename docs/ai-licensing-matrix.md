@@ -44,6 +44,14 @@ download-on-first-run cases.
 | Llama 3.2 1B / 3B (text-only) | Llama 3.2 Community License (custom; not OSI-approved) | Permitted with pass-through | Permitted; derivative model names must begin with "Llama" | Permitted below 700M monthly active users | If redistributing: provide a copy of the license; prominently display "Built with Llama"; include the license's "Notice" file attribution; pass on the Acceptable Use Policy | [Model card](https://huggingface.co/meta-llama/Llama-3.2-1B) · [License text](https://github.com/meta-llama/llama-models/blob/main/models/llama3_2/LICENSE) · [Use policy](https://github.com/meta-llama/llama-models/blob/main/models/llama3_2/USE_POLICY.md) |
 | Gemma 3 4B | Gemma Terms of Use (custom; not OSI-approved) | Permitted with pass-through | Permitted | Permitted | Pass the terms and the Prohibited Use Policy on to recipients | [Model card](https://huggingface.co/google/gemma-3-4b-it) · [Terms](https://ai.google.dev/gemma/terms) · [Prohibited use](https://ai.google.dev/gemma/prohibited_use_policy) |
 
+## Imported files
+
+The model store does not invent a license for a user-imported file. If the file
+does not carry a license that OffPDF can read, Settings shows "Unknown — check
+the model's license before using it" and never displays the store's internal
+`imported` placeholder as a license name. The user remains responsible for
+confirming the terms of any file they import.
+
 ## Items marked for review (not guessed)
 
 - **Llama 3.2 geographic scope.** The release notes state that the multimodal

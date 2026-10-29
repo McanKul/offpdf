@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use crate::ai::compatibility::{evaluate, probe, CompatibilityReport, ModelRequirements};
 use crate::error::AppError;
 
 use super::store::{ModelManifest, ModelStore};
@@ -16,7 +17,6 @@ use super::{BackendStatus, InferenceBackend};
 
 const LICENSE_PLACEHOLDER: &str = "imported";
 const RUNTIME_COMPAT_PLACEHOLDER: &str = "any";
-const HARDWARE_STUB: &str = "Hardware check is not available in this version.";
 
 /// Facts shown before an explicit import. Preview must not create blobs.
 #[derive(Debug, Clone)]
@@ -26,7 +26,7 @@ pub struct ModelPreview {
     pub license: String,
     pub runtime_compat: String,
     pub location: PathBuf,
-    pub compatibility: String,
+    pub compatibility: CompatibilityReport,
 }
 
 /// Disk bytes recovered by deleting one checksum (blob size, at least).
@@ -44,15 +44,26 @@ pub struct ModelSetupSnapshot {
 }
 
 /// Hash `path` and report the store location it would occupy. Does not write.
+///
+/// Imported files do not declare model requirements, so the preflight treats
+/// the file size as the minimum free disk and leaves memory unchecked. The
+/// runtime probe still reports unsupported until a real backend is installed.
 pub fn preview(root: &Path, path: &Path) -> Result<ModelPreview, AppError> {
     let (size, sha256) = sha256_file(path)?;
+    let requirements = ModelRequirements {
+        min_memory_bytes: 0,
+        min_disk_bytes: size,
+        architectures: Vec::new(),
+        runtime: None,
+    };
+    let compatibility = evaluate(&requirements, &probe(Some(root)));
     Ok(ModelPreview {
         size,
         location: root.join("blobs").join(&sha256),
         sha256,
         license: LICENSE_PLACEHOLDER.to_string(),
         runtime_compat: RUNTIME_COMPAT_PLACEHOLDER.to_string(),
-        compatibility: format!("{RUNTIME_COMPAT_PLACEHOLDER}. {HARDWARE_STUB}"),
+        compatibility,
     })
 }
 

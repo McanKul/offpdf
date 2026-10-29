@@ -351,7 +351,7 @@ export interface ModelPreview {
   license: string;
   runtimeCompat: string;
   location: string;
-  compatibility: string;
+  compatibility: CompatibilityReport;
 }
 
 /** Backend health from `ai_list_models` (Rust `ModelHealthDto`). */

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::ai::compatibility::CompatibilityStatus;
 use crate::ai::lifecycle::{cancel, generate, import, load, preview, remove, snapshot, unload};
 use crate::ai::store::ModelStore;
 use crate::ai::BackendStatus;
@@ -16,7 +17,6 @@ use crate::ai::BackendStatus;
 const FIXTURE: &[u8] = b"offpdf-store-fixture-v1";
 const FIXTURE_SHA256: &str = "9a32fd0b4e68056601b986dc617f8d3be37fe0af3903d98cdda02fff552c884e";
 const MISSING_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-const HARDWARE_STUB: &str = "Hardware check is not available in this version.";
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -170,8 +170,8 @@ impl Drop for Scratch {
 }
 
 /// setup-facts-before-import — preview returns size / sha256 / license
-/// `"imported"` / `runtime_compat` `"any"` / location / compat stub and
-/// does not write a ready blob.
+/// placeholder `"imported"` / `runtime_compat` `"any"` / location / live
+/// compatibility report and does not write a ready blob.
 #[test]
 fn lifecycle_preview_facts_before_import() {
     let root = Scratch::new("preview");
@@ -208,10 +208,24 @@ fn lifecycle_preview_facts_before_import() {
         "setup-facts-before-import: location must name the injected store root or blobs/, got {}",
         facts.location.display()
     );
+    assert_eq!(
+        facts.compatibility.status,
+        CompatibilityStatus::Unsupported,
+        "setup-facts-before-import: the Fake runtime must be reported as unsupported"
+    );
+    assert_eq!(
+        facts.compatibility.required_disk_bytes,
+        FIXTURE.len() as u64,
+        "setup-facts-before-import: preview must check the file size as minimum disk"
+    );
+    assert_eq!(
+        facts.compatibility.required_memory_bytes, 0,
+        "setup-facts-before-import: imported files have no declared memory minimum"
+    );
     assert!(
-        facts.compatibility.contains(HARDWARE_STUB),
-        "setup-facts-before-import: compatibility must include the #82 stub, got {:?}",
-        facts.compatibility
+        facts.compatibility.reason.contains("test inference backend"),
+        "setup-facts-before-import: compatibility must explain the Fake runtime, got {:?}",
+        facts.compatibility.reason
     );
 
     let ready = store.list_ready().unwrap_or_else(|err| {

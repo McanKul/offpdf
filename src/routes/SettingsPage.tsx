@@ -8,6 +8,7 @@ import { Icon } from "@/components/ui/Icon";
 import { Alert } from "@/components/ui/Alert";
 import { useToast } from "@/components/ui/Toast";
 import { useSettingsStore, type Theme } from "@/state/settingsStore";
+import { LocalModelSection } from "@/features/settings/LocalModelSection";
 import { clearTempFiles, getTempDir, openPath } from "@/lib/tauriCommands";
 import { formatBytes } from "@/lib/formatBytes";
 import { toAppError } from "@/lib/types";
@@ -122,6 +123,8 @@ export function SettingsPage() {
           <Badge variant="neutral">{version === "—" ? version : `v${version}`}</Badge>
         </div>
       </Card>
+
+      <LocalModelSection />
 
       <Alert variant="success" title="Privacy statement" icon="shield">
         OffPDF processes everything on your computer. It does not upload your files, file

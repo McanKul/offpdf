@@ -1,6 +1,7 @@
 import { formatBytes } from "@/lib/formatBytes";
+import type { CompatibilityReport, CompatibilityStatus } from "@/lib/types";
 
-const HARDWARE_STUB = "Hardware check is not available in this version.";
+export type ModelSetupTone = "success" | "warning" | "danger";
 
 export interface ModelSetupReady {
   checksum: string;
@@ -22,7 +23,7 @@ export interface ModelSetupPreviewInput {
   license: string;
   runtimeCompat: string;
   location: string;
-  compatibility?: string;
+  compatibility: CompatibilityReport;
 }
 
 export interface ModelSetupPendingRemove {
@@ -33,8 +34,11 @@ export interface ModelSetupPendingRemove {
 export interface ModelSetupFacts {
   size: number;
   license: string;
+  runtimeCompat: string;
   location: string;
-  compatibility: string;
+  compatibility: CompatibilityReport;
+  compatibilityLabel: string;
+  compatibilityTone: ModelSetupTone;
   imported: boolean;
 }
 
@@ -47,6 +51,8 @@ export interface ModelSetupView {
   confirmRemove?: string;
 }
 
+const UNKNOWN_LICENSE = "Unknown — check the model's license before using it.";
+
 export function modelSetupView(input: {
   snapshot: ModelSetupSnapshotInput;
   preview?: ModelSetupPreviewInput;
@@ -56,16 +62,19 @@ export function modelSetupView(input: {
   const facts = preview
     ? {
         size: preview.size,
-        license: preview.license,
+        license: licenseLabel(preview.license),
+        runtimeCompat: preview.runtimeCompat,
         location: preview.location,
-        compatibility: composeCompatibility(preview.runtimeCompat, preview.compatibility),
+        compatibility: preview.compatibility,
+        compatibilityLabel: compatibilityLabel(preview.compatibility.status),
+        compatibilityTone: compatibilityTone(preview.compatibility.status),
         imported: false,
       }
     : undefined;
 
   const pending = input.pendingRemove;
   const confirmRemove = pending
-    ? `Remove model ${pending.checksum.slice(0, 8)} (${formatBytes(pending.size)})? This deletes the imported copy from OffPDF app data.`
+    ? `Remove model ${pending.checksum} (${formatBytes(pending.size)})? This deletes the imported copy from OffPDF app data.`
     : undefined;
 
   return {
@@ -78,9 +87,33 @@ export function modelSetupView(input: {
   };
 }
 
-function composeCompatibility(runtimeCompat: string, compatibility?: string): string {
-  const composed = compatibility?.trim();
-  if (composed) return composed;
-  const runtime = runtimeCompat.trim();
-  return runtime ? `${runtime} — ${HARDWARE_STUB}` : HARDWARE_STUB;
+/** Imported files often have no declared license; never present a placeholder as one. */
+export function licenseLabel(license: string | undefined): string {
+  const value = license?.trim();
+  if (!value || value === "imported" || value.toLowerCase() === "unknown") {
+    return UNKNOWN_LICENSE;
+  }
+  return value;
+}
+
+export function compatibilityLabel(status: CompatibilityStatus): string {
+  switch (status) {
+    case "supported":
+      return "Supported";
+    case "supportedWithLimits":
+      return "Supported with limits";
+    case "unsupported":
+      return "Unsupported";
+  }
+}
+
+export function compatibilityTone(status: CompatibilityStatus): ModelSetupTone {
+  switch (status) {
+    case "supported":
+      return "success";
+    case "supportedWithLimits":
+      return "warning";
+    case "unsupported":
+      return "danger";
+  }
 }

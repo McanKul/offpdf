@@ -1,6 +1,7 @@
 //! Local-model setup IPC. Paths in, never file bytes. No HTTP.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -20,6 +21,7 @@ use crate::error::AppError;
 pub struct AiSession {
     backend: Box<dyn InferenceBackend>,
     selected: Mutex<Option<String>>,
+    cancel_requested: AtomicBool,
 }
 
 impl AiSession {
@@ -27,6 +29,7 @@ impl AiSession {
         Self {
             backend: Box::new(crate::ai::fake()),
             selected: Mutex::new(None),
+            cancel_requested: AtomicBool::new(false),
         }
     }
 
@@ -44,6 +47,18 @@ impl AiSession {
     fn set_selected(&self, checksum: Option<String>) {
         *self.selected.lock().unwrap_or_else(|err| err.into_inner()) = checksum;
     }
+
+    fn clear_cancel(&self) {
+        self.cancel_requested.store(false, Ordering::SeqCst);
+    }
+
+    fn request_cancel(&self) {
+        self.cancel_requested.store(true, Ordering::SeqCst);
+    }
+
+    fn take_cancel(&self) -> bool {
+        self.cancel_requested.swap(false, Ordering::SeqCst)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,7 +69,7 @@ pub struct ModelPreviewDto {
     pub license: String,
     pub runtime_compat: String,
     pub location: String,
-    pub compatibility: String,
+    pub compatibility: CompatibilityReport,
 }
 
 impl From<ModelPreview> for ModelPreviewDto {
@@ -230,6 +245,9 @@ pub async fn ai_check_compatibility(
 }
 
 /// Load a ready checksum into the Fake. Checksum is remembered in process memory.
+///
+/// A cancel that arrives while the blocking load is in flight wins: the backend
+/// is unloaded again and the command returns `CANCELLED`.
 #[tauri::command]
 pub async fn ai_load_model(
     app: tauri::AppHandle,
@@ -238,8 +256,13 @@ pub async fn ai_load_model(
 ) -> Result<(), AppError> {
     let session = Arc::clone(&session);
     tauri::async_runtime::spawn_blocking(move || {
+        session.clear_cancel();
         let root = store_root(&app)?;
         load(&root, session.backend(), &checksum)?;
+        if session.take_cancel() {
+            let _ = unload(session.backend());
+            return Err(AppError::cancelled());
+        }
         session.set_selected(Some(checksum));
         Ok(())
     })
@@ -254,6 +277,7 @@ pub async fn ai_unload_model(
 ) -> Result<(), AppError> {
     let session = Arc::clone(&session);
     tauri::async_runtime::spawn_blocking(move || {
+        session.clear_cancel();
         unload(session.backend())?;
         session.set_selected(None);
         Ok(())
@@ -262,9 +286,10 @@ pub async fn ai_unload_model(
     .map_err(join_err)?
 }
 
-/// Cooperative cancel of an in-flight generate.
+/// Cooperative cancel of an in-flight load or generate.
 #[tauri::command]
 pub fn ai_cancel(session: tauri::State<'_, Arc<AiSession>>) -> Result<(), AppError> {
+    session.request_cancel();
     cancel(session.backend());
     Ok(())
 }
@@ -276,9 +301,16 @@ pub async fn ai_generate(
     prompt: String,
 ) -> Result<String, AppError> {
     let session = Arc::clone(&session);
-    tauri::async_runtime::spawn_blocking(move || generate(session.backend(), &prompt))
-        .await
-        .map_err(join_err)?
+    tauri::async_runtime::spawn_blocking(move || {
+        session.clear_cancel();
+        let reply = generate(session.backend(), &prompt)?;
+        if session.take_cancel() {
+            return Err(AppError::cancelled());
+        }
+        Ok(reply)
+    })
+    .await
+    .map_err(join_err)?
 }
 
 /// Delete one imported model and report recovered bytes.

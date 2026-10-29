@@ -6,7 +6,8 @@ All notable project changes should be documented here.
 
 ### Added
 
-- Added the backend for on-device compatibility checks for optional local AI models. It reports supported, limited, and unsupported states with a reason and recommendation; wiring the result into the import/load UI remains tracked in #82. The check does not affect PDF tools.
+- Added local model setup to Settings. Before import it shows the selected file's size, honest license status, target store location, and live hardware/runtime compatibility; import is a separate explicit action. Installed models can be loaded, unloaded, tested with a local prompt, and removed after a confirmation that names the full checksum and reports the freed bytes. Loading and test inference can be cancelled, and model state is re-read from disk on restart.
+- Added the backend for on-device compatibility checks for optional local AI models. It reports supported, limited, and unsupported states with a reason and recommendation, and the model preview now uses it. The check does not affect PDF tools. The current build still ships only the test backend, so the report is unsupported until a real runtime is available.
 
 ## 0.5.0 - 2026-10-25
 
