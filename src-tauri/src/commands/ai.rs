@@ -59,6 +59,22 @@ impl AiSession {
     fn take_cancel(&self) -> bool {
         self.cancel_requested.swap(false, Ordering::SeqCst)
     }
+
+    fn finish_load(&self, checksum: String) -> Result<(), AppError> {
+        if self.take_cancel() {
+            let _ = unload(self.backend());
+            return Err(AppError::cancelled());
+        }
+        self.set_selected(Some(checksum));
+        Ok(())
+    }
+
+    fn finish_generate(&self, result: Result<String, AppError>) -> Result<String, AppError> {
+        if self.take_cancel() {
+            return Err(AppError::cancelled());
+        }
+        result
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -255,16 +271,13 @@ pub async fn ai_load_model(
     checksum: String,
 ) -> Result<(), AppError> {
     let session = Arc::clone(&session);
+    // Clear the previous operation before queuing work. A quick Cancel must not
+    // be erased when spawn_blocking eventually starts the worker.
+    session.clear_cancel();
     tauri::async_runtime::spawn_blocking(move || {
-        session.clear_cancel();
         let root = store_root(&app)?;
         load(&root, session.backend(), &checksum)?;
-        if session.take_cancel() {
-            let _ = unload(session.backend());
-            return Err(AppError::cancelled());
-        }
-        session.set_selected(Some(checksum));
-        Ok(())
+        session.finish_load(checksum)
     })
     .await
     .map_err(join_err)?
@@ -277,7 +290,6 @@ pub async fn ai_unload_model(
 ) -> Result<(), AppError> {
     let session = Arc::clone(&session);
     tauri::async_runtime::spawn_blocking(move || {
-        session.clear_cancel();
         unload(session.backend())?;
         session.set_selected(None);
         Ok(())
@@ -301,13 +313,9 @@ pub async fn ai_generate(
     prompt: String,
 ) -> Result<String, AppError> {
     let session = Arc::clone(&session);
+    session.clear_cancel();
     tauri::async_runtime::spawn_blocking(move || {
-        session.clear_cancel();
-        let reply = generate(session.backend(), &prompt)?;
-        if session.take_cancel() {
-            return Err(AppError::cancelled());
-        }
-        Ok(reply)
+        session.finish_generate(generate(session.backend(), &prompt))
     })
     .await
     .map_err(join_err)?
@@ -332,4 +340,64 @@ pub async fn ai_remove_model(
     })
     .await
     .map_err(join_err)?
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{mpsc, Arc};
+
+    use super::{cancel, generate, AiSession};
+
+    #[test]
+    fn cancel_while_load_waits_for_worker_is_not_lost() {
+        let session = Arc::new(AiSession::new());
+        let (start_tx, start_rx) = mpsc::channel();
+        session.clear_cancel();
+
+        let worker_session = Arc::clone(&session);
+        let worker = std::thread::spawn(move || {
+            start_rx.recv().unwrap();
+            worker_session.backend().load().unwrap();
+            worker_session.finish_load("queued-model".to_string())
+        });
+
+        session.request_cancel();
+        cancel(session.backend());
+        start_tx.send(()).unwrap();
+
+        let err = worker
+            .join()
+            .unwrap()
+            .expect_err("queued load must be cancelled");
+        assert_eq!(err.code, "CANCELLED");
+        assert_eq!(
+            session.backend().status(),
+            crate::ai::BackendStatus::Unloaded
+        );
+        assert_eq!(session.selected(), None);
+    }
+
+    #[test]
+    fn cancel_while_generate_waits_for_worker_is_not_lost() {
+        let session = Arc::new(AiSession::new());
+        session.backend().load().unwrap();
+        let (start_tx, start_rx) = mpsc::channel();
+        session.clear_cancel();
+
+        let worker_session = Arc::clone(&session);
+        let worker = std::thread::spawn(move || {
+            start_rx.recv().unwrap();
+            worker_session.finish_generate(generate(worker_session.backend(), "health check"))
+        });
+
+        session.request_cancel();
+        cancel(session.backend());
+        start_tx.send(()).unwrap();
+
+        let err = worker
+            .join()
+            .unwrap()
+            .expect_err("queued inference must be cancelled");
+        assert_eq!(err.code, "CANCELLED");
+    }
 }
