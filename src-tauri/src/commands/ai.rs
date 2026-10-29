@@ -63,6 +63,7 @@ impl AiSession {
     fn finish_load(&self, checksum: String) -> Result<(), AppError> {
         if self.take_cancel() {
             let _ = unload(self.backend());
+            self.set_selected(None);
             return Err(AppError::cancelled());
         }
         self.set_selected(Some(checksum));
@@ -351,6 +352,8 @@ mod tests {
     #[test]
     fn cancel_while_load_waits_for_worker_is_not_lost() {
         let session = Arc::new(AiSession::new());
+        session.backend().load().unwrap();
+        session.set_selected(Some("previous-model".to_string()));
         let (start_tx, start_rx) = mpsc::channel();
         session.clear_cancel();
 
