@@ -131,6 +131,11 @@ and rejects markdown fences rather than stripping them.
 - Tests: `src/lib/assistant/actionPlan.test.ts` cover unknown fields/tools/enums,
   secrets, path traversal, defaults, page bounds, duplicate outputs, limits and
   all fixtures.
+- Adversarial tests: `src/lib/assistant/actionPlan.security.test.ts` cover shell
+  commands and hidden fields, paths and input indexes outside the selected
+  workspace, invalid/overlapping/reversed/excessive page ranges, ambiguous
+  options and false success claims. They also assert that parsing untrusted model
+  output never invokes a Tauri command.
 
 ## Versioning
 
