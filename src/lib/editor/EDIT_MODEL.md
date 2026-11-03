@@ -95,6 +95,7 @@ name → value), not on the undo stamp stack.
 ## History rules
 
 - `ADD` / `UPDATE` / `DELETE` create undo steps.
+- `ALIGN` moves every movable selected object on the active page in one step.
 - `SELECT` / `CLEAR_SELECTION` do **not**.
 - Move/resize uses `BEGIN_GESTURE` → many `UPDATE`s → `END_GESTURE` so one drag
   undoes as a single step.
@@ -310,6 +311,29 @@ for Edit text (`fixtures/source-edit/` does not grow).
 - Run `OFFPDF_REQUIRE_ENGINES=1 cargo test --lib -j 6 text_edit` and check that
   `cargo test --lib -j 6 -- --nocapture 2>&1 | grep -c 'skip:'` prints 0.
 
+## Alignment
+
+The toolbar offers six commands — left, horizontal center, right, top, vertical
+center, bottom — with an accessible label on each control. They are disabled
+unless a movable object is selected on the visible page.
+
+- **Multi-selection** aligns every movable selected object to the selection
+  bounds. Objects with different sizes keep their size; only their position
+  changes.
+- **One object** aligns to the visible page box (CropBox ∩ MediaBox), which is
+  why the command still does something useful for a single selection.
+- Bounds are mapped through `/Rotate` and the visible box first, so left/top
+  mean what the user sees on a 0/90/180/270-degree page. The resulting
+  translation is mapped back to unrotated PDF space, so CropBox offsets never
+  leak into storage.
+- A translation is clamped on the aligned axis so the object stays inside the
+  visible page. An object wider (or taller) than the page sits at the page
+  origin on that axis.
+- Locked objects (including `sourceText`), and objects on other pages, are
+  unchanged. The selection itself is unchanged.
+- One command is one `ALIGN` action: one undo step, one redo step. A command
+  that changes nothing creates no history entry.
+
 ## How export consumes this
 
 1. Read `EditDocument.objects` for the chosen pages.
@@ -336,7 +360,9 @@ The canvas exposes the active page's object list so selection and deletion work
 without pointer-only interaction. Selection-driven actions never affect hidden
 pages. Keyboard: Delete/Backspace, Escape, undo/redo chords, arrow nudge. Hand
 tool (H) and hold-Space pan the zoomed page; trackpad scroll on the stage still
-works. The editor opens on the **Select** tool.
+works. The editor opens on the **Select** tool. The six alignment commands sit
+in a toolbar group labelled "Align selected objects"; each button has its own
+accessible label.
 
 ### Edit text keyboard contract
 

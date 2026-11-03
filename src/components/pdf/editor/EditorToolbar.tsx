@@ -7,6 +7,7 @@
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { Icon, type IconName } from "@/components/ui/Icon";
+import { ALIGN_LABELS, type AlignCommand } from "@/lib/editor";
 import { UI } from "@/lib/editor/sourceTextCopy";
 import type { EditorTool } from "./EditorOverlay";
 import { ShapePicker, SHAPE_TOOLS } from "./ShapePicker";
@@ -38,6 +39,15 @@ const MARKUP_TOOLS: readonly ToolButton[] = [
   { id: "underline", label: "Underline", title: "Underline", icon: "type" },
   { id: "strikeout", label: "Strikeout", title: "Strikeout", icon: "slash" },
   { id: "markupInk", label: "Ink annot", title: "Ink annot", icon: "stamp" },
+];
+
+const ALIGN_TOOLS: readonly { command: AlignCommand; icon: IconName }[] = [
+  { command: "left", icon: "alignLeft" },
+  { command: "horizontalCenter", icon: "alignCenter" },
+  { command: "right", icon: "alignRight" },
+  { command: "top", icon: "alignTop" },
+  { command: "verticalCenter", icon: "alignMiddle" },
+  { command: "bottom", icon: "alignBottom" },
 ];
 
 export type EditorShortcut = { kind: "tool"; tool: EditorTool } | { kind: "showOriginal" };
@@ -75,6 +85,8 @@ export interface EditorToolbarProps {
     canPaste: boolean;
     onPaste: () => void;
   };
+  /** Object alignment on the active page. Disabled without a movable selection. */
+  align?: { canAlign: boolean; onAlign: (command: AlignCommand) => void };
   /** Shown only when the current page has text changes. */
   showOriginal: { visible: boolean; pressed: boolean; onToggle: () => void };
   zoom: number;
@@ -103,6 +115,7 @@ function ToolToggle({ t, tool, onClick }: { t: ToolButton; tool: EditorTool; onC
 
 export function EditorToolbar(props: EditorToolbarProps) {
   const { tool, onTool, history, showOriginal, pageIndex, pageCount } = props;
+  const align = props.align ?? { canAlign: false, onAlign: () => {} };
   return (
     <>
       <div className="pdf-editor__toolbar thumb-toolbar wrap">
@@ -118,6 +131,22 @@ export function EditorToolbar(props: EditorToolbarProps) {
         <Button size="sm" variant="ghost" onClick={history.onPaste} disabled={!history.canPaste} title="Paste (Ctrl/Cmd+V)" aria-label="Paste">
           <Icon name="clipboard" size={15} />
         </Button>
+        <span className="pdf-editor__sep" />
+        <span className="pdf-editor__toolgroup" role="group" aria-label="Align selected objects">
+          {ALIGN_TOOLS.map((item) => (
+            <Button
+              key={item.command}
+              size="sm"
+              variant="ghost"
+              onClick={() => align.onAlign(item.command)}
+              disabled={!align.canAlign}
+              title={`${ALIGN_LABELS[item.command]} (single object aligns to the page)`}
+              aria-label={ALIGN_LABELS[item.command]}
+            >
+              <Icon name={item.icon} size={15} />
+            </Button>
+          ))}
+        </span>
         <span className="pdf-editor__sep" />
         {MAIN_TOOLS.map((t) => (
           <ToolToggle key={t.id} t={t} tool={tool} onClick={() => (t.id === "image" ? props.onImage() : onTool(t.id))} />

@@ -24,6 +24,7 @@ import { UI } from "@/lib/editor/sourceTextCopy";
 import type { TextSources } from "@/features/edit-pdf/useTextSources";
 import {
   cloneObject,
+  isAlignableObject,
   isClosedShapeObject,
   makeMapping,
   offsetObject,
@@ -151,6 +152,15 @@ export function PdfEditorCanvas({
   const pageSelectedIds = useMemo(
     () => selectedIdsOnPage(session.objects, session.selectedIds, pageIndex),
     [pageIndex, session.objects, session.selectedIds],
+  );
+  const canAlign = useMemo(
+    () =>
+      !!layout &&
+      pageSelectedIds.some((id) => {
+        const object = pageObjects.find((candidate) => candidate.id === id);
+        return !!object && isAlignableObject(object);
+      }),
+    [layout, pageObjects, pageSelectedIds],
   );
   const st = useSourceTextPage({
     objects: session.objects,
@@ -549,6 +559,12 @@ export function PdfEditorCanvas({
           onPaste: pasteClipboard,
         }}
         showOriginal={{ visible: st.canShowOriginal, pressed: original, onToggle: toggleOriginal }}
+        align={{
+          canAlign,
+          onAlign: (command) => {
+            if (layout) session.alignSelected(command, pageIndex, layout.geometry);
+          },
+        }}
         zoom={zoom}
         onZoom={(step) => setZoomSafe(step === 0 ? 1 : (z) => z + step * STEP)}
         pageIndex={pageIndex}

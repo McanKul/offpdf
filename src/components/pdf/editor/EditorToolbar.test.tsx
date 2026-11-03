@@ -1,12 +1,17 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { UI } from "@/lib/editor/sourceTextCopy";
+import { ALIGN_LABELS, ALIGN_COMMANDS } from "@/lib/editor";
 import type { EditorTool } from "./EditorOverlay";
 import { DEFAULT_EDITOR_TOOL, EditorToolbar, editorShortcut, type EditorToolbarProps } from "./EditorToolbar";
 
 const noop = () => {};
 
-function render(tool: EditorTool, showOriginal: Partial<EditorToolbarProps["showOriginal"]> = {}): string {
+function render(
+  tool: EditorTool,
+  showOriginal: Partial<EditorToolbarProps["showOriginal"]> = {},
+  align?: EditorToolbarProps["align"],
+): string {
   return renderToStaticMarkup(
     <EditorToolbar
       tool={tool}
@@ -26,6 +31,7 @@ function render(tool: EditorTool, showOriginal: Partial<EditorToolbarProps["show
         canPaste: false,
         onPaste: noop,
       }}
+      align={align}
       showOriginal={{ visible: false, pressed: false, onToggle: noop, ...showOriginal }}
       zoom={1}
       onZoom={noop}
@@ -126,5 +132,20 @@ describe("EditorToolbar", () => {
     expect(editorShortcut({ ...KEY, key: "o", ctrlKey: true }, true)).toBeNull();
     expect(editorShortcut({ ...KEY, key: "e", altKey: true }, true)).toBeNull();
     expect(editorShortcut({ ...KEY, key: "x" }, true)).toBeNull();
+  });
+
+  it("offers a labelled, accessible control for every align command", () => {
+    const markup = render("select", {}, { canAlign: true, onAlign: noop });
+    for (const command of ALIGN_COMMANDS) {
+      const button = byLabel(markup, ALIGN_LABELS[command]);
+      expect(button, command).toBeDefined();
+      expect(attr(button!, "disabled")).toBeUndefined();
+    }
+    expect(markup).toContain('role="group" aria-label="Align selected objects"');
+  });
+
+  it("disables alignment without a movable selection", () => {
+    const markup = render("select");
+    expect(attr(byLabel(markup, ALIGN_LABELS.left)!, "disabled")).toBeDefined();
   });
 });

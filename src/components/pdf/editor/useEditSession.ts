@@ -26,9 +26,11 @@ import {
   type LinkAction,
   type ShapeStyle,
   type LayerDir,
+  type PageGeometry,
   type PdfRect,
   type Point,
   type SetSourceTextInput,
+  type AlignCommand,
 } from "@/lib/editor";
 
 
@@ -257,6 +259,14 @@ export function useEditSession(
     dispatch({ type: "REORDER", id, dir });
   }, []);
 
+  /** Align the selected objects on the active page. One command is one undo step. */
+  const alignSelected = useCallback(
+    (command: AlignCommand, activePageIndex: number, geometry: PageGeometry) => {
+      dispatch({ type: "ALIGN", command, pageIndex: activePageIndex, geometry });
+    },
+    [],
+  );
+
   const nudgeSelected = useCallback(
     (dx: number, dy: number, activePageIndex: number) => {
       const ids = state.present.selectedIds;
@@ -352,6 +362,7 @@ export function useEditSession(
     redo,
     reset,
     reorder,
+    alignSelected,
     nudgeSelected,
   };
 }

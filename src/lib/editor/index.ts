@@ -169,6 +169,15 @@ export type { KeyRebindPlan } from "./remapPages";
 
 export { stageJustify } from "./stageLayout";
 export { moveSelectedRects, selectedIdsOnPage } from "./moveSelection";
+export type { AlignCommand, AlignSelectionResult } from "./alignSelection";
+export {
+  ALIGN_COMMANDS,
+  ALIGN_LABELS,
+  alignSelectedObjects,
+  displayBounds,
+  displayDeltaToPdf,
+  isAlignableObject,
+} from "./alignSelection";
 export { shouldShowEditCanvas } from "./editVisibility";
 export type { EditCanvasVisibility } from "./editVisibility";
 export { clampPageIndex } from "./pageIndex";
