@@ -326,6 +326,8 @@ unless a movable object is selected on the visible page.
   mean what the user sees on a 0/90/180/270-degree page. The resulting
   translation is mapped back to unrotated PDF space, so CropBox offsets never
   leak into storage.
+- An object's own rotation is included in its displayed bounds, so aligning a
+  rotated shape to an edge does not clip its visible corner.
 - A translation is clamped on the aligned axis so the object stays inside the
   visible page. An object wider (or taller) than the page sits at the page
   origin on that axis.

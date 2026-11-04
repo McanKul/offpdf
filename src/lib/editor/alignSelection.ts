@@ -45,9 +45,11 @@ export function isAlignableObject(object: EditObject): boolean {
 
 /**
  * Visual AABB of a PDF rect in displayed page space (origin bottom-left of the
- * page after `/Rotate`). The page box is subtracted before rotating.
+ * page after `/Rotate`). The page box is subtracted before rotating. An editor
+ * object's own rotation is applied about the displayed rect center, matching
+ * the SVG overlay; otherwise an aligned rotated shape can extend off-page.
  */
-export function displayBounds(rect: PdfRect, geometry: PageGeometry): PdfRect {
+export function displayBounds(rect: PdfRect, geometry: PageGeometry, objectRotate = 0): PdfRect {
   const { box, rotate } = geometry;
   const corners = [
     { x: rect.x - box.x, y: rect.y - box.y },
@@ -59,7 +61,19 @@ export function displayBounds(rect: PdfRect, geometry: PageGeometry): PdfRect {
   const ys = corners.map((point) => point.y);
   const x = Math.min(...xs);
   const y = Math.min(...ys);
-  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+  const w = Math.max(...xs) - x;
+  const h = Math.max(...ys) - y;
+  if (!Number.isFinite(objectRotate) || objectRotate % 180 === 0) return { x, y, w, h };
+
+  const angle = (objectRotate * Math.PI) / 180;
+  const rotatedW = Math.abs(w * Math.cos(angle)) + Math.abs(h * Math.sin(angle));
+  const rotatedH = Math.abs(w * Math.sin(angle)) + Math.abs(h * Math.cos(angle));
+  return {
+    x: x + (w - rotatedW) / 2,
+    y: y + (h - rotatedH) / 2,
+    w: rotatedW,
+    h: rotatedH,
+  };
 }
 
 /** A displayed-space delta as an unrotated PDF-space delta. */
@@ -152,11 +166,11 @@ export function alignSelectedObjects(
   const target: PdfRect =
     onPage.length === 1
       ? { x: 0, y: 0, w: page.w, h: page.h }
-      : unionBounds(onPage.map((object) => displayBounds(object.rect, geometry)));
+      : unionBounds(onPage.map((object) => displayBounds(object.rect, geometry, object.objectRotate)));
 
   const changed = new Map<string, EditObject>();
   for (const object of movable) {
-    const bounds = displayBounds(object.rect, geometry);
+    const bounds = displayBounds(object.rect, geometry, object.objectRotate);
     const delta = alignmentDelta(command, target, bounds);
 
     let dx = delta.dx;

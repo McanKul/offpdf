@@ -187,6 +187,58 @@ describe("alignSelectedObjects: page rotation", () => {
   });
 });
 
+describe("alignSelectedObjects: rotated editor objects", () => {
+  const rotations: PageRotation[] = [0, 90, 180, 270];
+
+  it("uses the AABB of the object's own SVG rotation", () => {
+    const bounds = displayBounds(
+      { x: 40, y: 50, w: 40, h: 20 },
+      geom({ x: 0, y: 0, w: 200, h: 200 }),
+      45,
+    );
+    approx(bounds.w, 30 * Math.SQRT2);
+    approx(bounds.h, 30 * Math.SQRT2);
+    approx(bounds.x + bounds.w / 2, 60);
+    approx(bounds.y + bounds.h / 2, 60);
+  });
+
+  for (const rotate of rotations) {
+    it(`aligns the visible edges of a 45° object on a ${rotate}° page`, () => {
+      const geometry = geom({ x: 50, y: 100, w: 200, h: 300 }, rotate);
+      const page = displayedSize(geometry);
+      const object = { ...makeRectObject("a", 0, { x: 80, y: 150, w: 40, h: 20 }), objectRotate: 45 };
+
+      for (const command of ALIGN_COMMANDS) {
+        const result = run([object], ["a"], geometry, command);
+        const visual = displayBounds(rectOf(result.objects, "a"), geometry, object.objectRotate);
+        if (command === "left") approx(visual.x, 0);
+        if (command === "horizontalCenter") approx(visual.x + visual.w / 2, page.w / 2);
+        if (command === "right") approx(visual.x + visual.w, page.w);
+        if (command === "top") approx(visual.y + visual.h, page.h);
+        if (command === "verticalCenter") approx(visual.y + visual.h / 2, page.h / 2);
+        if (command === "bottom") approx(visual.y, 0);
+        if (command === "left" || command === "horizontalCenter" || command === "right") {
+          expect(visual.x).toBeGreaterThanOrEqual(-1e-6);
+          expect(visual.x + visual.w).toBeLessThanOrEqual(page.w + 1e-6);
+        } else {
+          expect(visual.y).toBeGreaterThanOrEqual(-1e-6);
+          expect(visual.y + visual.h).toBeLessThanOrEqual(page.h + 1e-6);
+        }
+      }
+    });
+  }
+
+  it("aligns a rotated and an unrotated object's visible left edges", () => {
+    const geometry = geom({ x: 0, y: 0, w: 300, h: 300 });
+    const rotated = { ...makeRectObject("rotated", 0, { x: 40, y: 40, w: 40, h: 20 }), objectRotate: 45 };
+    const plain = makeRectObject("plain", 0, { x: 150, y: 80, w: 20, h: 20 });
+    const result = run([rotated, plain], ["rotated", "plain"], geometry, "left");
+    const rotatedBounds = displayBounds(rectOf(result.objects, "rotated"), geometry, 45);
+    const plainBounds = displayBounds(rectOf(result.objects, "plain"), geometry);
+    approx(rotatedBounds.x, plainBounds.x);
+  });
+});
+
 describe("ALIGN command history", () => {
   it("is one undo/redo step and keeps the multi-selection", () => {
     const geometry = geom({ x: 0, y: 0, w: 500, h: 500 });
