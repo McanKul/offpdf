@@ -13,11 +13,13 @@ import {
   pointsBounds,
   type EditDocument,
   type EditObject,
+  type PageGeometry,
   type PdfRect,
   type Point,
   type SourceTextObject,
 } from "./types";
 import { cloneDocument, cloneObject } from "./serialize";
+import { alignSelectedObjects, type AlignCommand } from "./alignSelection";
 import { isNoOpEdit, normaliseStyle, normaliseTyped, textMove } from "./sourceText";
 import type { SourceTextStyle, TextRect, TextRun, TextVec } from "../types";
 
@@ -42,6 +44,8 @@ export type EditAction =
   | { type: "SELECT"; ids: string[] }
   | { type: "CLEAR_SELECTION" }
   | { type: "REORDER"; id: string; dir: LayerDir }
+  /** Align movable objects on one page; one command is one history step. */
+  | { type: "ALIGN"; command: AlignCommand; pageIndex: number; geometry: PageGeometry }
   | { type: "BEGIN_GESTURE" }
   | { type: "END_GESTURE" }
   | { type: "UNDO" }
@@ -231,6 +235,21 @@ export function editReducer(state: HistoryState, action: EditAction): HistorySta
       const objects = reorderOnPage(state.present.objects, action.id, action.dir);
       if (!objects) return state;
       return pushPast(state, { ...state.present, objects });
+    }
+
+    case "ALIGN": {
+      const result = alignSelectedObjects(
+        state.present.objects,
+        state.present.selectedIds,
+        action.pageIndex,
+        action.geometry,
+        action.command,
+      );
+      if (!result) return state;
+      return pushPast(
+        { ...state, gestureActive: false },
+        { ...state.present, objects: result.objects },
+      );
     }
 
     case "BEGIN_GESTURE": {

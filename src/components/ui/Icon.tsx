@@ -70,6 +70,9 @@ export type IconName =
   | "alignLeft"
   | "alignCenter"
   | "alignRight"
+  | "alignTop"
+  | "alignMiddle"
+  | "alignBottom"
   | "copy"
   | "clipboard"
   | "circle"
@@ -377,6 +380,29 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M4 6h16" />
       <path d="M10 12h10" />
       <path d="M6 18h14" />
+    </>
+  ),
+  alignTop: (
+    <>
+      <path d="M4 4h16" />
+      <path d="M7 8v11h4V8" />
+      <path d="M14 8v7h4V8" />
+    </>
+  ),
+  alignMiddle: (
+    <>
+      <path d="M4 12h16" />
+      <path d="M7 4v6h4V4" />
+      <path d="M7 20v-6h4v6" />
+      <path d="M14 4v4h4V4" />
+      <path d="M14 20v-4h4v4" />
+    </>
+  ),
+  alignBottom: (
+    <>
+      <path d="M4 20h16" />
+      <path d="M7 7v9h4V7" />
+      <path d="M14 10v6h4v-6" />
     </>
   ),
   copy: (
