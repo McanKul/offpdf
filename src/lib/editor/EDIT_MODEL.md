@@ -13,6 +13,8 @@ invent a second coordinate system.
   shapes such as rectangles, ellipses, arrows, and polygons.
 - `sourceText`: a change to a line of existing text (Edit text). It is not an
   overlay; see [Source text edits](#source-text-edits-kind-sourcetext).
+- `sourceImage`: a move of an image already painted by a page (Edit PDF). It is
+  not an overlay; see [Source image edits](#source-image-edits-kind-sourceimage).
 
 ## What this module is not
 
@@ -114,6 +116,39 @@ unrotated `rect` space as stamps. Overlay paint skips them; Save copies every
 existing annot through and appends or removes only session `/NM` dicts. Draw
 `kind: "ink"` stays a content-stream stroke. Flatten is opt-in
 `qpdf --flatten-annotations=all` (default off).
+
+## Source image edits (`kind: "sourceImage"`)
+
+A `sourceImage` object records a move of one image already painted by a source
+page. It is not an overlay and it never rasterises the page: Save inserts
+`q 1 0 0 1 dx dy cm` before that occurrence's `Do` and `Q` after it, so the
+image's bytes and every other occurrence of the same XObject stay untouched.
+
+```ts
+{
+  id, kind: "sourceImage", pageIndex, rect,  // rect = the image box after the move
+  locked: true,
+  locator,                                   // v2 occurrence id from inspect_text_page
+  sourceFingerprint, sourcePageIndex,
+  move: { x, y }                             // user-space displacement from the source position
+}
+```
+
+Rules:
+
+- **One object per `(pageIndex, locator)`.** A move back to the source position
+  deletes it. Drag or **Alt+Arrow** (1 pt; **Shift+Alt+Arrow** 10 pt) commits one
+  undo step; the canvas shows the same preview as a text change.
+- **Locked.** Like `sourceText`, it is never selected as an overlay object,
+  copied, pasted, nudged or resized; moving happens only through the source
+  image layer.
+- **Refusals.** Inline images, images inside a Form XObject, complex clips,
+  masked images, non-axis-aligned (transformed) images, shared content streams
+  and a destination outside the visible page (CropBox and `/Rotate` included)
+  are refused with a reason and never become objects. A shared XObject is
+  allowed, because only this occurrence's content stream changes.
+- **Save.** The fingerprint is rechecked, the page is planned again and the new
+  occurrence is verified like a text edit; the original file is never modified.
 
 ## Source text edits (`kind: "sourceText"`)
 

@@ -30,6 +30,7 @@ export type {
   MarkupInkObject,
   RedactObject,
   SourceTextObject,
+  SourceImageObject,
   TextAlign,
   EditObject,
   EditDocument,
@@ -157,6 +158,15 @@ export {
   editsSignature,
   textStampGeometry,
 } from "./sourceText";
+
+export type { SourceImageFields } from "./sourceImage";
+export {
+  movedImageRect,
+  makeSourceImageObject,
+  toImageEditIn,
+  imageEditsSignature,
+  previewSignature,
+} from "./sourceImage";
 
 export {
   remapEditDocument,

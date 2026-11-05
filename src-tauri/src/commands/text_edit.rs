@@ -3,7 +3,9 @@
 
 use crate::error::AppError;
 use crate::pdf_engine::text_edit::cache::TextEditCache;
-use crate::pdf_engine::text_edit::dto::{PageTextDto, TextEditIn, TextPreviewDto, TextSourceDto};
+use crate::pdf_engine::text_edit::dto::{
+    ImageEditIn, PageTextDto, TextEditIn, TextPreviewDto, TextSourceDto,
+};
 use crate::pdf_engine::text_edit::engines::Engines;
 use crate::pdf_engine::text_edit::service;
 use crate::utils::temp;
@@ -66,6 +68,7 @@ pub async fn preview_text_edits(
     fingerprint: String,
     page_index: u32,
     edits: Vec<TextEditIn>,
+    images: Vec<ImageEditIn>,
 ) -> Result<TextPreviewDto, AppError> {
     let cache = cache.inner().clone();
     on_worker(app, move |engines, temp_root| {
@@ -77,6 +80,7 @@ pub async fn preview_text_edits(
             &fingerprint,
             page_index,
             &edits,
+            &images,
         )
     })
     .await

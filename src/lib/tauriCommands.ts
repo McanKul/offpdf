@@ -26,6 +26,7 @@ import type {
   RotateGroup,
   RotationAngle,
   SplitMode,
+  ImageEditIn,
   PageText,
   TextEditIn,
   TextPreview,
@@ -337,16 +338,21 @@ export function inspectTextPage(inputPath: string, fingerprint: string, pageInde
   return invoke<PageText>("inspect_text_page", { inputPath, fingerprint, pageIndex }).catch(rejectAsAppError);
 }
 
-/** Write `edits` into a one-page copy, run the same checks as Save, and return the page (base64) with a verdict per edit. */
+/** Write `edits` and `images` into a one-page copy, run the same checks as Save, and return the page (base64) with a verdict per change. */
 export function previewTextEdits(
   inputPath: string,
   fingerprint: string,
   pageIndex: number,
   edits: TextEditIn[],
+  images: ImageEditIn[] = [],
 ): Promise<TextPreview> {
-  return invoke<TextPreview>("preview_text_edits", { inputPath, fingerprint, pageIndex, edits }).catch(
-    rejectAsAppError,
-  );
+  return invoke<TextPreview>("preview_text_edits", {
+    inputPath,
+    fingerprint,
+    pageIndex,
+    edits,
+    images,
+  }).catch(rejectAsAppError);
 }
 
 /** Forget the file's snapshot and delete its temporary one-page copies. */

@@ -90,7 +90,9 @@ export function EditPdfPage() {
   // The open Edit text line (owned here so Save can finish it before reading the objects).
   const textGuard = useRef<OpenTextEdit | null>(null);
   const [saveAfterTextEdit, setSaveAfterTextEdit] = useState(false);
-  const textChangeCount = doc.objects.filter((o) => o.kind === "sourceText").length;
+  const sourceChangeCount = doc.objects.filter(
+    (o) => o.kind === "sourceText" || o.kind === "sourceImage",
+  ).length;
 
   // A file that left the workspace no longer needs its Edit text snapshot.
   const filePaths = useMemo(() => new Set(files.map((f) => f.path)), [files]);
@@ -106,7 +108,7 @@ export function EditPdfPage() {
     if (jobError?.code !== "STALE") return;
     const paths = new Set<string>();
     for (const o of doc.objects) {
-      const ref = o.kind === "sourceText" ? refs[o.pageIndex] : undefined;
+      const ref = o.kind === "sourceText" || o.kind === "sourceImage" ? refs[o.pageIndex] : undefined;
       if (ref) paths.add(ref.path);
     }
     for (const path of paths) void reopenTextSource(path);
@@ -327,7 +329,7 @@ export function EditPdfPage() {
         ),
       {
         tool: "editPdf",
-        label: jobLabel(doc.objects.length - textChangeCount, textChangeCount),
+        label: jobLabel(doc.objects.length - sourceChangeCount, sourceChangeCount),
       },
     );
   };
@@ -379,7 +381,7 @@ export function EditPdfPage() {
             />
             Flatten annotations{formFields.length > 0 ? " (includes form fields)" : ""}
           </label>
-          {textChangeCount > 0 && <Alert variant="info">{UI.outputAlert}</Alert>}
+          {sourceChangeCount > 0 && <Alert variant="info">{UI.outputAlert}</Alert>}
           {doc.objects.some((o) => o.kind === "redact") && (
             <Alert variant="info">
               Pages with a redaction become images. Text on those pages will not stay selectable.

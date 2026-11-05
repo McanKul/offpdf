@@ -31,6 +31,7 @@ import {
   type Point,
   type SetSourceTextInput,
   type AlignCommand,
+  type SourceImageObject,
 } from "@/lib/editor";
 
 
@@ -112,6 +113,23 @@ export function useEditSession(
   /** Drop every text change made on one snapshot of a file (STALE recovery). One history step. */
   const removeSourceTextForFingerprint = useCallback((fingerprint: string) => {
     dispatch({ type: "REMOVE_SOURCE_TEXT_FOR_FINGERPRINT", fingerprint });
+  }, []);
+
+  /** Commit one image move (upsert by page and locator). One history step. */
+  const setSourceImage = useCallback((object: SourceImageObject) => {
+    dispatch({ type: "UPSERT_SOURCE_IMAGE", object });
+  }, []);
+
+  /** Put one image back where the source paints it (deletes its move). */
+  const revertSourceImage = useCallback((id: string) => {
+    const obj = stateRef.current.present.objects.find((o) => o.id === id);
+    if (!obj || obj.kind !== "sourceImage") return;
+    dispatch({ type: "DELETE", ids: [id] });
+  }, []);
+
+  /** Drop every image move made on one snapshot of a file (STALE recovery). One history step. */
+  const removeSourceImageForFingerprint = useCallback((fingerprint: string) => {
+    dispatch({ type: "REMOVE_SOURCE_IMAGE_FOR_FINGERPRINT", fingerprint });
   }, []);
 
   const addImage = useCallback(
@@ -339,6 +357,9 @@ export function useEditSession(
     setSourceText,
     revertSourceText,
     removeSourceTextForFingerprint,
+    setSourceImage,
+    revertSourceImage,
+    removeSourceImageForFingerprint,
     addImage,
     addLine,
     addInk,

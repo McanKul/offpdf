@@ -14,6 +14,7 @@
 mod bytes;
 mod cff_scale;
 mod diff;
+mod image;
 mod layout;
 mod masks;
 mod style;
@@ -32,11 +33,12 @@ use crate::pdf_engine::text_edit::reasons::{
 use crate::pdf_engine::text_edit::runs::PageModel;
 use crate::pdf_engine::text_edit::state::Paint;
 use crate::pdf_engine::text_edit::verify;
+#[cfg(test)]
+pub(crate) use bytes::assemble_page_plan;
+
 use crate::pdf_engine::validate_output::ContentDigest;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-pub(crate) use bytes::assemble_page_plan;
 
 // Edit input types are defined here; dto.rs re-exports them and edit_overlay.rs uses
 // `text_edit::rewrite::SourceTextStyleIn`.
@@ -85,6 +87,34 @@ pub struct TextEditIn {
     /// Move the line by this unrotated user-space delta (text changes may move too).
     #[serde(default, rename = "move")]
     pub move_by: Option<MoveIn>,
+}
+
+/// A request to move one directly painted image occurrence on its page. The locator is the v2
+/// occurrence id returned by `inspect_text_page` (`…:i:p{start}-{end}:{ordinal}`).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageEditIn {
+    pub locator: String,
+    #[serde(default, rename = "move")]
+    pub move_by: MoveIn,
+}
+
+/// One accepted image move: the original `Do` span and the CTM it is painted with, plus the
+/// expected CTM after the two non-destructive inserts.
+#[derive(Debug, Clone)]
+pub struct ImagePlan {
+    pub locator: String,
+    /// The `Do`'s span in the page's joined content (never replaced).
+    pub span: Span,
+    /// The content part holding it, and the local insertion points.
+    pub part: usize,
+    pub local_prefix: Span,
+    pub local_suffix: Span,
+    pub old_ctm: [f64; 6],
+    pub new_ctm: [f64; 6],
+    /// The `cm` operands: the page-space delta expressed in the image's CTM units.
+    pub translate: [f64; 2],
+    pub new_bbox: [f64; 4],
 }
 
 /// What the replacement sets. Numbers are the values read back from what is written.
@@ -228,7 +258,7 @@ pub struct EditVerdict {
 }
 
 impl EditVerdict {
-    fn failed(run_id: &str, problem: EditProblem) -> EditVerdict {
+    pub(crate) fn failed(run_id: &str, problem: EditProblem) -> EditVerdict {
         EditVerdict {
             run_id: run_id.to_string(),
             problem: Some(problem),
@@ -244,6 +274,8 @@ impl EditVerdict {
 pub struct PagePlan {
     pub page_index: u32,
     pub runs: Vec<RunPlan>,
+    /// One per moved image, in request order.
+    pub images: Vec<ImagePlan>,
     /// Sorted by joined start.
     pub splices: Vec<Splice>,
     pub expected_parts: Vec<Vec<u8>>,
@@ -304,18 +336,32 @@ pub fn plan_page(
     model: &PageModel,
     edits: &[TextEditIn],
 ) -> Result<PlanOutcome, AppError> {
-    if edits.len() > EDITS_PER_PAGE_MAX {
-        return Err(too_many_edits(edits.len()));
+    plan_page_with_images(ctx, model, edits, &[])
+}
+
+/// Plans text changes and image moves of one page together. A page with only image moves is
+/// planned too (the text-only path never was); verdicts are in request order, text edits first.
+pub fn plan_page_with_images(
+    ctx: &SnapshotContext,
+    model: &PageModel,
+    edits: &[TextEditIn],
+    images: &[ImageEditIn],
+) -> Result<PlanOutcome, AppError> {
+    if edits.len().saturating_add(images.len()) > EDITS_PER_PAGE_MAX {
+        return Err(too_many_edits(edits.len().saturating_add(images.len())));
     }
     for e in edits {
         style::validate_style(&e.style)?;
         style::validate_move(e.move_by)?;
     }
+    for e in images {
+        style::validate_move(Some(e.move_by))?;
+    }
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for e in edits {
         *counts.entry(e.run_id.as_str()).or_insert(0) += 1;
     }
-    let mut verdicts = Vec::with_capacity(edits.len());
+    let mut verdicts = Vec::with_capacity(edits.len().saturating_add(images.len()));
     let mut runs: Vec<RunPlan> = Vec::new();
     let mut masks = masks::MaskFonts::new(ctx.doc());
     for e in edits {
@@ -351,13 +397,41 @@ pub fn plan_page(
             Err(p) => verdicts.push(EditVerdict::failed(&e.run_id, p)),
         }
     }
-    if verdicts.iter().any(|v| v.problem.is_some()) || runs.is_empty() {
+    let mut image_counts: HashMap<&str, usize> = HashMap::new();
+    for e in images {
+        *image_counts.entry(e.locator.as_str()).or_insert(0) += 1;
+    }
+    let mut image_plans: Vec<ImagePlan> = Vec::new();
+    for e in images {
+        if image_counts.get(e.locator.as_str()).copied().unwrap_or(0) > 1 {
+            verdicts.push(EditVerdict::failed(
+                &e.locator,
+                problem(
+                    EditProblemCode::EditConflict,
+                    "the same image is moved twice",
+                ),
+            ));
+            continue;
+        }
+        let (verdict, plan) = image::plan_image(ctx, model, e, &runs, &image_plans);
+        if let Some(p) = plan {
+            image_plans.push(p);
+        }
+        verdicts.push(verdict);
+    }
+    if verdicts.iter().any(|v| v.problem.is_some()) || (runs.is_empty() && image_plans.is_empty())
+    {
         return Ok(PlanOutcome {
             verdicts,
             plan: None,
         });
     }
-    let plan = assemble_page_plan(&model.content, model.page_index, runs);
+    let plan = bytes::assemble_page_plan_with_images(
+        &model.content,
+        model.page_index,
+        runs,
+        image_plans,
+    );
     self_check(ctx, model, &plan)?;
     Ok(PlanOutcome {
         verdicts,

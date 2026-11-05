@@ -485,16 +485,31 @@ pub(crate) fn rebuild_parts(content: &PageContent, plan: &mut PagePlan) {
     plan.expected_joined = joined;
 }
 
-/// The page plan of `runs` over `content`.
+/// The page plan of `runs` over `content` (no image moves).
 pub(crate) fn assemble_page_plan(
     content: &PageContent,
     page_index: u32,
     runs: Vec<RunPlan>,
 ) -> PagePlan {
-    let splices = runs.iter().flat_map(|r| r.splices.clone()).collect();
+    assemble_page_plan_with_images(content, page_index, runs, Vec::new())
+}
+
+/// The page plan of `runs` and `images` over `content`: every text splice, then the two
+/// zero-length inserts around each moved image's `Do`.
+pub(crate) fn assemble_page_plan_with_images(
+    content: &PageContent,
+    page_index: u32,
+    runs: Vec<RunPlan>,
+    images: Vec<super::ImagePlan>,
+) -> PagePlan {
+    let mut splices: Vec<Splice> = runs.iter().flat_map(|r| r.splices.clone()).collect();
+    for image in &images {
+        splices.extend(image.splices());
+    }
     let mut plan = PagePlan {
         page_index,
         runs,
+        images,
         splices,
         expected_parts: Vec::new(),
         edited_parts: Vec::new(),

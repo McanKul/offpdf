@@ -98,9 +98,10 @@ const DTOS: { name: string; kinds: Record<string, string>; is: (o: Obj) => boole
   {
     name: "PageTextDto",
     kinds: kinds<PageText>({
-      fingerprint: "string", pageIndex: "number", pageReason: "string?", runs: "object[]", fonts: "object[]",
+      fingerprint: "string", pageIndex: "number", pageReason: "string?", runs: "object[]",
+      images: "object[]", fonts: "object[]",
     }),
-    is: (o) => has(o, "runs", "fonts"),
+    is: (o) => has(o, "runs", "images", "fonts"),
   },
   {
     name: "TextRunDto",

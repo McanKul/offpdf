@@ -11,6 +11,45 @@ use lopdf::{Document, Object};
 use serde_json::json;
 use std::path::Path;
 
+/// A page with one reused image painted twice and a text line between them.
+pub(crate) fn image_doc() -> Vec<u8> {
+    let mut d = DocBuilder::new();
+    let f = d.add(HELVETICA);
+    let img = d.b.add_stream(
+        "/Type /XObject /Subtype /Image /Width 2 /Height 2 \
+         /ColorSpace /DeviceRGB /BitsPerComponent 8",
+        &[200, 16, 16, 16, 200, 16, 16, 16, 200, 200, 200, 16],
+    );
+    d.page(PageSpec::new(
+        b"q 40 0 0 40 72 400 cm /Im0 Do Q \
+          q 40 0 0 40 300 400 cm /Im0 Do Q \
+          BT /F1 12 Tf 72 700 Td (Image page) Tj ET",
+        &format!("/Font << /F1 {f} 0 R >> /XObject << /Im0 {img} 0 R >>"),
+    ));
+    d.build()
+}
+
+/// Every decoded image XObject stream of `pdf`, sorted (the source pixels must survive a save).
+fn image_streams(pdf: &Path) -> Vec<Vec<u8>> {
+    let doc = Document::load(pdf).expect("load");
+    let mut out: Vec<Vec<u8>> = doc
+        .objects
+        .values()
+        .filter_map(|o| match o {
+            Object::Stream(s)
+                if s.dict.get(b"Subtype").and_then(Object::as_name).ok()
+                    == Some(b"Image".as_slice()) =>
+            {
+                let mut budget = DecodeBudget::new(1 << 30);
+                Some(decode_stream(s, 1 << 30, &mut budget).unwrap_or_else(|_| s.content.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 /// One Helvetica line per page.
 pub(crate) fn pages_doc(lines: &[&str]) -> Vec<u8> {
     let mut d = DocBuilder::new();
@@ -362,6 +401,75 @@ fn b2_a_line_running_into_the_next_cells_saves_with_the_overlap_warning() {
             "B2 {word:?}: {after:?}"
         );
     }
+}
+
+/// Issue #129: Save writes a new PDF whose selected occurrence sits at the requested place, the
+/// other occurrence of the same image stays put, the image bytes are unchanged and the text is
+/// still extractable.
+#[test]
+fn e2e_23_a_moved_image_reopens_at_its_new_place() {
+    let Some(t) = E2e::new("e2e_23") else {
+        return;
+    };
+    let src = t.file("image.pdf", &image_doc());
+    let (fp, dto) = t.page(&src, 0);
+    assert_eq!(dto.images.len(), 2, "both occurrences are offered");
+    let first = dto
+        .images
+        .iter()
+        .find(|i| i.rect.x < 200.0)
+        .expect("the left occurrence");
+    assert!(first.movable, "the reused XObject is movable: {:?}", first.reason);
+    let (dx, dy) = (100.0, 50.0);
+    let moved = json!({
+        "id": "si-1",
+        "kind": "sourceImage",
+        "pageIndex": 0,
+        "rect": {
+            "x": first.rect.x + dx, "y": first.rect.y + dy,
+            "w": first.rect.w, "h": first.rect.h
+        },
+        "locked": true,
+        "locator": first.locator,
+        "sourceFingerprint": fp,
+        "sourcePageIndex": 0,
+        "move": { "x": dx, "y": dy }
+    });
+    let saved = t
+        .save(&[(&src, "1-z")], vec![moved])
+        .unwrap_or_else(|e| panic!("E2E-23 save: {e} {:?}", e.details));
+    t.assert_checks_clean(&saved.path);
+    assert_eq!(
+        t.words(&src, 0),
+        t.words(&saved.path, 0),
+        "the surrounding text is unchanged"
+    );
+    let (_, after) = t.page(&saved.path, 0);
+    assert_eq!(after.images.len(), 2, "the image resource is still reused");
+    let near = |r: &crate::pdf_engine::text_edit::dto::RectDto, x: f64, y: f64| {
+        (r.x - x).abs() < 0.1 && (r.y - y).abs() < 0.1
+    };
+    assert!(
+        after.images.iter().any(|i| near(&i.rect, 72.0 + dx, 400.0 + dy)),
+        "the moved occurrence is at its new place: {:?}",
+        after.images.iter().map(|i| i.rect).collect::<Vec<_>>()
+    );
+    assert!(
+        after.images.iter().any(|i| near(&i.rect, 300.0, 400.0)),
+        "the other occurrence did not move: {:?}",
+        after.images.iter().map(|i| i.rect).collect::<Vec<_>>()
+    );
+    assert!(
+        after.images.iter().all(|i| !near(&i.rect, 72.0, 400.0)),
+        "no image was left at the old place"
+    );
+    assert_eq!(image_streams(&src), image_streams(&saved.path), "image bytes changed");
+    let content = String::from_utf8_lossy(&page_parts(&saved.path, 0).concat()).into_owned();
+    assert_eq!(content.matches("/Im0 Do").count(), 2, "{content}");
+    assert!(
+        content.contains("1 0 0 1 2.5 1.25 cm"),
+        "the page-space delta is written in CTM units: {content}"
+    );
 }
 
 /// The `/Link` annotations of page `page` (0-based) of `pdf`.

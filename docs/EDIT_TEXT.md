@@ -15,12 +15,12 @@ data model (`kind: "sourceText"` objects, keyboard contract) is in
 | | |
 | --- | --- |
 | Question | Can OffPDF reliably change existing page text or embedded images without pretending that PDF is a word-processing format? |
-| Decision | **Yes, for a bounded, fail-closed subset of text.** Existing images are not replaced in this release. |
+| Decision | **Yes, for a bounded, fail-closed subset of text.** Existing images are not replaced in this release; a directly painted image can be moved on its page. |
 | Status | Implemented in the bounded source-text editor; released in v0.5.0. |
 | Date | 2026-10-02 |
 | Owner | @McanKul (maintainer) |
 | Scope | One line at a time, inside the page's own content stream, in a font the page already uses, verified before it is saved. |
-| Not in scope | Image replacement (the image half of #11), text inside reusable blocks (Form XObjects), annotation text, shared content streams, Type3, vertical, right-to-left and complex scripts, reflow, new fonts. See [section 15](#15-known-limitations-and-future-work). |
+| Not in scope | Image replacement or resizing (the image half of #11), text inside reusable blocks (Form XObjects), annotation text, shared content streams, Type3, vertical, right-to-left and complex scripts, reflow, new fonts. See [section 15](#15-known-limitations-and-future-work). |
 | Engine | lopdf 0.34 (read only) + OffPDF's own bounded lexer and walker, qpdf as the only writer, Poppler as an independent verifier. No PDFium sidecar ([section 13](#13-engine-decision)). |
 | Evidence | The reason codes ([6](#6-reason-codes)), the compatibility matrix ([11](#11-compatibility-matrix)), the measured performance and engine matrix ([12](#12-performance-and-engine-matrix)) and the adversarial gate tests ([9](#9-verification)). |
 
@@ -228,11 +228,20 @@ the page shows one banner instead of outlines.
 | `GEOMETRY` | page | `/UserUnit` other than 1, unreadable or degenerate page boxes, or a `/Rotate` that is not a multiple of 90 | custom page unit | Custom page unit | This page uses a custom unit size or unreadable page boxes, which OffPDF doesn't edit yet. |
 <!-- ui-copy:end -->
 
-Image occurrences are classified too (the #33 classifier), but this release does not
-edit images and does not show these codes. In priority order: `INLINE_IMAGE`,
-`NESTED_FORM`, `CLIPPED`, `PATTERN`, `MASKED_IMAGE` (drawn with a mask or soft
-mask), `SHARED_XOBJECT` (one image used in more than one place),
-`TRANSFORMED_IMAGE` (rotated, skewed or mirrored image), `GEOMETRY`.
+Image occurrences are classified too (the #33 classifier). Edit PDF's Select
+tool offers the images painted directly by the page and lets the user move them;
+the rest are not offered. In priority order: `INLINE_IMAGE`, `NESTED_FORM`,
+`CLIPPED`, `PATTERN`, `MASKED_IMAGE` (drawn with a mask or soft mask),
+`SHARED_XOBJECT` (one image used in more than one place), `TRANSFORMED_IMAGE`
+(rotated, skewed or mirrored image), `GEOMETRY`.
+
+To move an image, Edit PDF inserts a translation (`q 1 0 0 1 dx dy cm`) before
+that occurrence's `Do` and a `Q` after it. The image's bytes and its XObject are
+never rewritten, so other occurrences of the same image stay where they were.
+Inline images, images inside a Form XObject, complex clips, masked images,
+transformed images, shared content streams, and moves that leave the visible
+page (`TEXT_OUTSIDE_VISIBLE_AREA`) are refused. The moved occurrence is
+re-walked and verified like a text edit before Save writes the new file.
 
 The codes are append-only from this release. The single source of truth is
 [`src/lib/editor/text-reasons.json`](../src/lib/editor/text-reasons.json); see

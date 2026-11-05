@@ -305,6 +305,20 @@ pub enum EditObjectIn {
         #[serde(default, rename = "move")]
         move_by: Option<text_edit::rewrite::MoveIn>,
     },
+    /// A move of an image already painted by the page (issue #129): applied to the source's own
+    /// content stream before assembly, never painted as an overlay.
+    SourceImage {
+        #[serde(rename = "pageIndex")]
+        page_index: u32,
+        rect: PdfRectIn,
+        #[serde(rename = "sourcePageIndex")]
+        source_page_index: u32,
+        locator: String,
+        #[serde(rename = "sourceFingerprint")]
+        source_fingerprint: String,
+        #[serde(default, rename = "move")]
+        move_by: Option<text_edit::rewrite::MoveIn>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -352,7 +366,8 @@ impl EditObjectIn {
             | Self::Strikeout { page_index, .. }
             | Self::MarkupInk { page_index, .. }
             | Self::Redact { page_index, .. }
-            | Self::SourceText { page_index, .. } => *page_index,
+            | Self::SourceText { page_index, .. }
+            | Self::SourceImage { page_index, .. } => *page_index,
         }
     }
     fn opacity(&self) -> f64 {
@@ -360,7 +375,10 @@ impl EditObjectIn {
             return 1.0;
         }
         let o = match self {
-            Self::Link { .. } | Self::Redact { .. } | Self::SourceText { .. } => return 1.0,
+            Self::Link { .. }
+            | Self::Redact { .. }
+            | Self::SourceText { .. }
+            | Self::SourceImage { .. } => return 1.0,
             Self::Rect { opacity, .. }
             | Self::Ellipse { opacity, .. }
             | Self::Triangle { opacity, .. }
@@ -384,7 +402,10 @@ impl EditObjectIn {
 
     fn object_rotate(&self) -> f64 {
         match self {
-            Self::Link { .. } | Self::Redact { .. } | Self::SourceText { .. } => 0.0,
+            Self::Link { .. }
+            | Self::Redact { .. }
+            | Self::SourceText { .. }
+            | Self::SourceImage { .. } => 0.0,
             Self::Rect { object_rotate, .. }
             | Self::Ellipse { object_rotate, .. }
             | Self::Triangle { object_rotate, .. }
@@ -408,7 +429,10 @@ impl EditObjectIn {
     fn triggers_overlay(&self) -> bool {
         !matches!(
             self,
-            Self::Link { .. } | Self::Redact { .. } | Self::SourceText { .. }
+            Self::Link { .. }
+                | Self::Redact { .. }
+                | Self::SourceText { .. }
+                | Self::SourceImage { .. }
         )
     }
 
@@ -457,7 +481,8 @@ impl EditObjectIn {
             | Self::Strikeout { rect, .. }
             | Self::MarkupInk { rect, .. }
             | Self::Redact { rect, .. }
-            | Self::SourceText { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
+            | Self::SourceText { rect, .. }
+            | Self::SourceImage { rect, .. } => pdf_rect_to_overlay(rect, vis, page_rot),
         }
     }
 }
@@ -1064,7 +1089,10 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
     for o in &doc.objects {
         if matches!(o, EditObjectIn::Link { .. }) {
             links += 1;
-        } else if !matches!(o, EditObjectIn::SourceText { .. }) {
+        } else if !matches!(
+            o,
+            EditObjectIn::SourceText { .. } | EditObjectIn::SourceImage { .. }
+        ) {
             paint += 1;
         }
     }
@@ -1072,7 +1100,11 @@ fn validate_doc(doc: &EditDocumentIn) -> Result<(), AppError> {
         .iter()
         .map(|r| r.page_index)
         .collect();
-    text_edit::export::validate_specs(&text_edit::export::specs_of(doc), &redact_pages)?;
+    text_edit::export::validate_specs(
+        &text_edit::export::specs_of(doc),
+        &text_edit::export::image_specs_of(doc),
+        &redact_pages,
+    )?;
     if paint > MAX_OBJECTS {
         return Err(AppError::new(
             "TOO_MANY_OBJECTS",
@@ -1864,7 +1896,12 @@ where
                     && document
                         .objects
                         .iter()
-                        .all(|o| matches!(o, EditObjectIn::SourceText { .. }))
+                        .all(|o| {
+                            matches!(
+                                o,
+                                EditObjectIn::SourceText { .. } | EditObjectIn::SourceImage { .. }
+                            )
+                        })
                     && form_values.is_empty()
                     && !flatten_form
                     && dest_has_supported_links(&tmp)?));
@@ -2497,7 +2534,8 @@ fn write_overlay_pdf(
                 | EditObjectIn::Strikeout { .. }
                 | EditObjectIn::MarkupInk { .. }
                 | EditObjectIn::Redact { .. }
-                | EditObjectIn::SourceText { .. } => {}
+                | EditObjectIn::SourceText { .. }
+                | EditObjectIn::SourceImage { .. } => {}
             }
             if rotated {
                 content.push_str("Q\n");

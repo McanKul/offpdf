@@ -12,10 +12,16 @@
  * shows it as soon as the commit lands, without a second call.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { editsSignature, toTextEditIn, type SourceTextObject } from "@/lib/editor";
+import {
+  previewSignature,
+  toImageEditIn,
+  toTextEditIn,
+  type SourceImageObject,
+  type SourceTextObject,
+} from "@/lib/editor";
 import { base64ToBytes } from "@/lib/pdfjs";
 import { previewTextEdits } from "@/lib/tauriCommands";
-import { toAppError, type AppError, type TextEditIn, type TextPreview } from "@/lib/types";
+import { toAppError, type AppError, type ImageEditIn, type TextEditIn, type TextPreview } from "@/lib/types";
 import { lruGet, lruPut } from "./usePageText";
 
 export const PREVIEW_CACHE_PAGES = 8;
@@ -31,6 +37,8 @@ export interface TextPreviewArgs {
   sourcePageIndex: number | null;
   /** The page's committed text changes. */
   objects: SourceTextObject[];
+  /** The page's committed image moves. */
+  images?: SourceImageObject[];
 }
 
 export interface TextPreviewState {
@@ -43,7 +51,7 @@ export interface TextPreviewState {
 }
 
 export interface TextPreviewController extends TextPreviewState {
-  request(edits: TextEditIn[]): Promise<TextPreview>;
+  request(edits: TextEditIn[], images?: ImageEditIn[]): Promise<TextPreview>;
   seed(signature: string, preview: TextPreview): void;
 }
 
@@ -98,18 +106,26 @@ function putEntry(cache: Map<string, Entry>, key: string, entry: Entry): void {
 
 const statusOf = (entry: Entry): TextPreviewStatus => (entry.bytes ? "ready" : "unavailable");
 
-export function useTextPreview({ path, fingerprint, sourcePageIndex, objects }: TextPreviewArgs): TextPreviewController {
+export function useTextPreview({
+  path,
+  fingerprint,
+  sourcePageIndex,
+  objects,
+  images = [],
+}: TextPreviewArgs): TextPreviewController {
   const cache = useRef(new Map<string, Entry>());
   const generation = useRef(0);
   const objectsRef = useRef(objects);
   objectsRef.current = objects;
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
   const [snap, setSnap] = useState<Snapshot>(IDLE);
 
   const base = path && fingerprint && sourcePageIndex !== null ? `${path}\u0000${fingerprint}\u0000${sourcePageIndex}` : null;
   /** Editor page the changes belong to: a source page listed twice never shows the other copy's bytes. */
-  const owner = objects[0]?.pageIndex ?? -1;
-  const signature = editsSignature(objects);
-  const key = base && objects.length > 0 ? `${base}\u0000${signature}` : null;
+  const owner = objects[0]?.pageIndex ?? images[0]?.pageIndex ?? -1;
+  const signature = previewSignature(objects, images);
+  const key = base && (objects.length > 0 || images.length > 0) ? `${base}\u0000${signature}` : null;
   const baseRef = useRef(base);
   baseRef.current = base;
   const keyRef = useRef(key);
@@ -137,7 +153,13 @@ export function useTextPreview({ path, fingerprint, sourcePageIndex, objects }: 
       shown: prev.base === base && prev.owner === owner ? prev.shown : null,
       error: null,
     }));
-    previewTextEdits(path, fingerprint, sourcePageIndex, objectsRef.current.map(toTextEditIn)).then(
+    previewTextEdits(
+      path,
+      fingerprint,
+      sourcePageIndex,
+      objectsRef.current.map(toTextEditIn),
+      imagesRef.current.map(toImageEditIn),
+    ).then(
       (preview) => {
         if (gen !== generation.current) return;
         if (!isPreview(preview)) {
@@ -156,11 +178,12 @@ export function useTextPreview({ path, fingerprint, sourcePageIndex, objects }: 
   }, [key, base, owner, path, fingerprint, sourcePageIndex]);
 
   const request = useCallback(
-    (edits: TextEditIn[]): Promise<TextPreview> => {
+    (edits: TextEditIn[], nextImages?: ImageEditIn[]): Promise<TextPreview> => {
       if (!path || !fingerprint || sourcePageIndex === null) {
-        return Promise.reject({ ...toAppError(null), details: "Edit text source is not open" });
+        return Promise.reject({ ...toAppError(null), details: "Edit source is not open" });
       }
-      return previewTextEdits(path, fingerprint, sourcePageIndex, edits).then((preview) => {
+      const imageEdits = nextImages ?? imagesRef.current.map(toImageEditIn);
+      return previewTextEdits(path, fingerprint, sourcePageIndex, edits, imageEdits).then((preview) => {
         if (!isPreview(preview)) throw unexpectedAnswer();
         return preview;
       });

@@ -21,7 +21,9 @@ use crate::pdf_engine::text_edit::gate::{
 use crate::pdf_engine::text_edit::graph::graph_digest;
 use crate::pdf_engine::text_edit::limits::{PREVIEW_PDF_MAX_BYTES, VERIFY_CAP_MARGIN_BYTES};
 use crate::pdf_engine::text_edit::reasons::{EditProblem, TextWarningCode};
-use crate::pdf_engine::text_edit::rewrite::{plan_page, EditVerdict, PagePlan, TextEditIn};
+use crate::pdf_engine::text_edit::rewrite::{
+    plan_page_with_images, EditVerdict, ImageEditIn, PagePlan, TextEditIn,
+};
 use crate::pdf_engine::text_edit::runs::{build_page_model, PageModel};
 use crate::pdf_engine::text_edit::snapshot::{check_page_map, read_verification_snapshot};
 use crate::pdf_engine::validate_output::ContentDigest;
@@ -89,7 +91,7 @@ pub(crate) fn write_once(dest: &Path, bytes: &[u8]) -> Result<(), AppError> {
 
 /// `p<n>.pdf`: `qpdf --empty --remove-unreferenced-resources=no --pages source.pdf <n> -- out`
 /// (shared inherited resources stay whole, D30), written once.
-fn extract_page(
+pub(crate) fn extract_page(
     engines: &Engines,
     source: &Path,
     page_1: u32,
@@ -225,13 +227,14 @@ pub fn preview_page(
     ctx: &SnapshotContext,
     model: Arc<PageModel>,
     edits: &[TextEditIn],
+    images: &[ImageEditIn],
     cache_dir: &Path,
     engines: &Engines,
     source_benign: &[String],
     opts: &RunOpts<'_>,
 ) -> Result<PreviewResult, AppError> {
     let page_index = model.page_index;
-    let outcome = plan_page(ctx, &model, edits)?;
+    let outcome = plan_page_with_images(ctx, &model, edits, images)?;
     let source_page = SourcePage::of(&model);
     drop(model);
     let mut warnings = verdict_warnings(page_index, &outcome.verdicts);

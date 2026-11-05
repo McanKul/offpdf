@@ -16,6 +16,7 @@ import {
   type PageGeometry,
   type PdfRect,
   type Point,
+  type SourceImageObject,
   type SourceTextObject,
 } from "./types";
 import { cloneDocument, cloneObject } from "./serialize";
@@ -59,7 +60,13 @@ export type EditAction =
   /** Delete the sourceText object for (pageIndex, runId), if any. One step. */
   | { type: "REMOVE_SOURCE_TEXT"; pageIndex: number; runId: string }
   /** Delete every sourceText object of one source snapshot (STALE recovery). One step. */
-  | { type: "REMOVE_SOURCE_TEXT_FOR_FINGERPRINT"; fingerprint: string };
+  | { type: "REMOVE_SOURCE_TEXT_FOR_FINGERPRINT"; fingerprint: string }
+  /** Add, replace or remove (a move back home) the image move for (pageIndex, locator). One step. */
+  | { type: "UPSERT_SOURCE_IMAGE"; object: SourceImageObject }
+  /** Delete the image move for (pageIndex, locator), if any. One step. */
+  | { type: "REMOVE_SOURCE_IMAGE"; pageIndex: number; locator: string }
+  /** Delete every image move of one source snapshot (STALE recovery). One step. */
+  | { type: "REMOVE_SOURCE_IMAGE_FOR_FINGERPRINT"; fingerprint: string };
 
 /** Later objects on the same page paint in front. `null` if the move is a no-op. */
 export function reorderOnPage(objects: EditObject[], id: string, dir: LayerDir): EditObject[] | null {
@@ -133,6 +140,8 @@ function applyUpdate(
     objects: doc.objects.map((o) => {
       if (o.id !== id) return o;
       if (o.kind === "sourceText") return sourceTextPatch(o, patch);
+      // An image move is bound to its occurrence: only the planner changes its geometry.
+      if (o.kind === "sourceImage") return o;
       const nextPatch = { ...patch };
       if (o.kind === "redact") {
         delete nextPatch.objectRotate;
@@ -170,7 +179,7 @@ export function editReducer(state: HistoryState, action: EditAction): HistorySta
 
     case "ADD_MANY": {
       // Paste / duplicate never copies a text change: one object per (pageIndex, runId).
-      const pasted = action.objects.filter((o) => o.kind !== "sourceText");
+      const pasted = action.objects.filter((o) => o.kind !== "sourceText" && o.kind !== "sourceImage");
       if (pasted.length === 0) return state;
       const added = pasted.map((o) => {
         const next = { ...o, rect: normalizePdfRect(o.rect) } as EditObject;
@@ -339,6 +348,28 @@ export function editReducer(state: HistoryState, action: EditAction): HistorySta
       return ids.length === 0 ? state : editReducer(state, { type: "DELETE", ids });
     }
 
+    case "UPSERT_SOURCE_IMAGE":
+      return upsertSourceImage(state, action.object);
+
+    case "REMOVE_SOURCE_IMAGE": {
+      const ids = state.present.objects
+        .filter(
+          (o) =>
+            o.kind === "sourceImage" &&
+            o.pageIndex === action.pageIndex &&
+            o.locator === action.locator,
+        )
+        .map((o) => o.id);
+      return ids.length === 0 ? state : editReducer(state, { type: "DELETE", ids });
+    }
+
+    case "REMOVE_SOURCE_IMAGE_FOR_FINGERPRINT": {
+      const ids = state.present.objects
+        .filter((o) => o.kind === "sourceImage" && o.sourceFingerprint === action.fingerprint)
+        .map((o) => o.id);
+      return ids.length === 0 ? state : editReducer(state, { type: "DELETE", ids });
+    }
+
     default:
       return state;
   }
@@ -392,6 +423,27 @@ function upsertSourceText(state: HistoryState, object: SourceTextObject): Histor
     ...(move ? { move } : { move: undefined }),
   };
   const objects = state.present.objects.map((o, i) => (i === index ? replaced : o));
+  return pushPast({ ...state, gestureActive: false }, { ...state.present, objects });
+}
+
+function sameImageMove(a: SourceImageObject, b: SourceImageObject): boolean {
+  return sameRect(a.rect, b.rect) && sameMove(a.move, b.move);
+}
+
+function upsertSourceImage(state: HistoryState, object: SourceImageObject): HistoryState {
+  const incoming = { ...object, rect: normalizePdfRect(object.rect), ...(object.move ? { move: { ...object.move } } : {}) };
+  const index = state.present.objects.findIndex(
+    (o) => o.kind === "sourceImage" && o.pageIndex === incoming.pageIndex && o.locator === incoming.locator,
+  );
+  if (index < 0) {
+    return pushPast(
+      { ...state, gestureActive: false },
+      { ...state.present, objects: [...state.present.objects, incoming] },
+    );
+  }
+  const existing = state.present.objects[index] as SourceImageObject;
+  if (sameImageMove(existing, incoming)) return state;
+  const objects = state.present.objects.map((o, i) => (i === index ? incoming : o));
   return pushPast({ ...state, gestureActive: false }, { ...state.present, objects });
 }
 

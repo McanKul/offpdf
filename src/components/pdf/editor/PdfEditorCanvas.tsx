@@ -30,7 +30,7 @@ import {
   offsetObject,
   pdfRectToViewport,
   placeImagePdfRect,
-  editsSignature,
+  previewSignature,
   rgbToHex,
   selectedIdsOnPage,
   stageJustify,
@@ -51,6 +51,7 @@ import {
   type SourceTextGuard,
   type TextRequest,
 } from "./sourceText/SourceTextMode";
+import { SourceImageLayer } from "./sourceText/SourceImageLayer";
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 4;
@@ -62,9 +63,9 @@ function newObjectId(): string {
   return `obj-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-/** Inside the Edit text layer, inline editor, format bar or reason popover. */
+/** Inside the Edit text layer, the image layer, inline editor, format bar or reason popover. */
 function inSourceText(t: EventTarget | null): boolean {
-  return t instanceof Element && !!t.closest("[data-source-text]");
+  return t instanceof Element && !!t.closest("[data-source-text], [data-source-image]");
 }
 
 function isTextEntryTarget(t: EventTarget | null): boolean {
@@ -172,8 +173,8 @@ export function PdfEditorCanvas({
     active: tool === "editText",
     duplicate: text.duplicatePage,
   });
-  const hasTextChanges = st.objects.length > 0;
-  const textSig = editsSignature(st.objects);
+  const hasSourceChanges = st.objects.length > 0 || st.images.length > 0;
+  const textSig = previewSignature(st.objects, st.images);
   const original = st.canShowOriginal && originalFor === textSig;
   const toggleOriginal = () => setOriginalFor((at) => (at === textSig ? null : textSig));
   const surfaceBytes = bytes && (original || !st.preview.bytes ? bytes : st.preview.bytes);
@@ -316,8 +317,11 @@ export function PdfEditorCanvas({
 
   const copySelection = useCallback(() => {
     const activeIds = new Set(selectedIdsOnPage(session.objects, session.selectedIds, pageIndex));
-    // Text changes are never copied (one per line, locked to it).
-    const sel = session.objects.filter((object) => activeIds.has(object.id) && object.kind !== "sourceText");
+    // Text changes and image moves are never copied (one per line/occurrence, locked to it).
+    const sel = session.objects.filter(
+      (object) =>
+        activeIds.has(object.id) && object.kind !== "sourceText" && object.kind !== "sourceImage",
+    );
     if (sel.length === 0) return false;
     clipboardRef.current = sel.map(cloneObject);
     pasteGen.current = 1;
@@ -461,7 +465,9 @@ export function PdfEditorCanvas({
   }, []);
 
   const selected = pageObjects.find((object) => object.id === pageSelectedIds[0]) ?? null;
-  const layerObjects = pageObjects.filter((object) => object.kind !== "sourceText");
+  const layerObjects = pageObjects.filter(
+    (object) => object.kind !== "sourceText" && object.kind !== "sourceImage",
+  );
   const panMode = !colorPick && (tool === "hand" || spacePan);
 
   const onStagePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -533,7 +539,7 @@ export function PdfEditorCanvas({
             Redaction permanently removes content on Save. Only pages with a
             redaction region become images; text on those pages will not stay
             selectable.
-            {hasTextChanges && ` ${UI.redactionConflict}`}
+            {hasSourceChanges && ` ${UI.redactionConflict}`}
           </Alert>
         </div>
       )}
@@ -576,7 +582,7 @@ export function PdfEditorCanvas({
         <aside className="pdf-editor__sidebar">
           <div className="pdf-editor__sidebar-title">Objects</div>
           <ObjectList
-            objects={pageObjects}
+            objects={pageObjects.filter((o) => o.kind !== "sourceImage")}
             selectedIds={pageSelectedIds}
             onSelect={(ids) => {
               session.select(ids);
@@ -651,7 +657,10 @@ export function PdfEditorCanvas({
         <div className="pdf-editor__main">
           <SourceTextBanners
             page={st}
-            onRemoveStale={session.removeSourceTextForFingerprint}
+            onRemoveStale={(fingerprint) => {
+              session.removeSourceTextForFingerprint(fingerprint);
+              session.removeSourceImageForFingerprint(fingerprint);
+            }}
             modeDismissed={modeDismissed}
             onDismissMode={() => setModeDismissed(true)}
           />
@@ -736,6 +745,16 @@ export function PdfEditorCanvas({
                     onCreateRedact={thenSelect((rect) => session.addRedact(pageIndex, rect))}
                     onRequestImage={(at) => void placeImage(at)}
                     onActivateText={(id) => setEditingTextId(id)}
+                  />
+                )}
+                {layout && tool === "select" && (
+                  <SourceImageLayer
+                    key={`si:${pageIndex}:${sourcePath}:${sourcePage}`}
+                    page={st}
+                    layout={layout}
+                    session={session}
+                    inert={panMode}
+                    onLeave={() => rootRef.current?.focus({ preventScroll: true })}
                   />
                 )}
                 {layout && tool === "editText" && (

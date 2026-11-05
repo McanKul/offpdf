@@ -13,7 +13,7 @@ import { PAGE_TEXT_CACHE_PAGES, PAGE_TEXT_PREFETCH_MS, lruPut, usePageText, type
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const page = (pageIndex: number, fingerprint = "fp"): PageText => ({ fingerprint, pageIndex, pageReason: null, runs: [], fonts: [] });
+const page = (pageIndex: number, fingerprint = "fp"): PageText => ({ fingerprint, pageIndex, pageReason: null, runs: [], images: [], fonts: [] });
 
 let root: Root | null = null;
 let state: PageTextState;

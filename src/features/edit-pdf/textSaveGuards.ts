@@ -5,7 +5,7 @@
  * same page, edited page listed twice.
  */
 
-import type { EditObject, SourceTextObject } from "@/lib/editor";
+import type { EditObject, SourceImageObject, SourceTextObject } from "@/lib/editor";
 import { FILE_ERROR_COPY, SAVE_GUARD_COPY, fillCopy } from "@/lib/editor/sourceTextCopy";
 import type { PageRef } from "@/lib/types";
 import type { TextSourceState } from "./useTextSources";
@@ -23,8 +23,13 @@ export interface TextSaveGuardResult {
 
 const UNKNOWN_FILE = "this PDF";
 
-function sourceTextObjects(objects: EditObject[]): SourceTextObject[] {
-  return objects.filter((o): o is SourceTextObject => o.kind === "sourceText");
+/** A change written into the source before assembly: a text change or an image move. */
+type SourceChange = SourceTextObject | SourceImageObject;
+
+function sourceChanges(objects: EditObject[]): SourceChange[] {
+  return objects.filter(
+    (o): o is SourceChange => o.kind === "sourceText" || o.kind === "sourceImage",
+  );
 }
 
 function rowWithSuggestion(code: string, vars: Record<string, string | number>): TextSaveGuardResult {
@@ -35,7 +40,7 @@ function rowWithSuggestion(code: string, vars: Record<string, string | number>):
   };
 }
 
-function notReady(edits: SourceTextObject[], input: TextSaveGuardInput): TextSaveGuardResult | null {
+function notReady(edits: SourceChange[], input: TextSaveGuardInput): TextSaveGuardResult | null {
   for (const o of edits) {
     const ref = input.refs[o.pageIndex];
     const source = ref ? input.sources[ref.path] : undefined;
@@ -49,7 +54,7 @@ function notReady(edits: SourceTextObject[], input: TextSaveGuardInput): TextSav
   return null;
 }
 
-function stale(edits: SourceTextObject[], input: TextSaveGuardInput): TextSaveGuardResult | null {
+function stale(edits: SourceChange[], input: TextSaveGuardInput): TextSaveGuardResult | null {
   for (const o of edits) {
     const ref = input.refs[o.pageIndex];
     const source = input.sources[ref.path];
@@ -62,13 +67,13 @@ function stale(edits: SourceTextObject[], input: TextSaveGuardInput): TextSaveGu
   return null;
 }
 
-function redactionConflict(edits: SourceTextObject[], input: TextSaveGuardInput): TextSaveGuardResult | null {
+function redactionConflict(edits: SourceChange[], input: TextSaveGuardInput): TextSaveGuardResult | null {
   const redacted = new Set(input.objects.filter((o) => o.kind === "redact").map((o) => o.pageIndex));
   const hit = edits.find((o) => redacted.has(o.pageIndex));
   return hit ? rowWithSuggestion("TEXT_EDIT_ON_REDACTED_PAGE", { n: hit.pageIndex + 1 }) : null;
 }
 
-function duplicatePage(edits: SourceTextObject[], input: TextSaveGuardInput): TextSaveGuardResult | null {
+function duplicatePage(edits: SourceChange[], input: TextSaveGuardInput): TextSaveGuardResult | null {
   const listed = new Map<string, number>();
   for (const ref of input.refs) {
     const key = `${ref.path}\u0000${ref.page}`;
@@ -85,7 +90,7 @@ function duplicatePage(edits: SourceTextObject[], input: TextSaveGuardInput): Te
 
 /** The first reason the text changes can't be saved yet, or null when all clear. */
 export function textSaveGuard(input: TextSaveGuardInput): TextSaveGuardResult | null {
-  const edits = sourceTextObjects(input.objects);
+  const edits = sourceChanges(input.objects);
   if (edits.length === 0) return null;
   return (
     notReady(edits, input) ?? stale(edits, input) ?? redactionConflict(edits, input) ?? duplicatePage(edits, input)

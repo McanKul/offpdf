@@ -387,3 +387,65 @@
 .st-inspector__letters { font-family: var(--font-mono); font-size: 12px; }
 .st-inspector__note { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
 .st-inspector__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Existing images of the page (issue #129): movable occurrence boxes. */
+.si-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.si-layer.is-inert {
+  pointer-events: none;
+}
+.si-image {
+  position: absolute;
+  padding: 0;
+  border: 1px dashed rgba(28, 79, 184, 0.55);
+  border-radius: 2px;
+  background: transparent;
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+.si-image:hover,
+.si-image:focus-visible {
+  border-color: #1c4fb8;
+  background: rgba(28, 79, 184, 0.06);
+  outline: none;
+}
+.si-image:focus-visible {
+  box-shadow: 0 0 0 2px rgba(28, 79, 184, 0.45);
+}
+.si-image.is-refused {
+  border-color: rgba(107, 115, 128, 0.5);
+  border-style: dotted;
+  cursor: not-allowed;
+}
+.si-image.is-moved {
+  border-color: #14733d;
+}
+.si-image.is-dragging {
+  cursor: grabbing;
+  border-color: #1c4fb8;
+  background: rgba(28, 79, 184, 0.1);
+}
+.si-image__tag {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  font-size: 11px;
+  line-height: 1;
+  color: #14733d;
+}
+.si-hint {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.72);
+  color: #fff;
+  font-size: 11.5px;
+  pointer-events: none;
+}

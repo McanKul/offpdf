@@ -14,16 +14,17 @@ import { Alert } from "@/components/ui/Alert";
 import { Spinner } from "@/components/ui/Spinner";
 import {
   addMove,
-  editsSignature,
   fontsByKey,
   makeMapping,
   makeSourceTextObject,
   pdfRectToViewport,
+  previewSignature,
   problemMessage,
   textMove,
   textStampGeometry,
   toTextEditIn,
   type EditObject,
+  type SourceImageObject,
   type SourceTextObject,
 } from "@/lib/editor";
 import type { TextStamp } from "@/lib/editor/sourceText";
@@ -39,6 +40,7 @@ import { usePageText, type PageTextState } from "./usePageText";
 import { useTextPreview, type TextPreviewController } from "./useTextPreview";
 
 const NO_CHANGES: SourceTextObject[] = [];
+const NO_IMAGES: SourceImageObject[] = [];
 const FILE_FAULTS = new Set(["STALE", "PDF_NEEDS_REPAIR"]);
 
 /** Lets the canvas finish (or keep) an open line edit before a page or tool change. */
@@ -84,6 +86,8 @@ export interface SourceTextPage {
   fonts: Map<string, TextFont>;
   /** This page's text changes. */
   objects: SourceTextObject[];
+  /** This page's image moves. */
+  images: SourceImageObject[];
   /** Changes were made on a version of the file that is gone. */
   staleFingerprint: string | null;
   preview: TextPreviewController;
@@ -102,14 +106,19 @@ export function useSourceTextPage(args: SourceTextPageArgs): SourceTextPage {
     () => args.objects.filter((o): o is SourceTextObject => o.kind === "sourceText" && o.pageIndex === pageIndex),
     [args.objects, pageIndex],
   );
+  const images = useMemo(
+    () => args.objects.filter((o): o is SourceImageObject => o.kind === "sourceImage" && o.pageIndex === pageIndex),
+    [args.objects, pageIndex],
+  );
   const source = sources.sources[path] ?? null;
   const info = source?.status === "ready" ? source.info : null;
-  const wanted = active || objects.length > 0;
+  const wanted = active || objects.length > 0 || images.length > 0;
   useEffect(() => {
     if (wanted) void ensure(path);
   }, [wanted, path, ensure]);
 
-  const mismatch = info ? objects.find((o) => o.sourceFingerprint !== info.fingerprint) : undefined;
+  const changes = useMemo(() => [...objects, ...images], [objects, images]);
+  const mismatch = info ? changes.find((o) => o.sourceFingerprint !== info.fingerprint) : undefined;
   const staleFingerprint = source?.stale ? (info?.fingerprint ?? null) : (mismatch?.sourceFingerprint ?? null);
   const fingerprint = info && !source?.stale && !mismatch ? info.fingerprint : null;
   const pageText = usePageText({
@@ -119,7 +128,13 @@ export function useSourceTextPage(args: SourceTextPageArgs): SourceTextPage {
     enabled: wanted,
     pageCount: info?.pageCount ?? null,
   });
-  const preview = useTextPreview({ path, fingerprint, sourcePageIndex, objects: fingerprint ? objects : NO_CHANGES });
+  const preview = useTextPreview({
+    path,
+    fingerprint,
+    sourcePageIndex,
+    objects: fingerprint ? objects : NO_CHANGES,
+    images: fingerprint ? images : NO_IMAGES,
+  });
 
   const reportFault = useCallback(
     (error: AppError) => {
@@ -135,7 +150,11 @@ export function useSourceTextPage(args: SourceTextPageArgs): SourceTextPage {
 
   // A file that changed on disk with no text changes left on it is simply read again.
   const changesOnStale = staleFingerprint
-    ? args.objects.some((o) => o.kind === "sourceText" && o.sourceFingerprint === staleFingerprint)
+    ? args.objects.some(
+        (o) =>
+          (o.kind === "sourceText" || o.kind === "sourceImage") &&
+          o.sourceFingerprint === staleFingerprint,
+      )
     : false;
   const stale = !!source?.stale;
   useEffect(() => {
@@ -156,9 +175,10 @@ export function useSourceTextPage(args: SourceTextPageArgs): SourceTextPage {
     pageText,
     fonts,
     objects,
+    images,
     staleFingerprint,
     preview,
-    canShowOriginal: objects.length > 0 && preview.bytes !== null,
+    canShowOriginal: (objects.length > 0 || images.length > 0) && preview.bytes !== null,
     problem,
     reportFault,
   };
@@ -186,7 +206,7 @@ export function SourceTextBanners({
   const loading = source?.status === "loading" || pageText.status === "loading";
   return (
     <div className="st-banners">
-      {stale && (page.active || page.objects.length > 0) && (
+      {stale && (page.active || page.objects.length > 0 || page.images.length > 0) && (
         <Alert variant="warning">
           {fillCopy(UI.banner.stale, { name: page.fileName })}{" "}
           <button
@@ -203,7 +223,7 @@ export function SourceTextBanners({
           </button>
         </Alert>
       )}
-      {page.problem && (page.active || page.objects.length > 0) && (
+      {page.problem && (page.active || page.objects.length > 0 || page.images.length > 0) && (
         <Alert variant="warning" title={page.problem.title}>
           {errorText(page.problem)}
         </Alert>
@@ -238,7 +258,7 @@ export function SourceTextBanners({
 
 /** Top-right of the page while it has text changes (§D.7). */
 export function PreviewStatusChip({ page, showOriginal }: { page: SourceTextPage; showOriginal: boolean }) {
-  if (page.objects.length === 0 || !page.fingerprint) return null;
+  if ((page.objects.length === 0 && page.images.length === 0) || !page.fingerprint) return null;
   const status = page.preview.status;
   const label = showOriginal
     ? UI.status.showingOriginal
@@ -375,7 +395,10 @@ export function SourceTextMode(props: SourceTextModeProps) {
         ...(moved ? { move } : {}),
       };
       const committed = makeSourceTextObject(existing?.id ?? run.id, page.pageIndex, verdict.newRect ?? run.rect, fields);
-      page.preview.seed(editsSignature([...page.objects.filter((o) => o.runId !== run.id), committed]), preview);
+      page.preview.seed(
+        previewSignature([...page.objects.filter((o) => o.runId !== run.id), committed], page.images),
+        preview,
+      );
       session.setSourceText({ ...fields, pageIndex: page.pageIndex, run, rect: verdict.newRect, move });
       announce(
         moved

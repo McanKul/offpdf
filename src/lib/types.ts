@@ -293,12 +293,25 @@ export interface TextFont {
   /** The typeable space is the single byte 0x20, so `Tw` applies to it. */
   wordSpace: boolean;
 }
+/** One image already painted by the page, which Edit PDF can move (issue #129). */
+export interface ImageOccurrence {
+  /** Box of the painted unit square in unrotated user space. */
+  rect: TextRect;
+  /** Source-bound v2 locator Save accepts back. */
+  locator: string;
+  /** The planner's policy: a reused image is movable (only this occurrence changes). */
+  movable: boolean;
+  /** Why it can't be moved, when it can't. */
+  reason: TextReason | null;
+}
 export interface PageText {
   fingerprint: string;
   /** 0-based page in the source file. */
   pageIndex: number;
   pageReason: TextPageReason | null;
   runs: TextRun[];
+  /** Directly painted image occurrences (not text). */
+  images: ImageOccurrence[];
   fonts: TextFont[];
 }
 /** Only fields that differ from the run's current style. */
@@ -310,6 +323,11 @@ export interface TextEditIn {
   style: SourceTextStyle;
   /** Unrotated user-space displacement of the line, omitted when it stays put. */
   move?: TextVec;
+}
+/** One image move: the occurrence's locator and its unrotated user-space displacement. */
+export interface ImageEditIn {
+  locator: string;
+  move: TextVec;
 }
 export type TextStyleField = "size" | "face" | "colour";
 export interface TextEditVerdict {
