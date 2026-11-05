@@ -19,7 +19,7 @@
 use crate::models::PageGroup;
 use crate::pdf_engine::edit_overlay::{export_edit_pdf_with_check_exe, EditDocumentIn};
 use crate::pdf_engine::qpdf::resolve_qpdf_standalone;
-use crate::pdf_engine::text_edit::rewrite::SourceTextStyleIn;
+use crate::pdf_engine::text_edit::rewrite::{ImageEditIn, MoveIn, SourceTextStyleIn};
 use crate::pdf_engine::text_edit::service;
 use crate::pdf_engine::text_edit::testkit::producers::{DocBuilder, PageSpec, HELVETICA};
 use crate::pdf_engine::text_edit::testkit::{child_mode, run_child_test};
@@ -164,6 +164,7 @@ fn timed_preview_with_run(
         fp,
         page,
         &edits,
+        &[],
     )
     .expect("preview");
     let took = started.elapsed();
@@ -387,4 +388,95 @@ fn bench_02_image_heavy_300_mb() {
     println!("| file MiB | open ms | first inspect ms (after open) | open to first preview ms | cold preview ms (after page inspect) | second preview ms | save 1 edit ms | process peak RSS MiB | process RSS / file |");
     println!("|---|---|---|---|---|---|---|---|---|");
     println!("| {row} |");
+}
+
+/// One directly painted image with one occurrence and a text line, for the image-move benchmark
+/// (§E.7). The image XObject is owned by the page, so it is movable.
+fn bench_image_doc() -> Vec<u8> {
+    let mut d = DocBuilder::new();
+    let f = d.add(HELVETICA);
+    let img = d.b.add_stream(
+        "/Type /XObject /Subtype /Image /Width 4 /Height 4 \
+         /ColorSpace /DeviceRGB /BitsPerComponent 8",
+        &[200, 16, 16, 16, 200, 16, 16, 16, 200, 200, 200, 16],
+    );
+    d.page(PageSpec::new(
+        b"q 40 0 0 40 72 400 cm /Im0 Do Q \
+          BT /F1 12 Tf 72 700 Td (Image page) Tj ET",
+        &format!("/Font << /F1 {f} 0 R >> /XObject << /Im0 {img} 0 R >>"),
+    ));
+    d.build()
+}
+
+fn bench_image_move_child() {
+    let t = E2e::new("bench_image_move").expect("engines");
+    let src = t.file("bench-image.pdf", &bench_image_doc());
+    let (_, dto) = t.page(&src, 0);
+    let img = dto.images.iter().find(|i| i.movable).expect("movable image");
+    let dx = 50.0;
+    let dy = 30.0;
+    let edit = ImageEditIn {
+        locator: img.locator.clone(),
+        move_by: MoveIn { x: dx, y: dy },
+    };
+    let started = Instant::now();
+    let p = service::preview_edits(
+        &t.cache,
+        &t.engines,
+        &t.temp_root(),
+        &src.to_string_lossy(),
+        &dto.fingerprint,
+        0,
+        &[],
+        &[edit],
+    )
+    .expect("preview image move");
+    let took = started.elapsed();
+    assert!(
+        p.verdicts.iter().all(|v| v.ok),
+        "bench image move verdict: {:?}",
+        p.verdicts
+    );
+    assert!(
+        p.page_pdf.is_some(),
+        "bench image move produced a page pdf"
+    );
+    // Emita un registro simple que el bench outer pueda recoger.
+    println!("BENCH03_IMAGE_MOVE|{:?}", ms(took));
+}
+
+/// BENCH-03 (§E.7): one image move preview, in a child process; prints its duration for the
+/// docs table only when run explicitly (the main BENCH-01 text table is left untouched).
+#[test]
+#[ignore]
+fn bench_03_image_move() {
+    if let Some(mode) = child_mode() {
+        if mode == "bench03" {
+            bench_image_move_child();
+        }
+        return;
+    }
+    let out = run_child_test(
+        "pdf_engine::text_edit::bench::bench_03_image_move",
+        "bench03",
+    );
+    let ms = out
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("BENCH03_IMAGE_MOVE|").map(|v| {
+                v.parse::<f64>().unwrap_or(f64::NAN)
+            })
+        })
+        .unwrap_or_else(|| panic!("no BENCH03 row:\n{out}"));
+    println!(
+        "\nBENCH-03 ({} build; one image move preview)\n",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
+    println!("| operation | ms |");
+    println!("|---|---|");
+    println!("| image move preview | {:.0} |", ms);
 }
