@@ -4,7 +4,7 @@
 // so the click opened the line below it (or nothing), and Esc on the line layer jumped the page.
 import { act, useMemo, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { PageText, TextRun } from "@/lib/types";
 import { ToastProvider } from "@/components/ui/Toast";
 import type { TextSources } from "@/features/edit-pdf/useTextSources";
@@ -84,7 +84,7 @@ function Harness() {
 
 let host: HTMLDivElement;
 let root: Root | null = null;
-let focusSpy: ReturnType<typeof vi.spyOn>;
+let focusSpy: MockInstance<HTMLElement["focus"]>;
 
 async function flush() {
   for (let i = 0; i < 5; i++) await act(async () => {});
