@@ -44,5 +44,13 @@ export default defineConfig(async () => ({
     target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("/node_modules/pdfjs-dist/")) return "pdfjs";
+          if (id.includes("/node_modules/")) return "vendor";
+        },
+      },
+    },
   },
 }));
