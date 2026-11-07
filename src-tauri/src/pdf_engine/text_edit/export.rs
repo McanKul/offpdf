@@ -9,7 +9,7 @@
 //! qpdf only reads a copy written from those bytes. The only shared state is the memoised
 //! `qpdf --check` result for identical bytes.
 
-mod map;
+pub(crate) mod map;
 
 use crate::error::AppError;
 use crate::models::{JobUpdate, PageGroup};
@@ -35,7 +35,7 @@ use crate::pdf_engine::text_edit::reasons::{
     self, save_failure, EditProblem, EditProblemCode, ProblemCtx, TextWarningCode,
 };
 use crate::pdf_engine::text_edit::rewrite::{
-    plan_page, MoveIn, PagePlan, SourceTextStyleIn, TextEditIn,
+    plan_page_with_images, ImageEditIn, MoveIn, PagePlan, SourceTextStyleIn, TextEditIn,
 };
 use crate::pdf_engine::text_edit::runs::{build_page_model, PageModel};
 use crate::pdf_engine::text_edit::snapshot::{check_page_map, read_snapshot};
@@ -59,6 +59,19 @@ pub struct SourceTextSpec {
     pub text: String,
     pub style: SourceTextStyleIn,
     pub move_by: Option<MoveIn>,
+}
+
+/// One `sourceImage` object of the export document (a moved occurrence of an existing image).
+#[derive(Debug, Clone)]
+pub struct SourceImageSpec {
+    /// Destination page (0-based, in the saved file).
+    pub page_index: u32,
+    /// Page of the source file (0-based) the move was made on.
+    pub source_page_index: u32,
+    /// The v2 occurrence locator `inspect_text_page` returned.
+    pub locator: String,
+    pub source_fingerprint: String,
+    pub move_by: MoveIn,
 }
 
 pub struct PreparedTextEdits {
@@ -86,10 +99,10 @@ fn too_many_edits(n: usize) -> AppError {
     AppError::new(
         "TOO_MANY_TEXT_EDITS",
         "Too many text changes",
-        format!("This save has more than {EDITS_PER_SAVE_MAX} changed lines."),
+        format!("This save has more than {EDITS_PER_SAVE_MAX} text or image changes."),
     )
     .with_suggestion("Save in smaller batches.")
-    .with_details(format!("text changes: {n}"))
+    .with_details(format!("text and image changes: {n}"))
 }
 
 fn redacted_page(dest: u32) -> AppError {
@@ -144,6 +157,30 @@ pub fn specs_of(doc: &EditDocumentIn) -> Vec<SourceTextSpec> {
         .collect()
 }
 
+/// The `sourceImage` objects of an Edit PDF export document.
+pub fn image_specs_of(doc: &EditDocumentIn) -> Vec<SourceImageSpec> {
+    doc.objects
+        .iter()
+        .filter_map(|o| match o {
+            EditObjectIn::SourceImage {
+                page_index,
+                source_page_index,
+                locator,
+                source_fingerprint,
+                move_by,
+                ..
+            } => Some(SourceImageSpec {
+                page_index: *page_index,
+                source_page_index: *source_page_index,
+                locator: locator.clone(),
+                source_fingerprint: source_fingerprint.clone(),
+                move_by: move_by.unwrap_or_default(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The engines of a Save with text changes, resolved before any work: qpdf ≥ 11
 /// (`ENGINE_MISSING`) and both Poppler tools (`VERIFIER_MISSING`).
 pub fn save_engines(qpdf: &Path, app: Option<&tauri::AppHandle>) -> Result<Engines, AppError> {
@@ -165,7 +202,8 @@ pub fn prepare_save(
     opts: &RunOpts<'_>,
 ) -> Result<Option<(Engines, PreparedTextEdits)>, AppError> {
     let specs = specs_of(doc);
-    if specs.is_empty() {
+    let images = image_specs_of(doc);
+    if specs.is_empty() && images.is_empty() {
         return Ok(None);
     }
     let engines = save_engines(qpdf, app)?;
@@ -175,7 +213,7 @@ pub fn prepare_save(
             let _ = app.emit("job:update", JobUpdate::new(job_id, "running", step));
         }
     };
-    let prepared = prepare_text_sources(groups, &specs, work, &engines, opts, &mut progress)?;
+    let prepared = prepare_sources(groups, &specs, &images, work, &engines, opts, &mut progress)?;
     Ok(Some((engines, prepared)))
 }
 
@@ -197,16 +235,26 @@ pub fn qpdf_joined_digest(doc: &Document, page_id: ObjectId) -> Option<ContentDi
 /// (`TOO_MANY_TEXT_EDITS`), ≤ 1,000 characters (`TEXT_TOO_LONG`), one change per
 /// (page, line) (`EDIT_CONFLICT`), no page with both a redaction and a text change
 /// (`TEXT_EDIT_ON_REDACTED_PAGE`).
-pub fn validate_specs(specs: &[SourceTextSpec], redact_pages: &[u32]) -> Result<(), AppError> {
-    check_specs(specs, redact_pages).map_err(save_failure)
+pub fn validate_specs(
+    specs: &[SourceTextSpec],
+    images: &[SourceImageSpec],
+    redact_pages: &[u32],
+) -> Result<(), AppError> {
+    check_specs(specs, images, redact_pages).map_err(save_failure)
 }
 
-fn check_specs(specs: &[SourceTextSpec], redact_pages: &[u32]) -> Result<(), AppError> {
-    if specs.len() > EDITS_PER_SAVE_MAX {
-        return Err(too_many_edits(specs.len()));
+fn check_specs(
+    specs: &[SourceTextSpec],
+    images: &[SourceImageSpec],
+    redact_pages: &[u32],
+) -> Result<(), AppError> {
+    let total = specs.len().saturating_add(images.len());
+    if total > EDITS_PER_SAVE_MAX {
+        return Err(too_many_edits(total));
     }
     let redacted: HashSet<u32> = redact_pages.iter().copied().collect();
     let mut seen: HashSet<(u32, &str)> = HashSet::new();
+    let mut seen_images: HashSet<(u32, &str)> = HashSet::new();
     for s in specs {
         if s.text.chars().count() > EDIT_TEXT_CHARS_MAX {
             return Err(problem_error(
@@ -226,20 +274,33 @@ fn check_specs(specs: &[SourceTextSpec], redact_pages: &[u32]) -> Result<(), App
             return Err(redacted_page(s.page_index));
         }
     }
+    for s in images {
+        if !seen_images.insert((s.page_index, s.locator.as_str())) {
+            return Err(problem_error(
+                EditProblemCode::EditConflict,
+                s.page_index,
+                &format!("image {} is moved twice", s.locator),
+            ));
+        }
+        if redacted.contains(&s.page_index) {
+            return Err(redacted_page(s.page_index));
+        }
+    }
     Ok(())
 }
 
-/// Writes and proves the edited copies (§B.18 steps 1–6). A no-op (empty `specs`, or only
-/// changes equal to the original) returns `groups` unchanged.
-pub fn prepare_text_sources(
+/// Text changes and image moves of one Save (a no-op when both lists are empty, or when every
+/// change equals the original).
+pub fn prepare_sources(
     groups: &[PageGroup],
     specs: &[SourceTextSpec],
+    images: &[SourceImageSpec],
     work: &Path,
     engines: &Engines,
     opts: &RunOpts<'_>,
     progress: &mut dyn FnMut(&'static str),
 ) -> Result<PreparedTextEdits, AppError> {
-    if specs.is_empty() {
+    if specs.is_empty() && images.is_empty() {
         return Ok(PreparedTextEdits {
             content_groups: groups.to_vec(),
             proofs: Vec::new(),
@@ -247,7 +308,7 @@ pub fn prepare_text_sources(
             verify_cap: 0,
         });
     }
-    prepare(groups, specs, work, engines, opts, progress).map_err(save_failure)
+    prepare(groups, specs, images, work, engines, opts, progress).map_err(save_failure)
 }
 
 /// Phase B on the final staged file, then #34's expected digest of each edited page must equal
@@ -282,6 +343,7 @@ pub fn verify_final(
 fn prepare(
     groups: &[PageGroup],
     specs: &[SourceTextSpec],
+    images: &[SourceImageSpec],
     work: &Path,
     engines: &Engines,
     opts: &RunOpts<'_>,
@@ -289,7 +351,7 @@ fn prepare(
 ) -> Result<PreparedTextEdits, AppError> {
     progress(STEP_CHECKING);
     let dest = dest_pages(groups, engines, opts)?;
-    let sources = group_specs(groups, &dest, specs)?;
+    let sources = group_specs(groups, &dest, specs, images)?;
     let mut substitutes: HashMap<PathBuf, PathBuf> = HashMap::new();
     let mut proofs = Vec::new();
     let mut warnings = Vec::new();
@@ -482,8 +544,11 @@ fn check_source(
 ) -> Result<CheckedSource, AppError> {
     let mut snap = read_snapshot(Path::new(&src.path))?;
     let fp = snap.fingerprint.to_string();
-    let specs = src.pages.values().flat_map(|(_, specs)| specs);
-    if specs.clone().any(|s| s.source_fingerprint != fp) {
+    let stale = src.pages.values().any(|p| {
+        p.text.iter().any(|s| s.source_fingerprint != fp)
+            || p.images.iter().any(|s| s.source_fingerprint != fp)
+    });
+    if stale {
         return Err(reasons::stale(name));
     }
     let copy = work.join(format!("text-{i}-source.pdf"));
@@ -578,7 +643,7 @@ fn outcome(
     let texts: HashMap<&str, &str> = src
         .pages
         .values()
-        .flat_map(|(_, specs)| specs)
+        .flat_map(|p| p.text.iter())
         .map(|s| (s.run_id.as_str(), s.text.as_str()))
         .collect();
     let mut warnings = Vec::new();
@@ -621,12 +686,14 @@ fn plan_pages(
 ) -> Result<Vec<PlannedPage>, AppError> {
     let mut planned = Vec::new();
     let mut kept = 0usize;
-    for (source_page, (dest, specs)) in &src.pages {
+    for (source_page, page) in &src.pages {
+        let dest = page.dest;
         let model = build_page_model(ctx, *source_page, cancel_flag(opts))?;
         if let Some(e) = page_refusal(&model, dest.saturating_add(1)) {
             return Err(e);
         }
-        let edits: Vec<TextEditIn> = specs
+        let edits: Vec<TextEditIn> = page
+            .text
             .iter()
             .map(|s| TextEditIn {
                 run_id: s.run_id.clone(),
@@ -636,7 +703,15 @@ fn plan_pages(
                 move_by: s.move_by,
             })
             .collect();
-        let outcome = plan_page(ctx, &model, &edits)?;
+        let images: Vec<ImageEditIn> = page
+            .images
+            .iter()
+            .map(|s| ImageEditIn {
+                locator: s.locator.clone(),
+                move_by: s.move_by,
+            })
+            .collect();
+        let outcome = plan_page_with_images(ctx, &model, &edits, &images)?;
         if let Some(p) = outcome.verdicts.iter().find_map(|v| v.problem.as_ref()) {
             let pctx = ProblemCtx {
                 page_number: Some(dest.saturating_add(1)),
@@ -665,7 +740,7 @@ fn plan_pages(
                 kept = kept.saturating_add(bytes);
             }
             planned.push(PlannedPage {
-                dest: *dest,
+                dest,
                 print: ModelPrint::of(&model),
                 content: Arc::clone(&model.content),
                 model: keep.then_some(model),

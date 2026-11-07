@@ -122,6 +122,7 @@ fn page_sample() -> PageTextDto {
         page_index: 0,
         page_reason: None,
         runs: vec![editable, refused],
+        images: Vec::new(),
         fonts: vec![
             font("f11-0", "Calibri Bold", " 0267I", true),
             font("f7-0", "Calibri", " 0267DIceinouv", true),

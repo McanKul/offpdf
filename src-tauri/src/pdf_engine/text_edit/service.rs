@@ -11,7 +11,7 @@ use crate::pdf_engine::text_edit::engines::{Engines, RunOpts, SourceCheck};
 use crate::pdf_engine::text_edit::export::page_refusal;
 use crate::pdf_engine::text_edit::preview::preview_page;
 use crate::pdf_engine::text_edit::reasons;
-use crate::pdf_engine::text_edit::rewrite::TextEditIn;
+use crate::pdf_engine::text_edit::rewrite::{ImageEditIn, TextEditIn};
 use std::path::Path;
 
 /// Sources above this size open and save normally, only more slowly (SPEC §E.7 BENCH-02).
@@ -70,6 +70,7 @@ pub fn preview_edits(
     fingerprint: &str,
     page_index: u32,
     edits: &[TextEditIn],
+    images: &[ImageEditIn],
 ) -> Result<TextPreviewDto, AppError> {
     let src = cache.get(Path::new(path), temp_root, fingerprint, engines)?;
     // A large model is handed over, and freed by the preview once planned (review-final MEDIUM-3).
@@ -92,6 +93,7 @@ pub fn preview_edits(
         &src.ctx,
         model,
         edits,
+        images,
         &src.dir,
         engines,
         &benign,

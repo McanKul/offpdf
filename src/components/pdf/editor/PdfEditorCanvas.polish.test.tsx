@@ -73,6 +73,7 @@ const PAGE: PageText = {
   pageIndex: 0,
   pageReason: null,
   runs: [HELLO, WATERMARK],
+  images: [],
   fonts: [{ key: "f1", displayName: "Arial", familyHint: "sans", embedded: true, subset: false, alphabet: " !Hdelo", widths: [278, 278, 722, 556, 556, 222, 556], wordSpace: true }],
 };
 

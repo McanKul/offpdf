@@ -564,7 +564,7 @@ pub fn invalid_xref(detail: &str) -> AppError {
 pub const ORIGINAL_UNCHANGED: &str = "The original file was not changed.";
 
 /// Every error leaving the text-edit Save path passes through this (export.rs wraps the results of
-/// `prepare_text_sources` and `verify_final`): appends ORIGINAL_UNCHANGED to the suggestion (or sets it)
+/// `prepare_sources` and `verify_final`): appends ORIGINAL_UNCHANGED to the suggestion (or sets it)
 /// unless the suggestion already ends with it. Open/inspect/preview errors are not wrapped.
 pub fn save_failure(e: AppError) -> AppError {
     let suggestion = match e.suggestion.as_deref().map(str::trim_end) {

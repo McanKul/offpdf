@@ -186,7 +186,9 @@ export function EditorOverlay({
   const mapping = makeMapping(layout.geometry, layout.cssWidth, layout.cssHeight);
   // Text changes (sourceText) are drawn by the Edit text layer, never here: no box,
   // no handles, never hit by the marquee.
-  const pageObjects = objects.filter((o) => o.pageIndex === pageIndex && o.kind !== "sourceText");
+  const pageObjects = objects.filter(
+    (o) => o.pageIndex === pageIndex && o.kind !== "sourceText" && o.kind !== "sourceImage",
+  );
   // In Edit text mode the overlay is inert: stamps stay visible, the text layer takes the pointer.
   const inert = tool === "hand" || tool === "editText";
 

@@ -371,6 +371,7 @@ fn failures_while_cancelled_report_cancelled() {
         &h.ctx,
         std::sync::Arc::new(model),
         &[edit],
+        &[],
         &cache,
         &h.engines,
         &[],

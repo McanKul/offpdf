@@ -1,4 +1,4 @@
-import type { EditDocument, EditObject, SourceTextObject } from "./types";
+import type { EditDocument, EditObject, SourceImageObject, SourceTextObject } from "./types";
 import type { SourceTextStyle } from "../types";
 
 /** A copy of a text-change style with only the fields that are set. */
@@ -29,6 +29,21 @@ function exportSourceText(o: SourceTextObject): SourceTextObject {
   };
 }
 
+/** Exactly the fields Rust reads (`EditObjectIn::SourceImage`; it ignores `id`/`locked`). */
+function exportSourceImage(o: SourceImageObject): SourceImageObject {
+  return {
+    id: o.id,
+    kind: "sourceImage",
+    pageIndex: o.pageIndex,
+    rect: { ...o.rect },
+    locked: true,
+    locator: o.locator,
+    sourceFingerprint: o.sourceFingerprint,
+    sourcePageIndex: o.sourcePageIndex,
+    ...(o.move ? { move: { x: o.move.x, y: o.move.y } } : {}),
+  };
+}
+
 /** Deep-clone an object so history snapshots do not share point arrays. */
 export function cloneObject(o: EditObject): EditObject {
   const next = { ...o, rect: { ...o.rect } } as EditObject;
@@ -41,15 +56,18 @@ export function cloneObject(o: EditObject): EditObject {
   } else if (next.kind === "sourceText") {
     next.style = { ...next.style };
     if (next.move) next.move = { ...next.move };
+  } else if (next.kind === "sourceImage") {
+    if (next.move) next.move = { ...next.move };
   }
   return next;
 }
 
 /** Shift an object in PDF space (used by paste / nudge-all). A text change is
- * bound to its line and is never moved or pasted, so it comes back unchanged. */
+ * bound to its line and an image move to its occurrence; neither is moved or pasted, so they
+ * come back unchanged. */
 export function offsetObject(o: EditObject, dx: number, dy: number): EditObject {
   const next = cloneObject(o);
-  if (next.kind === "sourceText") return next;
+  if (next.kind === "sourceText" || next.kind === "sourceImage") return next;
   next.rect = { ...next.rect, x: next.rect.x + dx, y: next.rect.y + dy };
   if (next.kind === "line") {
     next.x1 += dx;
@@ -89,6 +107,7 @@ export function toExportDocument(doc: EditDocument): EditDocument {
         return rest;
       }
       if (o.kind === "sourceText") return exportSourceText(o);
+      if (o.kind === "sourceImage") return exportSourceImage(o);
       return cloneObject(o);
     }),
   };

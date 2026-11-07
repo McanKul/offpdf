@@ -65,7 +65,8 @@ export type EditObjectKind =
   | "strikeout"
   | "markupInk"
   | "redact"
-  | "sourceText";
+  | "sourceText"
+  | "sourceImage";
 
 export type ClosedShapeKind =
   | "rect"
@@ -278,6 +279,21 @@ export interface SourceTextObject extends EditObjectBase {
   move?: TextVec;
 }
 
+/**
+ * A move of an image already painted by the PDF (issue #129). Not an overlay: Save rewrites the
+ * page's own content stream. One object per `(pageIndex, locator)`; only `rect`/`move` change.
+ */
+export interface SourceImageObject extends EditObjectBase {
+  kind: "sourceImage";
+  locked: true;
+  locator: string;
+  sourceFingerprint: string;
+  /** 0-based page in the source file. */
+  sourcePageIndex: number;
+  /** Unrotated user-space displacement from the source position, omitted when it stays put. */
+  move?: TextVec;
+}
+
 export type EditObject =
   | RectObject
   | RoundRectObject
@@ -298,7 +314,8 @@ export type EditObject =
   | StrikeoutObject
   | MarkupInkObject
   | RedactObject
-  | SourceTextObject;
+  | SourceTextObject
+  | SourceImageObject;
 
 /** Bounds of a line segment. */
 export function lineBounds(x1: number, y1: number, x2: number, y2: number): PdfRect {

@@ -89,6 +89,7 @@ impl E2e {
             fp,
             page,
             ins,
+            &[],
         )
         .unwrap_or_else(|e| panic!("preview: {e} {:?}", e.details))
     }
@@ -280,6 +281,7 @@ fn prev_05_preview_reads_the_snapshot_copy_not_the_users_file() {
             "Middle texts",
             SourceTextStyleIn::default(),
         )],
+        &[],
     )
     .expect("PREV-05 preview");
     assert!(p.verdicts[0].ok, "{:?}", p.verdicts);
@@ -356,6 +358,7 @@ fn prev_07_concurrent_inspects_and_previews_share_the_cache_safely() {
                             "Concurrent lines",
                             SourceTextStyleIn::default(),
                         )],
+                        &[],
                     )
                     .expect("preview");
                     assert!(p.verdicts[0].ok, "{:?}", p.verdicts);

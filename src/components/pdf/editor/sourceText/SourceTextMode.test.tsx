@@ -69,7 +69,7 @@ const HELLO = run("r1", 0, "Hello", 700);
 const TILTED = run("r2", 1, "Rotated", 600, false);
 
 function pageText(runs: TextRun[], pageReason: PageText["pageReason"] = null): PageText {
-  return { fingerprint: "fp", pageIndex: 0, pageReason, runs, fonts: [FONT] };
+  return { fingerprint: "fp", pageIndex: 0, pageReason, runs, images: [], fonts: [FONT] };
 }
 
 function preview(extra: Partial<TextPreviewController> = {}): TextPreviewController {
@@ -89,6 +89,7 @@ function model(extra: Partial<SourceTextPage> = {}): SourceTextPage {
     pageText: { page: pageText([HELLO, TILTED]), status: "ready", error: null },
     fonts: fontsByKey([FONT]),
     objects: [],
+    images: [],
     staleFingerprint: null,
     preview: preview(),
     canShowOriginal: false,

@@ -63,6 +63,14 @@ export const UI = {
   layer: {
     label: "Text lines on page {n}. Use the arrow keys to move between lines and Enter to edit.",
   },
+  image: {
+    layer: "Images on page {n}. Drag an image to move it, or focus one and press Alt with an arrow key.",
+    label: "Move image on page {n}",
+    hint: "Drag an image to move it. Alt with an arrow key nudges it 1 pt (Shift: 10 pt).",
+    moved: "Image moved by {dx}, {dy} pt.",
+    movedHome: "Image moved back to its original place.",
+    refused: "This image can't be moved: {body}",
+  },
   run: {
     editable: "Edit text: {text}",
     edited: "Edited text: {new}. Original: {old}",

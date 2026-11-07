@@ -8,7 +8,8 @@
 //! (`source_content::classify_source_page`), geometry, metrics and style from the same model.
 
 use crate::pdf_engine::source_content::{
-    SourceCapability, SourceFormLine, SourcePageResult, SourceRunCapability,
+    SourceCapability, SourceFormLine, SourceKind, SourceOccurrence, SourcePageResult,
+    SourceRunCapability,
 };
 use crate::pdf_engine::text_edit::fit::word_space;
 use crate::pdf_engine::text_edit::fonts::{face_surface, FamilyHint, FontKey, FontModel};
@@ -23,7 +24,7 @@ use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-pub use super::rewrite::TextEditIn; // Deserialize type, defined in rewrite.rs (B.12)
+pub use super::rewrite::{ImageEditIn, TextEditIn}; // Deserialize types, defined in rewrite.rs (B.12)
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +50,19 @@ pub struct VecDto {
     pub y: f64,
 }
 
+/// One image already painted by the page, which Edit PDF can move (issue #129). `locator` is the
+/// v2 occurrence id Save accepts back; `movable` is the planner's policy (a reused image can be
+/// moved, because only this occurrence's content stream changes), and `reason` says why not when
+/// it cannot.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageOccurrenceDto {
+    pub rect: RectDto,
+    pub locator: String,
+    pub movable: bool,
+    pub reason: Option<TextReason>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageTextDto {
@@ -56,6 +70,8 @@ pub struct PageTextDto {
     pub page_index: u32,
     pub page_reason: Option<TextReason>,
     pub runs: Vec<TextRunDto>,
+    /// Directly painted image occurrences of the page (not its text).
+    pub images: Vec<ImageOccurrenceDto>,
     pub fonts: Vec<TextFontDto>,
 }
 
@@ -396,12 +412,30 @@ pub fn page_text(model: &PageModel, classified: &SourcePageResult) -> PageTextDt
         })
         .chain(classified.form_lines.iter().map(form_line_dto))
         .collect();
+    let images = classified
+        .occurrences
+        .iter()
+        .filter(|o| o.kind == SourceKind::Image)
+        .map(image_occurrence_dto)
+        .collect();
     PageTextDto {
         fingerprint: model.fingerprint.to_string(),
         page_index: model.page_index,
         page_reason: classified.page_reason,
         runs,
+        images,
         fonts: fonts.into_dtos(),
+    }
+}
+
+fn image_occurrence_dto(o: &SourceOccurrence) -> ImageOccurrenceDto {
+    ImageOccurrenceDto {
+        rect: rect_dto([o.rect.x, o.rect.y, o.rect.w, o.rect.h]),
+        locator: o.locator.clone(),
+        // The classifier refuses a reused image for text reasons; a move only rewrites this
+        // occurrence's `Do`, so it stays movable.
+        movable: matches!(o.reason, None | Some(TextReason::SharedXobject)),
+        reason: o.reason,
     }
 }
 

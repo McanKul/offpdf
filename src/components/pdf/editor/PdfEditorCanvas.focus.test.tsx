@@ -38,7 +38,7 @@ const RUN: TextRun = {
   style: null,
   substituted: false,
 };
-const PAGE: PageText = { fingerprint: "fp", pageIndex: 0, pageReason: null, runs: [RUN], fonts: [] };
+const PAGE: PageText = { fingerprint: "fp", pageIndex: 0, pageReason: null, runs: [RUN], images: [], fonts: [] };
 
 vi.mock("@/lib/tauriCommands", () => ({
   pagePdf: vi.fn(async () => "JVBERg=="),

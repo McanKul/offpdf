@@ -4,6 +4,10 @@ All notable project changes should be documented here.
 
 ## Unreleased
 
+### Added
+
+- Edit PDF can move an image already painted by a page without rasterising it or changing its bytes: a translation is inserted before that occurrence's `Do` and a `Q` after it, so the source image and its other occurrences stay untouched. Inline images, images inside reusable blocks, masked or transformed images, complex clips, shared content streams and moves off the visible page are refused with a reason. See [docs/EDIT_TEXT.md](docs/EDIT_TEXT.md).
+
 ## 0.5.0 - 2026-10-25
 
 ### Added

@@ -138,6 +138,7 @@ fn cmd_03_user_problems_are_verdicts_not_errors() {
             "hidden layers",
             SourceTextStyleIn::default(),
         )],
+        &[],
     )
     .expect("CMD-03 refused preview is not an error");
     let v = &p.verdicts[0];
@@ -352,6 +353,7 @@ fn cmd_08_open_does_not_wait_for_qpdf_check_and_the_preview_does() {
             "Good lines",
             SourceTextStyleIn::default(),
         )],
+        &[],
     )
     .err()
     .expect("PDF_NEEDS_REPAIR");

@@ -506,6 +506,7 @@ impl Identical for TextParams {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateField {
+    Ctm,
     Font,
     Tfs,
     Tc,
@@ -623,11 +624,12 @@ pub fn same_state_except(
     skip: &[StateField],
 ) -> Result<(), &'static str> {
     let skipped = |f: StateField| skip.contains(&f);
-    if !a
-        .ctm
-        .iter()
-        .zip(&b.ctm)
-        .all(|(p, q)| close(*p, *q, STATE_EPSILON))
+    if !skipped(StateField::Ctm)
+        && !a
+            .ctm
+            .iter()
+            .zip(&b.ctm)
+            .all(|(p, q)| close(*p, *q, STATE_EPSILON))
     {
         return Err("ctm");
     }

@@ -24,9 +24,9 @@ use crate::pdf_engine::text_edit::encode::REPLACEMENT_OPERATORS;
 use crate::pdf_engine::text_edit::lexer::Span;
 use crate::pdf_engine::text_edit::limits::{DRIFT_TOLERANCE_PT, STATE_EPSILON, SYNTH_SPACE_EM};
 use crate::pdf_engine::text_edit::reasons::{EditProblemCode, TextReason};
-use crate::pdf_engine::text_edit::rewrite::{PagePlan, Splice};
+use crate::pdf_engine::text_edit::rewrite::{ImagePlan, PagePlan, Splice};
 use crate::pdf_engine::text_edit::runs::TextRun;
-use crate::pdf_engine::text_edit::state::same_state;
+use crate::pdf_engine::text_edit::state::{same_state, same_state_except, StateField};
 use crate::pdf_engine::text_edit::walker::{walk_page, PageWalk, ShowRecord, WalkMode};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -332,8 +332,9 @@ fn check_page(
         return Err(VerifyFailure::PageRefused(r));
     }
     let regions = after_regions(&plan.splices);
+    let image_regions = image_regions(plan, &regions);
     if !seams::grammar_skipped() {
-        check_grammar(after, &regions)?;
+        check_grammar(after, &regions, &image_regions)?;
     }
     let map = SpanMap::new(&plan.splices);
     let edited = pair_records(before, after, plan, &regions, &map)?;
@@ -344,15 +345,39 @@ fn check_page(
             return Err(VerifyFailure::RecordUnpaired { index: j });
         }
     }
-    check_paints(before, after, &regions, &map)?;
+    check_paints(before, after, &regions, &map, &plan.images)?;
     for run in &plan.runs {
         edited::check_edited_run(before, before_runs, after, plan, &edited, run)?;
     }
     Ok(())
 }
 
+/// The after-content regions of the two zero-length inserts around each moved image.
+fn image_regions(plan: &PagePlan, regions: &[Span]) -> Vec<Span> {
+    let mut out = Vec::new();
+    for (k, s) in plan.splices.iter().enumerate() {
+        // The two zero-length inserts sit exactly at the moved `Do`'s start and end; no byte is
+        // inspected, so a text replacement containing `q`/`Q` is never mistaken for one.
+        let image = plan.images.iter().any(|im| {
+            s.part == im.part
+                && s.joined.start == s.joined.end
+                && (s.joined.start == im.span.start || s.joined.start == im.span.end)
+        });
+        if image {
+            if let Some(region) = regions.get(k) {
+                out.push(region.clone());
+            }
+        }
+    }
+    out
+}
+
 /// Check 1: inside each splice only replacement operators, never an op crossing its boundary.
-fn check_grammar(after: &PageWalk, regions: &[Span]) -> Result<(), VerifyFailure> {
+fn check_grammar(
+    after: &PageWalk,
+    regions: &[Span],
+    image_regions: &[Span],
+) -> Result<(), VerifyFailure> {
     for op in &after.ops {
         let Some(k) = region_near(regions, &op.span) else {
             continue;
@@ -363,7 +388,15 @@ fn check_grammar(after: &PageWalk, regions: &[Span]) -> Result<(), VerifyFailure
                 op: "splice boundary",
             });
         }
-        if !REPLACEMENT_OPERATORS.contains(&op.operator) {
+        let image = regions
+            .get(k)
+            .is_some_and(|r| image_regions.iter().any(|i| i == r));
+        let allowed = if image {
+            matches!(op.operator.as_str(), "q" | "cm" | "Q")
+        } else {
+            REPLACEMENT_OPERATORS.contains(&op.operator)
+        };
+        if !allowed {
             return Err(VerifyFailure::ForbiddenOperator {
                 op: op.operator.as_str(),
             });
@@ -492,12 +525,15 @@ fn unpaired_paint(index: usize) -> VerifyFailure {
     }
 }
 
-/// Check 2 (paints) and 4: same count, paired by span, same id-free kind and full state.
+/// Check 2 (paints) and 4: same count, paired by span, same id-free kind and full state. A moved
+/// image is the one paint whose CTM is allowed to differ: it must be exactly the planned CTM and
+/// its bbox the planned new box, with every other state field unchanged.
 fn check_paints(
     before: &PageWalk,
     after: &PageWalk,
     regions: &[Span],
     map: &SpanMap,
+    images: &[ImagePlan],
 ) -> Result<(), VerifyFailure> {
     if before.paints.len() != after.paints.len() {
         return Err(VerifyFailure::RecordCount {
@@ -527,10 +563,45 @@ fn check_paints(
                 field: "kind",
             });
         }
-        same_state(&p.state, &a.state)
-            .map_err(|field| VerifyFailure::PaintChanged { index: i, field })?;
+        match images.iter().find(|im| im.span == *span) {
+            Some(image) => {
+                same_state_except(&p.state, &a.state, &[StateField::Ctm])
+                    .map_err(|field| VerifyFailure::PaintChanged { index: i, field })?;
+                let same_ctm = same_matrix(&image.new_ctm, &a.state.ctm);
+                if !same_ctm {
+                    return Err(VerifyFailure::PaintChanged {
+                        index: i,
+                        field: "ctm",
+                    });
+                }
+                let same_bbox = a.bbox.is_some_and(|b| {
+                    b.iter()
+                        .zip(&image.new_bbox)
+                        .all(|(x, y)| close_pt(*x, *y))
+                });
+                if !same_bbox {
+                    return Err(VerifyFailure::PaintChanged {
+                        index: i,
+                        field: "bbox",
+                    });
+                }
+            }
+            None => {
+                same_state(&p.state, &a.state)
+                    .map_err(|field| VerifyFailure::PaintChanged { index: i, field })?;
+            }
+        }
     }
     Ok(())
+}
+
+fn close_pt(a: f64, b: f64) -> bool {
+    (a - b).abs() <= crate::pdf_engine::text_edit::limits::STATE_EPSILON
+        * 1f64.max(a.abs()).max(b.abs())
+}
+
+fn same_matrix(a: &[f64; 6], b: &[f64; 6]) -> bool {
+    a.iter().zip(b).all(|(x, y)| close_pt(*x, *y))
 }
 
 /// Check 6: the state after each replaced region (probe record) equals the original state after

@@ -2,11 +2,13 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { editsSignature, makeSourceTextObject, type SourceTextObject } from "@/lib/editor";
-import type { AppError, TextEditIn, TextPreview } from "@/lib/types";
+import { makeSourceTextObject, previewSignature, type SourceTextObject } from "@/lib/editor";
+import type { AppError, ImageEditIn, TextEditIn, TextPreview } from "@/lib/types";
 
 const backend = vi.hoisted(() => ({
-  previewTextEdits: vi.fn<(path: string, fp: string, page: number, edits: TextEditIn[]) => Promise<unknown>>(),
+  previewTextEdits: vi.fn<
+    (path: string, fp: string, page: number, edits: TextEditIn[], images: ImageEditIn[]) => Promise<unknown>
+  >(),
 }));
 vi.mock("@/lib/tauriCommands", () => backend);
 vi.mock("@/lib/pdfjs", () => ({ base64ToBytes: (b64: string) => new TextEncoder().encode(`pdf:${b64}`) }));
@@ -89,9 +91,13 @@ describe("useTextPreview", () => {
     backend.previewTextEdits.mockReturnValueOnce(d.promise);
     mount({ ...base, objects: [change("r1", "new")] });
     expect(hook.status).toBe("pending");
-    expect(backend.previewTextEdits).toHaveBeenCalledWith("/a.pdf", "fp", 0, [
-      { runId: "r1", originalText: "old", text: "new", style: {} },
-    ]);
+    expect(backend.previewTextEdits).toHaveBeenCalledWith(
+      "/a.pdf",
+      "fp",
+      0,
+      [{ runId: "r1", originalText: "old", text: "new", style: {} }],
+      [],
+    );
     await act(async () => d.resolve(preview("AAA")));
     expect(hook.status).toBe("ready");
     expect(decode(hook.bytes)).toBe("pdf:AAA");
@@ -158,7 +164,7 @@ describe("useTextPreview", () => {
   it("seed: the commit's own preview is shown without a second call", async () => {
     mount({ ...base, objects: [] });
     const next = [change("r1", "new")];
-    act(() => hook.seed(editsSignature(next), preview("SEED")));
+    act(() => hook.seed(previewSignature(next, []), preview("SEED")));
     render({ ...base, objects: next });
     await act(async () => {});
     expect(backend.previewTextEdits).not.toHaveBeenCalled();

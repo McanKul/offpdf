@@ -214,6 +214,7 @@ fn preview_process_peak_child() {
             &fp,
             0,
             &[edit],
+            &[],
         );
         (preview, model_bytes, t.cache.page_model_bytes(&source))
     });
